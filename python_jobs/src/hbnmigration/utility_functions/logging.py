@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import platform
 import sys
+from typing import Optional
 
 _initialized = False
 """Is logging initialized?"""
@@ -33,12 +34,17 @@ class MaxLevelFilter(logging.Filter):
         return record.levelno <= self.max_level
 
 
-def initialize_logging(max_gb: int = 10, backup_count: int = 3) -> dict[str, Path]:
+def initialize_logging(
+    name: Optional[str] = None, max_gb: int = 10, backup_count: int = 3
+) -> logging.Logger:
     """
     Initialize logging with rotation and separate files.
 
     Parameters
     ----------
+    name
+        `name` to provide to `logging.getLogger`
+
     max_gb
         Maximum size per log file (in GB) before rotation
 
@@ -47,13 +53,13 @@ def initialize_logging(max_gb: int = 10, backup_count: int = 3) -> dict[str, Pat
 
     Returns
     -------
-    Dictionary of log file paths
+    Logger
 
     """
     global _initialized  # noqa: PLW0603
 
     if _initialized:
-        return {}
+        return logging.getLogger(name)
 
     max_bytes = int(max_gb * 1e9)
 
@@ -112,4 +118,4 @@ def initialize_logging(max_gb: int = 10, backup_count: int = 3) -> dict[str, Pat
 
     _initialized = True
 
-    return {"info": info_log, "error": error_log, "dir": log_dir}
+    return logging.getLogger(name)
