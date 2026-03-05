@@ -1,6 +1,5 @@
 """Transfer data from Ripple to REDCap."""
 
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Optional
 
@@ -15,7 +14,6 @@ from ..utility_functions import fetch_api_data, initialize_logging, yesterday
 logger = initialize_logging(__name__)
 
 
-@dataclass
 class Endpoints:
     """API Endpoints."""
 

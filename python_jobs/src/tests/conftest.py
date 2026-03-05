@@ -9,6 +9,8 @@ from unittest.mock import Mock, patch
 import pandas as pd
 import pytest
 
+from hbnmigration.from_redcap.config import Values
+
 # ============================================================================
 # File System Fixtures
 # ============================================================================
@@ -112,7 +114,6 @@ def create_participant_df(  # noqa: PLR0913
     """
     # Determine length from first provided list or default to 1
     length = len(global_ids or custom_ids or first_names or [1])
-
     data = {
         "globalId": global_ids or [f"CUSTOM{i:03d}" for i in range(1, length + 1)],
         "customId": custom_ids or list(range(99999, 99999 + length)),
@@ -124,11 +125,63 @@ def create_participant_df(  # noqa: PLR0913
         or [f"custom{i}@test.com" for i in range(1, length + 1)],
         "importType": import_types or ["HBN - Main"] * length,
     }
-
     # Add any additional columns
     data.update(kwargs)
-
     return pd.DataFrame(data)
+
+
+def create_redcap_eav_df(
+    records: Optional[List[str]] = None,
+    field_names: Optional[List[str]] = None,
+    values: Optional[List[str]] = None,
+    repeat_instruments: Optional[List[str]] = None,
+    repeat_instances: Optional[List[Any]] = None,
+) -> pd.DataFrame:
+    """
+    Create REDCap EAV format DataFrames with flexible defaults.
+
+    Parameters
+    ----------
+    records
+        List of record IDs
+    field_names
+        List of field names
+    values
+        List of values
+    repeat_instruments
+        List of repeat instrument names
+    repeat_instances
+        List of repeat instance numbers
+
+    Returns
+    -------
+    pd.DataFrame
+        REDCap EAV formatted data
+
+    """
+    # Handle empty case
+    if not any([records, field_names, values]):
+        return pd.DataFrame(
+            {
+                "record": pd.Series([], dtype=str),
+                "field_name": pd.Series([], dtype=str),
+                "value": pd.Series([], dtype=str),
+                "redcap_repeat_instrument": pd.Series([], dtype=str),
+                "redcap_repeat_instance": pd.Series([], dtype=str),
+            }
+        )
+
+    length = len(records or field_names or values or [0])
+
+    return pd.DataFrame(
+        {
+            "record": records or [""] * length,
+            "field_name": field_names or [""] * length,
+            "value": values or [""] * length,
+            "redcap_repeat_instrument": repeat_instruments or [""] * length,
+            "redcap_repeat_instance": repeat_instances or [""] * length,
+        }
+    )
 
 
 # ============================================================================
@@ -271,6 +324,65 @@ def bella_garten_participant():
 
 
 # ============================================================================
+# REDCap Data Fixtures (EAV Format)
+# ============================================================================
+
+
+@pytest.fixture
+def sample_redcap_data():
+    """Sample REDCap data in EAV format from PID 247."""
+    return create_redcap_eav_df(
+        records=["001", "001", "001", "002", "002", "002"],
+        field_names=[
+            "intake_ready",
+            "participant_name",
+            "permission_collab",
+            "intake_ready",
+            "participant_name",
+            "permission_collab",
+        ],
+        values=[
+            Values.PID247.intake_ready["Ready to Send to Intake Redcap"],
+            "Alec Holland",
+            Values.PID247.permission_collab[
+                "NO, you may not share my child's records."
+            ],
+            Values.PID247.intake_ready["Ready to Send to Intake Redcap"],
+            "Abby Arcane",
+            Values.PID247.permission_collab["YES, you may share my child's records."],
+        ],
+    )
+
+
+@pytest.fixture
+def empty_redcap_data():
+    """Empty DataFrame representing no data from REDCap."""
+    return create_redcap_eav_df()
+
+
+@pytest.fixture
+def expected_transformed_data():
+    """Return expected data after transformation for PID 744."""
+    return pd.DataFrame(
+        {
+            "record": ["001", "001", "002", "002"],
+            "field_name": [
+                "participant_full_name",
+                "permission_collab",
+                "participant_full_name",
+                "permission_collab",
+            ],
+            "value": [
+                "Alec Holland",
+                Values.PID744.permission_collab["No"],
+                "Abby Arcane",
+                Values.PID744.permission_collab["Yes"],
+            ],
+        }
+    )
+
+
+# ============================================================================
 # Mock Configuration Fixtures
 # ============================================================================
 
@@ -294,6 +406,8 @@ def mock_redcap_variables():
     mock_vars = Mock()
     mock_vars.Tokens.pid757 = "dev_token"
     mock_vars.Tokens.pid247 = "prod_token"
+    mock_vars.Tokens.pid744 = "token_744"
+    mock_vars.headers = {"Content-Type": "application/x-www-form-urlencoded"}
     return mock_vars
 
 
@@ -426,11 +540,125 @@ def patched_main_workflow():
         "request": "hbnmigration.from_ripple.to_redcap.request_potential_participants",
         "vars": "hbnmigration.from_ripple.to_redcap.redcap_variables",
     }
-
     with ExitStack() as stack:
         mocks = {
             name: stack.enter_context(patch(path)) for name, path in patches.items()
         }
+        yield mocks
+
+
+# ============================================================================
+# Reusable Patch Context Managers
+# ============================================================================
+
+
+@contextmanager
+def patch_redcap_transfer_module(
+    fetch_return=None,
+    push_return=None,
+    update_return=None,
+):
+    """
+    Context manager for patching REDCap transfer module dependencies.
+
+    Uses real Fields configuration from config module.
+
+    Parameters
+    ----------
+    fetch_return
+        Return value for fetch_data
+    push_return
+        Return value for redcap_api_push
+    update_return
+        Return value for update_source
+
+    Yields
+    ------
+    dict
+        Dictionary of mocked objects
+
+    """
+    with ExitStack() as stack:
+        mocks = {
+            "fetch": stack.enter_context(
+                patch("hbnmigration.from_redcap.to_redcap.fetch_data")
+            ),
+            "push": stack.enter_context(
+                patch("hbnmigration.from_redcap.to_redcap.redcap_api_push")
+            ),
+            "update": stack.enter_context(
+                patch("hbnmigration.from_redcap.to_redcap.update_source")
+            ),
+            "redcap_vars": stack.enter_context(
+                patch("hbnmigration.from_redcap.to_redcap.redcap_variables")
+            ),
+            "endpoints": stack.enter_context(
+                patch("hbnmigration.from_redcap.to_redcap.Endpoints")
+            ),
+        }
+
+        # Set up basic configurations
+        mocks["redcap_vars"].Tokens.pid744 = "token_744"
+        mocks["redcap_vars"].Tokens.pid247 = "token_247"
+        mocks["redcap_vars"].headers = {}
+        mocks["endpoints"].return_value.base_url = "https://redcap.test/api/"
+
+        if fetch_return is not None:
+            mocks["fetch"].return_value = fetch_return
+        if push_return is not None:
+            mocks["push"].return_value = push_return
+        if update_return is not None:
+            mocks["update"].return_value = update_return
+
+        yield mocks
+
+
+@contextmanager
+def patch_redcap_fetch_dependencies(
+    fetch_api_return=None,
+    endpoints_config=None,
+    redcap_vars_config=None,
+):
+    """
+    Context manager for patching fetch_data dependencies.
+
+    Uses real Fields configuration from config module.
+
+    Parameters
+    ----------
+    fetch_api_return
+        Return value for fetch_api_data
+    endpoints_config
+        Mock Endpoints configuration
+    redcap_vars_config
+        Mock redcap_variables configuration
+
+    Yields
+    ------
+    dict
+        Dictionary of mocked objects
+
+    """
+    with ExitStack() as stack:
+        mocks = {
+            "fetch_api": stack.enter_context(
+                patch("hbnmigration.from_redcap.to_redcap.fetch_api_data")
+            ),
+            "endpoints": stack.enter_context(
+                patch("hbnmigration.from_redcap.to_redcap.Endpoints")
+            ),
+            "redcap_vars": stack.enter_context(
+                patch("hbnmigration.from_redcap.to_redcap.redcap_variables")
+            ),
+        }
+
+        if fetch_api_return is not None:
+            mocks["fetch_api"].return_value = fetch_api_return
+        if endpoints_config is not None:
+            mocks["endpoints"].return_value = endpoints_config
+        if redcap_vars_config is not None:
+            mocks["redcap_vars"] = redcap_vars_config
+
         yield mocks
 
 
@@ -478,6 +706,70 @@ def assert_has_name_attribute(result: Any, expected_name: str) -> None:
     assert result.__name__ == expected_name
 
 
+def assert_redcap_eav_structure(df: pd.DataFrame) -> None:
+    """Assert DataFrame has valid REDCap EAV structure."""
+    required_columns = ["record", "field_name", "value"]
+    for col in required_columns:
+        assert col in df.columns, f"Missing required column: {col}"
+
+
+def assert_field_renamed(df: pd.DataFrame, old_name: str, new_name: str) -> None:
+    """Assert field was renamed correctly."""
+    assert new_name in df["field_name"].values, (
+        f"Field '{new_name}' not found. Available fields: {df['field_name'].unique()}"
+    )
+    assert old_name not in df["field_name"].values, (
+        f"Old field name '{old_name}' still present in DataFrame"
+    )
+
+
+def assert_permission_decremented(
+    df: pd.DataFrame,
+    original_value: str,
+    expected_value: str,
+) -> None:
+    """Assert permission_collab was decremented correctly."""
+    perm_row = df[df["field_name"] == "permission_collab"]
+    assert len(perm_row) > 0, "No permission_collab field found in DataFrame"
+
+    actual_value = str(perm_row["value"].iloc[0])
+    expected_normalized = (
+        expected_value.rstrip(".0") if "." in expected_value else expected_value
+    )
+    actual_normalized = (
+        actual_value.rstrip(".0") if "." in actual_value else actual_value
+    )
+
+    assert actual_normalized == expected_normalized, (
+        f"Expected permission_collab value '{expected_value}', got '{actual_value}'"
+    )
+
+
+def count_records_in_eav(df: pd.DataFrame) -> int:
+    """Count unique records in EAV DataFrame."""
+    return len(df["record"].unique())
+
+
+def count_fields_per_record(df: pd.DataFrame) -> int:
+    """Count unique field names in EAV DataFrame."""
+    return len(df["field_name"].unique())
+
+
+def calculate_total_eav_rows(df: pd.DataFrame) -> int:
+    """Calculate total rows in EAV format (records × fields)."""  # noqa: RUF002
+    return count_records_in_eav(df) * count_fields_per_record(df)
+
+
+def get_field_values(df: pd.DataFrame, field_name: str) -> pd.Series:
+    """Extract values for a specific field from EAV DataFrame."""
+    return df[df["field_name"] == field_name]["value"]
+
+
+def get_unique_field_values(df: pd.DataFrame, field_name: str) -> list:
+    """Get unique values for a specific field from EAV DataFrame."""
+    return sorted(df[df["field_name"] == field_name]["value"].unique())
+
+
 # ============================================================================
 # Module Mocking
 # ============================================================================
@@ -502,6 +794,5 @@ def create_mock_module_in_sys(
     if attributes:
         for key, value in attributes.items():
             setattr(mock_mod, key, value)
-
     with patch.dict("sys.modules", {module_path: mock_mod}):
         yield mock_mod

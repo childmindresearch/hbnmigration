@@ -1,6 +1,5 @@
 """Typestubs for secret REDCap variables."""
 
-from dataclasses import dataclass
 from pathlib import Path
 
 from ...utility_functions import Endpoints as EndpointsABC
@@ -12,9 +11,9 @@ class Endpoints(EndpointsABC):
 
 headers: dict[str, str]
 
-@dataclass
 class Tokens:
     pid247: str
+    pid744: str
     pid757: str
 
 redcap_import_file: Path
