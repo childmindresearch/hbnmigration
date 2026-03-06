@@ -91,42 +91,47 @@ def update_source(df: pd.DataFrame) -> int:
 
 def main() -> None:
     """Transfer data from REDCap to REDCap."""
-    # get data from PID247
-    data247 = fetch_data(redcap_variables.Tokens.pid247, str(Fields.export_247))
-    if data247.empty:
-        raise NoData
-    # rename columns for PID744
-    data247["field_name"] = data247["field_name"].replace(Fields.rename_247_to_744)
-    # format DataFrame for PID744
-    df_744 = data247.loc[data247["field_name"].str.startswith(tuple(Fields.import_744))]
-    assert isinstance(df_744, pd.DataFrame)
-    df_744 = (
-        df_744.sort_values("redcap_repeat_instance", ascending=False)
-        .drop_duplicates(subset=["record", "field_name"], keep="first")
-        .drop(columns=["redcap_repeat_instrument", "redcap_repeat_instance"])
-        .reset_index(drop=True)
-    )
-    decrement_mask = df_744["field_name"] == "permission_collab"
-    # Convert to numeric and decrement
-    decremented = (
-        pd.to_numeric(df_744.loc[decrement_mask, "value"], errors="coerce") - 1
-    )
-    assert isinstance(decremented, pd.Series)
-    # Convert back to string
-    df_744.loc[decrement_mask, "value"] = decremented.astype(str)
-    rows_imported_744 = redcap_api_push(
-        df=df_744,
-        token=redcap_variables.Tokens.pid744,
-        url=Endpoints.base_url,
-        headers=redcap_variables.headers,
-    )
-    if not rows_imported_744:
-        raise NoData
-    rows_updated_274 = update_source(df_744)
-    assert rows_imported_744 == rows_updated_274, (
-        f"rows imported to PID 744 ({rows_imported_744}) "
-        f"≠ rows updated in PID 274 ({rows_updated_274})."
-    )
+    try:
+        # get data from PID247
+        data247 = fetch_data(redcap_variables.Tokens.pid247, str(Fields.export_247))
+        if data247.empty:
+            raise NoData
+        # rename columns for PID744
+        data247["field_name"] = data247["field_name"].replace(Fields.rename_247_to_744)
+        # format DataFrame for PID744
+        df_744 = data247.loc[
+            data247["field_name"].str.startswith(tuple(Fields.import_744))
+        ]
+        assert isinstance(df_744, pd.DataFrame)
+        df_744 = (
+            df_744.sort_values("redcap_repeat_instance", ascending=False)
+            .drop_duplicates(subset=["record", "field_name"], keep="first")
+            .drop(columns=["redcap_repeat_instrument", "redcap_repeat_instance"])
+            .reset_index(drop=True)
+        )
+        decrement_mask = df_744["field_name"] == "permission_collab"
+        # Convert to numeric and decrement
+        decremented = (
+            pd.to_numeric(df_744.loc[decrement_mask, "value"], errors="coerce") - 1
+        )
+        assert isinstance(decremented, pd.Series)
+        # Convert back to string
+        df_744.loc[decrement_mask, "value"] = decremented.astype(str)
+        rows_imported_744 = redcap_api_push(
+            df=df_744,
+            token=redcap_variables.Tokens.pid744,
+            url=Endpoints.base_url,
+            headers=redcap_variables.headers,
+        )
+        if not rows_imported_744:
+            raise NoData
+        rows_updated_274 = update_source(df_744)
+        assert rows_imported_744 == rows_updated_274, (
+            f"rows imported to PID 744 ({rows_imported_744}) "
+            f"≠ rows updated in PID 274 ({rows_updated_274})."
+        )
+    except NoData:
+        logger.info("No data to transfer from PID 274 to PID 744.")
 
 
 if __name__ == "__main__":
