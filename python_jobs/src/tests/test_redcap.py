@@ -1,5 +1,4 @@
-# test_redcap.py
-"""Test code for data transfer from REDCap."""
+"""Test code for data transfer from REDCap to Curious."""
 
 from unittest.mock import patch
 
@@ -7,187 +6,439 @@ import pandas as pd
 import pytest
 
 from hbnmigration.exceptions import NoData
-from hbnmigration.from_redcap import from_redcap
-from hbnmigration.from_redcap import to_redcap as transfer_module
-from hbnmigration.from_redcap.config import Fields, Values
+from hbnmigration.from_curious.config import account_types
+from hbnmigration.from_redcap import to_curious
+from hbnmigration.from_redcap.config import Values
 
 from .conftest import (
-    assert_field_renamed,
-    assert_permission_decremented,
-    assert_redcap_eav_structure,
-    calculate_total_eav_rows,
-    count_records_in_eav,
-    get_unique_field_values,
-    patch_redcap_fetch_dependencies,
-    patch_redcap_transfer_module,
+    assert_enrollment_complete_updated,
+    assert_valid_curious_format,
+    count_curious_accounts,
+    create_curious_api_failure,
+    create_curious_participant_df,
+    create_redcap_eav_df,
+    get_curious_records_by_tag,
+    patch_curious_api_dependencies,
+    patch_curious_transfer_module,
+    setup_curious_integration_mocks,
 )
 
 # ============================================================================
-# fetch_data() Tests
+# _in_set() Tests
 # ============================================================================
 
 
-class TestFetchData:
-    """Tests for fetch_data function."""
+class TestInSet:
+    """Tests for _in_set helper function."""
 
-    def test_fetch_data_success(self, sample_redcap_data):
-        """Test successful data fetch from REDCap."""
-        with patch_redcap_fetch_dependencies(
-            fetch_api_return=sample_redcap_data.copy(),
-        ) as mocks:
-            mocks["endpoints"].return_value.base_url = "https://redcap.test/api/"
-            mocks["redcap_vars"].headers = {}
+    @pytest.mark.parametrize(
+        "input_value,required,expected",
+        [
+            ({1, 2, 3}, 1, True),
+            ({2, 3, 4}, 1, False),
+            (1, 1, True),
+            (2, 1, False),
+            ("1", 1, True),
+            ("2", 1, False),
+            ([1, 2, 3], 1, True),
+            ([2, 3, 4], 1, False),
+            ({"1", "2"}, "1", True),
+            ({1, 2}, "1", True),
+        ],
+    )
+    def test_in_set_various_inputs(self, input_value, required, expected):
+        """Test _in_set with various input types."""
+        assert to_curious._in_set(input_value, required) is expected
 
-            # Execute
-            result = from_redcap.fetch_data("test_token", "intake_ready,consent1")
+    @pytest.mark.parametrize(
+        "invalid_input",
+        [None, 3.14, {}, {}],
+    )
+    def test_in_set_invalid_types_return_false(self, invalid_input):
+        """Test that _in_set returns False with invalid types."""
+        assert to_curious._in_set(invalid_input, 1) is False
 
-            # Assert
-            assert isinstance(result, pd.DataFrame)
-            assert len(result) == len(sample_redcap_data)
-            assert_redcap_eav_structure(result)
-            mocks["fetch_api"].assert_called_once()
 
-    def test_fetch_data_no_data_raises_exception(self, empty_redcap_data):
-        """Test that NoData exception is raised when no records returned."""
-        with patch_redcap_fetch_dependencies(fetch_api_return=empty_redcap_data):
-            with pytest.raises(NoData):
-                from_redcap.fetch_data("test_token", "intake_ready")
+# ============================================================================
+# _check_for_data_to_process() Tests
+# ============================================================================
 
-    def test_fetch_data_with_filter_logic(self, sample_redcap_data):
-        """Test that API call includes filter logic when provided."""
-        filter_logic = "[intake_ready] = '1'"
 
-        with patch_redcap_fetch_dependencies(
-            fetch_api_return=sample_redcap_data
-        ) as mocks:
-            # Execute
-            from_redcap.fetch_data(
-                "test_token", "intake_ready", filter_logic=filter_logic
+class TestCheckForDataToProcess:
+    """Tests for _check_for_data_to_process helper function."""
+
+    def test_logs_info_when_no_data(self, caplog, formatted_curious_data):
+        """Test that appropriate log message when no data for account type."""
+        df_empty = formatted_curious_data[
+            formatted_curious_data["accountType"] == "nonexistent"
+        ]
+        to_curious._check_for_data_to_process(df_empty, "full")
+        assert "There is not full consent data to process" in caplog.text
+
+    def test_logs_info_when_data_exists(self, caplog):
+        """Test that appropriate log message when data exists."""
+        df = pd.DataFrame(
+            {
+                "accountType": ["full", "limited"],
+                "secretUserId": ["00001_P", "00001"],
+            }
+        )
+        to_curious._check_for_data_to_process(df, "full")
+        assert "Full data was prepared to be sent to the Curious API" in caplog.text
+
+    def test_checks_all_account_types(self, caplog, formatted_curious_data):
+        """Test logging for multiple account types."""
+        for account_type in account_types:
+            to_curious._check_for_data_to_process(formatted_curious_data, account_type)
+        assert any(
+            _account_type in caplog.text.lower() for _account_type in account_types
+        )
+
+
+# ============================================================================
+# format_redcap_data_for_curious() Tests
+# ============================================================================
+
+
+class TestFormatRedcapDataForCurious:
+    """Tests for format_redcap_data_for_curious function."""
+
+    def test_formats_basic_parent_child_data(self):
+        """Test basic formatting of parent and child data."""
+        # Need to use actual field names that will map correctly
+        redcap_data = create_redcap_eav_df(
+            records=["001", "001", "001"],
+            field_names=[
+                "mrn",
+                "parent_involvement___1",
+                "adult_enrollment_form_complete",
+            ],
+            values=["12345", "1", "0"],
+        )
+        result = to_curious.format_redcap_data_for_curious(redcap_data)
+
+        assert_valid_curious_format(result)
+        counts = count_curious_accounts(result)
+        # Both parent and child created for each record
+        assert counts["parent"] >= 1
+        assert counts["child"] >= 1
+
+    def test_pads_secret_user_id_with_zeros(self):
+        """Test that secretUserId is padded to 5 characters AFTER _P suffix."""
+        redcap_data = create_redcap_eav_df(
+            records=["001", "001"],
+            field_names=["mrn", "parent_involvement___1"],
+            values=["123", "1"],
+        )
+        result = to_curious.format_redcap_data_for_curious(redcap_data)
+
+        # After formatting: "123" -> "123_P" -> "123_P" (padding happens after suffix)
+        # Actually, looking at code: suffix added first, then padding
+        # "123" -> parent gets "123_P" -> zfill(5) -> "123_P" (stays same, already >5)
+        # "123" -> child gets "123" -> zfill(5) -> "00123"
+        for user_id in result["secretUserId"]:
+            if not user_id.endswith("_P"):
+                # Child records should be padded
+                assert len(user_id) == 5, (
+                    f"Child secretUserId should be 5 chars: {user_id}"
+                )
+            # Parent records will be longer due to _P suffix
+
+    def test_appends_p_suffix_to_parent_before_padding(self):
+        """Test that parent secretUserId gets _P suffix before padding."""
+        redcap_data = create_redcap_eav_df(
+            records=["001", "001"],
+            field_names=["mrn", "parent_involvement___1"],
+            values=["12345", "1"],
+        )
+        result = to_curious.format_redcap_data_for_curious(redcap_data)
+
+        parent_rows = get_curious_records_by_tag(result, "parent")
+        assert len(parent_rows) > 0
+        # After suffix and padding: "12345_P" -> zfill(5) keeps it as "12345_P"
+        assert all(parent_rows["secretUserId"].str.endswith("_P"))
+
+    def test_filters_by_parent_involvement(self):
+        """Test that records are filtered by parent_involvement___1."""
+        redcap_data = create_redcap_eav_df(
+            records=["001", "001", "002", "002", "002"],
+            field_names=[
+                "mrn",
+                "parent_involvement___1",
+                "mrn",
+                "parent_involvement___2",
+                "adult_enrollment_form_complete",
+            ],
+            values=["12345", "1", "67890", "1", "1"],  # 002 has complete=True
+        )
+        result = to_curious.format_redcap_data_for_curious(redcap_data)
+
+        secret_ids = {x.rstrip("_P").lstrip("0") for x in result["secretUserId"]}
+        assert "12345" in secret_ids
+
+    def test_drops_parent_involvement_columns(self):
+        """Test that parent_involvement columns are dropped from output."""
+        redcap_data = create_redcap_eav_df(
+            records=["001", "001"],
+            field_names=["mrn", "parent_involvement___1"],
+            values=["12345", "1"],
+        )
+        result = to_curious.format_redcap_data_for_curious(redcap_data)
+
+        assert "parent_involvement" not in result.columns
+        assert "adult_enrollment_form_complete" not in result.columns
+
+    def test_adds_default_values_for_missing_fields(self):
+        """Test that missing fields get default values from config."""
+        redcap_data = create_redcap_eav_df(
+            records=["001", "001"],
+            field_names=["mrn", "parent_involvement___1"],
+            values=["12345", "1"],
+        )
+        result = to_curious.format_redcap_data_for_curious(redcap_data)
+
+        # Check that default fields are present
+        assert "accountType" in result.columns
+        assert "role" in result.columns
+        assert "language" in result.columns
+        # Check default values
+        assert all(result[result["tag"] == "parent"]["accountType"] == "full")
+        assert all(result[result["tag"] == "child"]["accountType"] == "limited")
+
+    def test_replaces_nan_with_none(self):
+        """Test that NaN values are replaced with None."""
+        redcap_data = create_redcap_eav_df(
+            records=["001", "001"],
+            field_names=["mrn", "parent_involvement___1"],
+            values=["12345", "1"],
+        )
+        result = to_curious.format_redcap_data_for_curious(redcap_data)
+
+        # Fields without data should be None, not NaN
+        result_dicts = result.to_dict(orient="records")
+        for record in result_dicts:
+            for key, value in record.items():
+                if value is None:
+                    continue  # None is expected
+                assert value is not pd.NA
+
+
+# ============================================================================
+# send_to_curious() Tests
+# ============================================================================
+
+
+class TestSendToCurious:
+    """Tests for send_to_curious function."""
+
+    def test_sends_all_records_to_curious(
+        self, formatted_curious_data, mock_curious_variables
+    ):
+        """Test that all records are sent to Curious API."""
+        with patch_curious_api_dependencies(new_account_return="Success") as mocks:
+            tokens = mock_curious_variables.Tokens(
+                mock_curious_variables.Endpoints(),
+                mock_curious_variables.Credentials.hbn_mindlogger,
             )
 
-            # Assert
-            call_args = mocks["fetch_api"].call_args[0][2]
-            assert call_args["filterLogic"] == filter_logic
-            assert call_args["type"] == "eav"
+            failures = to_curious.send_to_curious(
+                formatted_curious_data,
+                tokens,
+                "test_applet_id",
+            )
 
-    def test_fetch_data_without_filter_logic(self, sample_redcap_data):
-        """Test that API call works without filter logic."""
-        with patch_redcap_fetch_dependencies(
-            fetch_api_return=sample_redcap_data
-        ) as mocks:
-            # Execute
-            from_redcap.fetch_data("test_token", "intake_ready")
+            assert len(failures) == 0
+            assert mocks["new_account"].call_count == len(formatted_curious_data)
 
-            # Assert
-            call_args = mocks["fetch_api"].call_args[0][2]
-            assert "filterLogic" not in call_args
-
-    def test_fetch_data_eav_format_parameters(self, sample_redcap_data):
-        """Test that fetch_data requests EAV format with correct parameters."""
-        with patch_redcap_fetch_dependencies(
-            fetch_api_return=sample_redcap_data
-        ) as mocks:
-            # Execute
-            from_redcap.fetch_data("test_token", "intake_ready")
-
-            # Assert
-            call_args = mocks["fetch_api"].call_args[0][2]
-            assert call_args["type"] == "eav"
-            assert call_args["format"] == "csv"
-            assert call_args["rawOrLabel"] == "raw"
-            assert call_args["exportCheckboxLabel"] == "false"
-            assert call_args["exportSurveyFields"] == "false"
-            assert call_args["exportDataAccessGroups"] == "false"
-
-
-# ============================================================================
-# update_source() Tests
-# ============================================================================
-
-
-class TestUpdateSource:
-    """Tests for update_source function."""
-
-    @patch("hbnmigration.from_redcap.to_redcap.redcap_api_push")
-    @patch("hbnmigration.from_redcap.to_redcap.redcap_variables")
-    @patch("hbnmigration.from_redcap.to_redcap.Endpoints")
-    def test_update_source_success(
-        self, mock_endpoints, mock_redcap_vars, mock_push, sample_redcap_data
+    def test_handles_api_request_exception(
+        self, formatted_curious_data, mock_curious_variables
     ):
-        """Test successful update of source project."""
-        # Setup
-        expected_records = count_records_in_eav(sample_redcap_data)
-        mock_push.return_value = expected_records
-        mock_redcap_vars.Tokens.pid247 = "token_247"
-        mock_endpoints.return_value.base_url = "https://redcap.test/api/"
+        """Test that API exceptions are caught and logged."""
+        with patch_curious_api_dependencies(
+            new_account_side_effect=create_curious_api_failure()
+        ):
+            tokens = mock_curious_variables.Tokens(
+                mock_curious_variables.Endpoints(),
+                mock_curious_variables.Credentials.hbn_mindlogger,
+            )
 
-        # Execute
-        result = transfer_module.update_source(sample_redcap_data)
+            failures = to_curious.send_to_curious(
+                formatted_curious_data,
+                tokens,
+                "test_applet_id",
+            )
 
-        # Assert
-        assert result == expected_records
-        mock_push.assert_called_once()
+            assert len(failures) == len(formatted_curious_data)
 
-        # Check DataFrame passed to push
-        call_df = mock_push.call_args[1]["df"]
-        assert all(call_df["field_name"] == "intake_ready")
-        assert all(
-            call_df["value"]
-            == Values.PID247.intake_ready[
-                "Participant information already sent to HBN - Intake Redcap project"
-            ]
-        )
+    def test_partial_failure_tracking(
+        self, formatted_curious_data, mock_curious_variables
+    ):
+        """Test that partial failures are tracked correctly."""
+        with patch_curious_api_dependencies(
+            new_account_side_effect=["Success", create_curious_api_failure()]
+        ):
+            tokens = mock_curious_variables.Tokens(
+                mock_curious_variables.Endpoints(),
+                mock_curious_variables.Credentials.hbn_mindlogger,
+            )
 
-    @patch("hbnmigration.from_redcap.to_redcap.redcap_api_push")
-    def test_update_source_creates_correct_dataframe(self, mock_push):
-        """Test that update creates correct DataFrame structure."""
-        # Setup
-        input_df = pd.DataFrame(
-            {
-                "record": ["001", "001", "002", "002", "003", "003"],
-                "field_name": ["name", "age", "name", "age", "name", "age"],
-                "value": ["Alice", "30", "Bob", "25", "Carol", "35"],
-            }
-        )
-        expected_num_records = count_records_in_eav(input_df)
-        mock_push.return_value = expected_num_records
+            failures = to_curious.send_to_curious(
+                formatted_curious_data,
+                tokens,
+                "test_applet_id",
+            )
 
-        # Execute
-        transfer_module.update_source(input_df)
+            assert len(failures) == 1
 
-        # Assert
-        call_df = mock_push.call_args[1]["df"]
-        assert len(call_df) == expected_num_records
-        assert set(call_df["record"].unique()) == {"001", "002", "003"}
-        assert all(
-            call_df["value"]
-            == Values.PID247.intake_ready[
-                "Participant information already sent to HBN - Intake Redcap project"
-            ]
-        )
+    def test_filters_none_values_from_records(self, mock_curious_variables):
+        """Test that None values are filtered from records before sending."""
+        with patch_curious_api_dependencies(new_account_return="Success") as mocks:
+            tokens = mock_curious_variables.Tokens(
+                mock_curious_variables.Endpoints(),
+                mock_curious_variables.Credentials.hbn_mindlogger,
+            )
 
-    @patch("hbnmigration.from_redcap.to_redcap.redcap_api_push")
-    @patch("hbnmigration.from_redcap.to_redcap.redcap_variables")
-    def test_update_source_uses_correct_token(self, mock_redcap_vars, mock_push):
-        """Test that update_source uses PID 247 token."""
-        # Setup
-        expected_token = "special_token_247"
+            df_with_nones = create_curious_participant_df(
+                secret_user_ids=["00001"],
+                tags=["child"],
+                first_names=[None],
+                last_names=["Holland"],
+            )
+
+            to_curious.send_to_curious(df_with_nones, tokens, "test_applet_id")
+
+            call_record = mocks["new_account"].call_args[0][2]
+            assert "firstName" not in call_record
+            assert "lastName" in call_record
+
+    def test_includes_authorization_header(
+        self, formatted_curious_data, mock_curious_variables
+    ):
+        """Test that authorization header is included in API calls."""
+        with patch_curious_api_dependencies(new_account_return="Success") as mocks:
+            tokens = mock_curious_variables.Tokens(
+                mock_curious_variables.Endpoints(),
+                mock_curious_variables.Credentials.hbn_mindlogger,
+            )
+
+            to_curious.send_to_curious(
+                formatted_curious_data,
+                tokens,
+                "test_applet_id",
+            )
+
+            call_headers = mocks["new_account"].call_args[0][3]
+            assert "Authorization" in call_headers
+            assert call_headers["Authorization"] == f"Bearer {tokens.access}"
+
+
+# ============================================================================
+# update_redcap() Tests
+# ============================================================================
+
+
+class TestUpdateRedcap:
+    """Tests for update_redcap function."""
+
+    @patch("hbnmigration.from_redcap.to_curious.redcap_api_push")
+    @patch("hbnmigration.from_redcap.to_curious.redcap_variables")
+    def test_updates_enrollment_complete_for_successes(
+        self,
+        mock_redcap_vars,
+        mock_push,
+    ):
+        """Test that enrollment_complete is updated for successful transfers."""
         mock_push.return_value = 1
-        mock_redcap_vars.Tokens.pid247 = expected_token
+        mock_redcap_vars.Tokens.pid247 = "token_247"
+        mock_redcap_vars.Endpoints.return_value.base_url = "https://redcap.test/api/"
+        mock_redcap_vars.headers = {}
 
-        input_df = pd.DataFrame(
+        # The function needs mrn in the redcap data to find records to update
+        redcap_data = create_redcap_eav_df(
+            records=["001"],
+            field_names=["mrn"],
+            values=["12345"],
+        )
+
+        curious_data = create_curious_participant_df(
+            secret_user_ids=["12345"],
+            tags=["child"],
+        )
+
+        to_curious.update_redcap(redcap_data, curious_data, [])
+
+        mock_push.assert_called_once()
+        call_df = mock_push.call_args[1]["df"]
+        assert_enrollment_complete_updated(
+            call_df,
+            Values.PID247.enrollment_complete[
+                "Parent and Participant information already sent to Curious"
+            ],
+        )
+
+    @patch("hbnmigration.from_redcap.to_curious.redcap_api_push")
+    @patch("hbnmigration.from_redcap.to_curious.redcap_variables")
+    def test_excludes_failures_from_update(
+        self,
+        mock_redcap_vars,
+        mock_push,
+    ):
+        """Test that failed records are not updated in REDCap."""
+        mock_push.return_value = 0
+        mock_redcap_vars.Tokens.pid247 = "token_247"
+        mock_redcap_vars.Endpoints.return_value.base_url = "https://redcap.test/api/"
+
+        redcap_data = create_redcap_eav_df(
+            records=["001"],
+            field_names=["mrn"],
+            values=["12345"],
+        )
+
+        curious_data = create_curious_participant_df(
+            secret_user_ids=["12345"],
+            tags=["child"],
+        )
+
+        failures = ["12345"]  # MRN that failed
+
+        to_curious.update_redcap(redcap_data, curious_data, failures)
+
+        call_df = mock_push.call_args[1]["df"]
+        # Should have empty dataframe since all failed
+        assert len(call_df) == 0
+
+    @patch("hbnmigration.from_redcap.to_curious.redcap_api_push")
+    @patch("hbnmigration.from_redcap.to_curious.redcap_variables")
+    def test_filters_out_parent_records_from_update(
+        self,
+        mock_redcap_vars,
+        mock_push,
+    ):
+        """Test that parent records (_P suffix) are excluded from REDCap update."""
+        mock_push.return_value = 1
+        mock_redcap_vars.Tokens.pid247 = "token_247"
+        mock_redcap_vars.Endpoints.return_value.base_url = "https://redcap.test/api/"
+        mock_redcap_vars.headers = {}
+
+        redcap_data = create_redcap_eav_df(
+            records=["001"],
+            field_names=["mrn"],
+            values=["12345"],
+        )
+
+        # Include both parent and child - only child should trigger update
+        curious_data = pd.DataFrame(
             {
-                "record": ["001"],
-                "field_name": ["test"],
-                "value": ["value"],
+                "secretUserId": ["12345", "12345_P"],
+                "tag": ["child", "parent"],
             }
         )
 
-        # Execute
-        transfer_module.update_source(input_df)
+        to_curious.update_redcap(redcap_data, curious_data, [])
 
-        # Assert
-        assert mock_push.call_args[1]["token"] == expected_token
+        call_df = mock_push.call_args[1]["df"]
+        # Should update based on child record (12345) not parent (12345_P)
+        assert len(call_df) > 0
 
 
 # ============================================================================
@@ -198,297 +449,97 @@ class TestUpdateSource:
 class TestMain:
     """Tests for main workflow function."""
 
-    def test_main_successful_transfer(self):
-        """Test successful end-to-end data transfer."""
-        # Use real field names from config (BEFORE rename)
-        data = pd.DataFrame(
-            {
-                "record": ["001", "001"],
-                "field_name": ["consent1", "permission_collab"],
-                "value": [
-                    "Test",
-                    Values.PID247.permission_collab[
-                        "NO, you may not share my child's records."
-                    ],
-                ],
-                "redcap_repeat_instrument": ["", ""],
-                "redcap_repeat_instance": ["", ""],
-            }
-        )
-        expected_rows = calculate_total_eav_rows(data)
-
-        with patch_redcap_transfer_module(
-            fetch_return=data.copy(),
-            push_return=expected_rows,
-            update_return=expected_rows,
+    def test_main_successful_transfer(
+        self, sample_redcap_curious_data, formatted_curious_data
+    ):
+        """Test successful end-to-end transfer to Curious."""
+        with patch_curious_transfer_module(
+            fetch_return=sample_redcap_curious_data,
+            format_return=formatted_curious_data,
+            send_return=[],
         ) as mocks:
-            # Execute
-            transfer_module.main()
+            to_curious.main()
 
-            # Assert
             mocks["fetch"].assert_called_once()
-            mocks["push"].assert_called_once()
+            mocks["format"].assert_called_once_with(sample_redcap_curious_data)
+            mocks["send"].assert_called_once()
             mocks["update"].assert_called_once()
 
-    def test_main_no_data_logs_info(self, empty_redcap_data):
-        """Test that appropriate logging occurs when no data is available."""
-        with patch_redcap_transfer_module(fetch_return=empty_redcap_data):
-            # Should not raise, just log and return
-            transfer_module.main()
+    def test_main_no_data_logs_and_returns(self, caplog):
+        """Test that main returns early when no data available."""
+        with patch_curious_transfer_module(fetch_return=None) as mocks:
+            mocks["fetch"].side_effect = NoData()
 
-    def test_main_catches_nodata_when_push_fails(self):
-        """Test that NoData is caught and logged when push returns 0."""
-        data = pd.DataFrame(
-            {
-                "record": ["001"],
-                "field_name": ["consent1"],
-                "value": ["Test"],
-                "redcap_repeat_instrument": [""],
-                "redcap_repeat_instance": [""],
-            }
+            to_curious.main()
+
+            assert "No data to transfer from REDCap PID 247 to Curious" in caplog.text
+
+    def test_main_empty_dataframe_raises_nodata(self, caplog):
+        """Test that empty DataFrame raises NoData."""
+        with patch_curious_transfer_module(fetch_return=pd.DataFrame()):
+            to_curious.main()
+
+            assert "No participants marked 'Ready to Send to Curious'" in caplog.text
+
+    def test_main_uses_correct_filter_logic(self, sample_redcap_curious_data):
+        """Test that correct filter logic is used for fetch."""
+        # Need formatted data with accountType column for _check_for_data_to_process
+        formatted_data = create_curious_participant_df(
+            secret_user_ids=["00001"],
+            tags=["child"],
         )
 
-        with patch_redcap_transfer_module(
-            fetch_return=data,
-            push_return=0,
+        with patch_curious_transfer_module(
+            fetch_return=sample_redcap_curious_data,
+            format_return=formatted_data,
+            send_return=[],
         ) as mocks:
-            # NoData is caught internally, so main() should complete without raising
-            transfer_module.main()
+            to_curious.main()
 
-            # Verify update was not called since push failed
-            mocks["update"].assert_not_called()
+            call_args = mocks["fetch"].call_args[0]
+            assert "enrollment_complete" in call_args[2]
 
-    def test_main_assertion_mismatch_raises_error(self):
-        """Test that assertion error raised when row counts don't match."""
-        data = pd.DataFrame(
-            {
-                "record": ["001"],
-                "field_name": ["consent1"],
-                "value": ["Test"],
-                "redcap_repeat_instrument": [""],
-                "redcap_repeat_instance": [""],
-            }
-        )
-
-        with patch_redcap_transfer_module(
-            fetch_return=data,
-            push_return=2,
-            update_return=3,  # Mismatch with push_return!
+    def test_main_checks_all_account_types(
+        self, sample_redcap_curious_data, formatted_curious_data, caplog
+    ):
+        """Test that all account types are checked for data."""
+        with patch_curious_transfer_module(
+            fetch_return=sample_redcap_curious_data,
+            format_return=formatted_curious_data,
+            send_return=[],
         ):
-            with pytest.raises(AssertionError, match="rows imported to PID 744"):
-                transfer_module.main()
-
-    def test_main_applies_field_rename(self):
-        """Test that field names are renamed according to configuration."""
-        original_field = "consent1"
-        renamed_field = Fields.rename.redcap247_to_redcap744[original_field]
-
-        data = pd.DataFrame(
-            {
-                "record": ["001"],
-                "field_name": [original_field],
-                "value": ["Test"],
-                "redcap_repeat_instrument": [""],
-                "redcap_repeat_instance": [""],
-            }
-        )
-
-        with patch_redcap_transfer_module(
-            fetch_return=data.copy(),
-            push_return=1,
-            update_return=1,
-        ) as mocks:
-            # Execute
-            transfer_module.main()
-
-            # Assert - check the DataFrame sent to push
-            call_df = mocks["push"].call_args[1]["df"]
-            assert_field_renamed(call_df, original_field, renamed_field)
-
-    def test_main_filters_fields_for_744(self):
-        """Test that only appropriate fields are sent to PID 744."""
-        # Data with both matching and non-matching fields (ORIGINAL names before rename)
-        included_field = "consent1"
-        excluded_field = "enrollment_complete"  # Not in Fields.import_744
-
-        data = pd.DataFrame(
-            {
-                "record": ["001", "001", "001"],
-                "field_name": [included_field, "permission_collab", excluded_field],
-                "value": [
-                    "Test",
-                    Values.PID247.permission_collab[
-                        "NO, you may not share my child's records."
-                    ],
-                    "1",
-                ],
-                "redcap_repeat_instrument": ["", "", ""],
-                "redcap_repeat_instance": ["", "", ""],
-            }
-        )
-
-        # Only 2 fields should pass the filter
-        expected_filtered_rows = 2
-
-        with patch_redcap_transfer_module(
-            fetch_return=data.copy(),
-            push_return=expected_filtered_rows,
-            update_return=expected_filtered_rows,
-        ) as mocks:
-            # Execute
-            transfer_module.main()
-
-            # Assert
-            call_df = mocks["push"].call_args[1]["df"]
-            renamed_field = Fields.rename.redcap247_to_redcap744[included_field]
-
-            # After rename, should have first_name and permission_collab
-            assert renamed_field in call_df["field_name"].values
-            assert "permission_collab" in call_df["field_name"].values
-
-            # Should not include excluded field
-            assert excluded_field not in call_df["field_name"].values
-
-    def test_main_decrements_permission_collab(self):
-        """Test that permission_collab values are decremented by 1."""
-        original_permission = Values.PID247.permission_collab[
-            "NO, you may not share my child's records."
-        ]
-        expected_permission = str(int(original_permission) - 1)
-
-        data = pd.DataFrame(
-            {
-                "record": ["001", "001"],
-                "field_name": ["permission_collab", "consent1"],
-                "value": [original_permission, "Test"],
-                "redcap_repeat_instrument": ["", ""],
-                "redcap_repeat_instance": ["", ""],
-            }
-        )
-        expected_rows = calculate_total_eav_rows(data)
-
-        with patch_redcap_transfer_module(
-            fetch_return=data,
-            push_return=expected_rows,
-            update_return=expected_rows,
-        ) as mocks:
-            # Execute
-            transfer_module.main()
-
-            # Assert
-            call_df = mocks["push"].call_args[1]["df"]
-            assert_permission_decremented(
-                call_df, original_permission, expected_permission
+            to_curious.main()
+            assert any(
+                _account_type in caplog.text.lower() for _account_type in account_types
             )
 
-    def test_main_handles_repeating_instances(self):
-        """Test that most recent repeating instance is kept."""
-        old_value = "Old Name"
-        new_value = "Alec Holland"
-
-        data = pd.DataFrame(
-            {
-                "record": ["001", "001", "001", "001"],
-                "field_name": [
-                    "consent1",
-                    "consent1",
-                    "permission_collab",
-                    "permission_collab",
-                ],
-                "value": [old_value, new_value, "2", "2"],
-                "redcap_repeat_instrument": ["form1", "form1", "form2", "form2"],
-                "redcap_repeat_instance": [1, 2, 1, 2],
-            }
-        )
-
-        # After deduplication, should have 2 fields for 1 record
-        expected_rows_after_dedup = 2
-
-        with patch_redcap_transfer_module(
-            fetch_return=data,
-            push_return=expected_rows_after_dedup,
-            update_return=expected_rows_after_dedup,
+    def test_main_handles_partial_failures(
+        self, sample_redcap_curious_data, formatted_curious_data
+    ):
+        """Test that partial failures are handled correctly."""
+        failures = ["12345"]
+        with patch_curious_transfer_module(
+            fetch_return=sample_redcap_curious_data,
+            format_return=formatted_curious_data,
+            send_return=failures,
         ) as mocks:
-            # Execute
-            transfer_module.main()
+            to_curious.main()
 
-            # Assert
-            call_df = mocks["push"].call_args[1]["df"]
-            renamed_field = Fields.rename.redcap247_to_redcap744["consent1"]
-            name_row = call_df[call_df["field_name"] == renamed_field]
+            assert mocks["update"].call_args[0][2] == failures
 
-            assert len(name_row) > 0, f"No {renamed_field} found"
-            assert name_row["value"].iloc[0] == new_value
-            assert "redcap_repeat_instance" not in call_df.columns
-
-    @patch("hbnmigration.from_redcap.to_redcap.redcap_variables")
-    def test_main_uses_correct_tokens(self, mock_redcap_vars):
-        """Test that correct tokens are used for each project."""
-        token_247 = "token_247"
-        token_744 = "token_744"
-        mock_redcap_vars.Tokens.pid247 = token_247
-        mock_redcap_vars.Tokens.pid744 = token_744
-
-        data = pd.DataFrame(
-            {
-                "record": ["001"],
-                "field_name": ["consent1"],
-                "value": ["Test"],
-                "redcap_repeat_instrument": [""],
-                "redcap_repeat_instance": [""],
-            }
-        )
-        expected_rows = calculate_total_eav_rows(data)
-
-        with patch_redcap_transfer_module(
-            fetch_return=data,
-            push_return=expected_rows,
-            update_return=expected_rows,
+    def test_main_uses_correct_applet_id(
+        self, sample_redcap_curious_data, formatted_curious_data
+    ):
+        """Test that correct applet ID is used."""
+        expected_applet_id = "test_applet_id"
+        with patch_curious_transfer_module(
+            fetch_return=sample_redcap_curious_data,
+            format_return=formatted_curious_data,
+            send_return=[],
         ) as mocks:
-            # Execute
-            transfer_module.main()
+            to_curious.main()
 
-            # Assert - check that fetch used pid247 token
-            fetch_call_args = mocks["fetch"].call_args[0]
-            assert fetch_call_args[0] == token_247
-
-            # Assert - push should use PID 744 token
-            assert mocks["push"].call_args[1]["token"] == token_744
-
-    def test_main_removes_duplicate_fields(self):
-        """Test that duplicate field values are properly deduplicated."""
-        old_value = "Old Value"
-        new_value = "New Value"
-
-        data = pd.DataFrame(
-            {
-                "record": ["001", "001", "001"],
-                "field_name": ["consent1", "consent1", "permission_collab"],
-                "value": [old_value, new_value, "2"],
-                "redcap_repeat_instrument": ["", "", ""],
-                "redcap_repeat_instance": [1, 2, 1],
-            }
-        )
-
-        # After deduplication, should have 2 unique fields
-        expected_unique_fields = len(data["field_name"].unique())
-
-        with patch_redcap_transfer_module(
-            fetch_return=data,
-            push_return=expected_unique_fields,
-            update_return=expected_unique_fields,
-        ) as mocks:
-            # Execute
-            transfer_module.main()
-
-            # Assert
-            call_df = mocks["push"].call_args[1]["df"]
-            renamed_field = Fields.rename.redcap247_to_redcap744["consent1"]
-            name_entries = call_df[call_df["field_name"] == renamed_field]
-
-            assert len(name_entries) == 1
-            # Should keep the most recent value (highest instance)
-            assert name_entries["value"].iloc[0] == new_value
+            assert mocks["send"].call_args[0][2] == expected_applet_id
 
 
 # ============================================================================
@@ -497,159 +548,57 @@ class TestMain:
 
 
 class TestIntegration:
-    """Integration tests for the complete workflow."""
+    """Integration tests for complete Curious transfer workflow."""
 
-    @patch("hbnmigration.from_redcap.to_redcap.redcap_api_push")
+    @patch("hbnmigration.from_redcap.to_curious.redcap_api_push")
+    @patch("hbnmigration.from_redcap.to_curious.new_curious_account")
     @patch("hbnmigration.from_redcap.from_redcap.fetch_api_data")
-    @patch("hbnmigration.from_redcap.to_redcap.redcap_variables")
+    @patch("hbnmigration.from_redcap.to_curious.curious_variables")
+    @patch("hbnmigration.from_redcap.to_curious.redcap_variables")
     @patch("hbnmigration.from_redcap.from_redcap.redcap_variables")
-    @patch("hbnmigration.from_redcap.to_redcap.Endpoints")
-    @patch("hbnmigration.from_redcap.from_redcap.Endpoints")
-    def test_full_workflow_two_records(
-        self,
-        mock_from_endpoints,
-        mock_to_endpoints,
-        mock_from_vars,
-        mock_to_vars,
-        mock_fetch_api,
-        mock_push,
-    ):
-        """Test complete workflow with two records."""
-        # Setup mocks
-        mock_from_vars.Tokens.pid247 = "token_247"
-        mock_to_vars.Tokens.pid247 = "token_247"
-        mock_to_vars.Tokens.pid744 = "token_744"
-        mock_from_vars.headers = {}
-        mock_to_vars.headers = {}
-        mock_from_endpoints.return_value.base_url = "https://redcap.test/api/"
-        mock_to_endpoints.return_value.base_url = "https://redcap.test/api/"
-
-        source_data = pd.DataFrame(
-            {
-                "record": ["001", "001", "002", "002"],
-                "field_name": [
-                    "consent1",
-                    "permission_collab",
-                    "consent1",
-                    "permission_collab",
-                ],
-                "value": [
-                    "Alec Holland",
-                    Values.PID247.permission_collab[
-                        "NO, you may not share my child's records."
-                    ],
-                    "Abby Arcane",
-                    Values.PID247.permission_collab[
-                        "YES, you may share my child's records."
-                    ],
-                ],
-                "redcap_repeat_instrument": ["", "", "", ""],
-                "redcap_repeat_instance": ["", "", "", ""],
-            }
-        )
-
-        num_records = count_records_in_eav(source_data)
-        total_rows = calculate_total_eav_rows(source_data)
-
-        mock_fetch_api.return_value = source_data
-        mock_push.return_value = num_records
-
-        # Execute
-        transfer_module.main()
-
-        # Assert
-        expected_api_calls = 2  # One to destination, one to update source
-        assert mock_push.call_count == expected_api_calls
-
-        # First call: Push to PID 744
-        first_call_df = mock_push.call_args_list[0][1]["df"]
-        assert len(first_call_df) == total_rows
-
-        # Second call: Update source PID 247
-        second_call_df = mock_push.call_args_list[1][1]["df"]
-        assert len(second_call_df) == num_records
-        assert all(
-            second_call_df["value"]
-            == Values.PID247.intake_ready[
-                "Participant information already sent to HBN - Intake Redcap project"
-            ]
-        )
-
-    @patch("hbnmigration.from_redcap.to_redcap.redcap_api_push")
-    @patch("hbnmigration.from_redcap.from_redcap.fetch_api_data")
-    @patch("hbnmigration.from_redcap.to_redcap.redcap_variables")
-    @patch("hbnmigration.from_redcap.from_redcap.redcap_variables")
-    @patch("hbnmigration.from_redcap.to_redcap.Endpoints")
-    @patch("hbnmigration.from_redcap.from_redcap.Endpoints")
     def test_full_workflow_parliament_of_trees(
         self,
-        mock_from_endpoints,
-        mock_to_endpoints,
-        mock_from_vars,
-        mock_to_vars,
+        mock_from_redcap_vars,
+        mock_to_redcap_vars,
+        mock_curious_vars,
         mock_fetch_api,
-        mock_push,
+        mock_new_account,
+        mock_redcap_push,
     ):
         """Test complete workflow with Parliament of Trees members."""
-        # Setup mocks
-        mock_from_vars.Tokens.pid247 = "token_247"
-        mock_to_vars.Tokens.pid247 = "token_247"
-        mock_to_vars.Tokens.pid744 = "token_744"
-        mock_from_vars.headers = {}
-        mock_to_vars.headers = {}
-        mock_from_endpoints.return_value.base_url = "https://redcap.test/api/"
-        mock_to_endpoints.return_value.base_url = "https://redcap.test/api/"
-
-        source_data = pd.DataFrame(
-            {
-                "record": ["ST001", "ST001", "AA001", "AA001", "TE001", "TE001"],
-                "field_name": [
-                    "consent1",
-                    "permission_collab",
-                    "consent1",
-                    "permission_collab",
-                    "consent1",
-                    "permission_collab",
-                ],
-                "value": [
-                    "Alec Holland",
-                    Values.PID247.permission_collab[
-                        "NO, you may not share my child's records."
-                    ],
-                    "Abby Arcane",
-                    Values.PID247.permission_collab[
-                        "YES, you may share my child's records."
-                    ],
-                    "Tefé Holland",
-                    Values.PID247.permission_collab[
-                        "NO, you may not share my child's records."
-                    ],
-                ],
-                "redcap_repeat_instrument": ["", "", "", "", "", ""],
-                "redcap_repeat_instance": ["", "", "", "", "", ""],
-            }
+        setup_curious_integration_mocks(mock_curious_vars, mock_to_redcap_vars)
+        mock_from_redcap_vars.Tokens.pid247 = "token_247"
+        mock_from_redcap_vars.headers = {}
+        mock_from_redcap_vars.Endpoints.return_value.base_url = (
+            "https://redcap.test/api/"
         )
 
-        num_records = count_records_in_eav(source_data)
+        source_data = create_redcap_eav_df(
+            records=["ST001", "ST001", "AA001", "AA001"],
+            field_names=[
+                "mrn",
+                "parent_involvement___1",
+                "mrn",
+                "parent_involvement___1",
+            ],
+            values=[
+                "12345",
+                "1",
+                "67890",
+                "1",
+            ],
+        )
+
         mock_fetch_api.return_value = source_data
-        mock_push.return_value = num_records
+        mock_new_account.return_value = "Success"
+        mock_redcap_push.return_value = 2
 
-        # Execute
-        transfer_module.main()
+        to_curious.main()
 
-        # Assert
-        first_call_df = mock_push.call_args_list[0][1]["df"]
-
-        # Verify all three Parliament members are present
-        assert len(first_call_df["record"].unique()) == num_records
-        assert "ST001" in first_call_df["record"].values
-        assert "AA001" in first_call_df["record"].values
-        assert "TE001" in first_call_df["record"].values
-
-        # Verify permission_collab values are decremented (2→1, 1→0)
-        expected_permissions = ["0", "1"]  # Sorted order
-        actual_permissions = get_unique_field_values(first_call_df, "permission_collab")
-        assert actual_permissions == expected_permissions
+        # Should create 4 accounts (2 parents + 2 children)
+        assert mock_new_account.call_count == 4
+        # Should update REDCap for 2 records
+        mock_redcap_push.assert_called_once()
 
 
 # ============================================================================
@@ -660,121 +609,70 @@ class TestIntegration:
 class TestEdgeCases:
     """Tests for edge cases and error conditions."""
 
-    def test_handles_non_numeric_permission_collab(self):
-        """Test handling of non-numeric permission_collab values."""
-        data = pd.DataFrame(
-            {
-                "record": ["001", "001"],
-                "field_name": ["permission_collab", "consent1"],
-                "value": ["invalid", "Test"],
-                "redcap_repeat_instrument": ["", ""],
-                "redcap_repeat_instance": ["", ""],
-            }
-        )
-        expected_rows = calculate_total_eav_rows(data)
+    def test_format_handles_empty_dataframe(self):
+        """Test that empty DataFrame is handled gracefully."""
+        empty_df = pd.DataFrame()
 
-        with patch_redcap_transfer_module(
-            fetch_return=data,
-            push_return=expected_rows,
-            update_return=expected_rows,
+        with pytest.raises((KeyError, ValueError)):
+            to_curious.format_redcap_data_for_curious(empty_df)
+
+    def test_send_to_curious_with_empty_dataframe(self, mock_curious_variables):
+        """Test sending empty DataFrame to Curious."""
+        with patch_curious_api_dependencies(new_account_return="Success") as mocks:
+            tokens = mock_curious_variables.Tokens(
+                mock_curious_variables.Endpoints(),
+                mock_curious_variables.Credentials.hbn_mindlogger,
+            )
+            # Create truly empty DataFrame - not using factory function
+            empty_df = pd.DataFrame(columns=["secretUserId", "accountType", "tag"])
+
+            failures = to_curious.send_to_curious(empty_df, tokens, "test_applet")
+
+            assert len(failures) == 0
+            # Should not have called the API since DataFrame is empty
+            mocks["new_account"].assert_not_called()
+
+    def test_update_redcap_with_no_successes(self):
+        """Test REDCap update when all records failed."""
+        redcap_data = create_redcap_eav_df(
+            records=["001"],
+            field_names=["mrn"],
+            values=["12345"],
+        )
+        curious_data = create_curious_participant_df(
+            secret_user_ids=["12345"],
+            tags=["child"],
+        )
+        failures = ["12345"]
+
+        with patch("hbnmigration.from_redcap.to_curious.redcap_api_push") as mock_push:
+            mock_push.return_value = 0
+            to_curious.update_redcap(redcap_data, curious_data, failures)
+
+            call_df = mock_push.call_args[1]["df"]
+            assert len(call_df) == 0
+
+    def test_send_continues_after_single_failure(self, mock_curious_variables):
+        """Test that send_to_curious continues after a single failure."""
+        with patch_curious_api_dependencies(
+            new_account_side_effect=[
+                "Success",
+                create_curious_api_failure(),
+                "Success",
+            ]
         ) as mocks:
-            transfer_module.main()
+            tokens = mock_curious_variables.Tokens(
+                mock_curious_variables.Endpoints(),
+                mock_curious_variables.Credentials.hbn_mindlogger,
+            )
 
-            call_df = mocks["push"].call_args_list[0][1]["df"]
-            perm_row = call_df[call_df["field_name"] == "permission_collab"]
+            df = create_curious_participant_df(
+                secret_user_ids=["00001", "00002", "00003"],
+                tags=["child", "child", "child"],
+            )
 
-            assert len(perm_row) > 0
-            # Non-numeric values become NaN after pd.to_numeric with errors='coerce'
-            assert pd.isna(perm_row["value"].iloc[0])
+            failures = to_curious.send_to_curious(df, tokens, "test_applet")
 
-    def test_handles_missing_required_columns(self):
-        """Test handling of data missing required columns."""
-        bad_data = pd.DataFrame(
-            {
-                "record": ["001"],
-                "value": ["test"],
-            }
-        )
-
-        with patch_redcap_transfer_module(fetch_return=bad_data):
-            with pytest.raises((KeyError, AttributeError)):
-                transfer_module.main()
-
-    def test_handles_empty_string_permission_collab(self):
-        """Test handling of empty string in permission_collab."""
-        data = pd.DataFrame(
-            {
-                "record": ["001", "001"],
-                "field_name": ["permission_collab", "consent1"],
-                "value": ["", "Test"],
-                "redcap_repeat_instrument": ["", ""],
-                "redcap_repeat_instance": ["", ""],
-            }
-        )
-        expected_rows = calculate_total_eav_rows(data)
-
-        with patch_redcap_transfer_module(
-            fetch_return=data,
-            push_return=expected_rows,
-            update_return=expected_rows,
-        ) as mocks:
-            transfer_module.main()
-
-            call_df = mocks["push"].call_args_list[0][1]["df"]
-            perm_row = call_df[call_df["field_name"] == "permission_collab"]
-
-            assert len(perm_row) > 0
-            # Empty strings become NaN after pd.to_numeric with errors='coerce'
-            assert pd.isna(perm_row["value"].iloc[0])
-
-    def test_handles_zero_permission_collab(self):
-        """Test that zero permission_collab becomes -1."""
-        original_value = "0"
-        expected_value = str(int(original_value) - 1)
-
-        data = pd.DataFrame(
-            {
-                "record": ["001", "001"],
-                "field_name": ["permission_collab", "consent1"],
-                "value": [original_value, "Test"],
-                "redcap_repeat_instrument": ["", ""],
-                "redcap_repeat_instance": ["", ""],
-            }
-        )
-        expected_rows = calculate_total_eav_rows(data)
-
-        with patch_redcap_transfer_module(
-            fetch_return=data,
-            push_return=expected_rows,
-            update_return=expected_rows,
-        ) as mocks:
-            transfer_module.main()
-
-            call_df = mocks["push"].call_args_list[0][1]["df"]
-            assert_permission_decremented(call_df, original_value, expected_value)
-
-    def test_handles_single_record(self):
-        """Test workflow with only one record."""
-        record_id = "001"
-
-        data = pd.DataFrame(
-            {
-                "record": [record_id],
-                "field_name": ["consent1"],
-                "value": ["Solo Swamp Thing"],
-                "redcap_repeat_instrument": [""],
-                "redcap_repeat_instance": [""],
-            }
-        )
-        expected_rows = calculate_total_eav_rows(data)
-
-        with patch_redcap_transfer_module(
-            fetch_return=data,
-            push_return=expected_rows,
-            update_return=expected_rows,
-        ) as mocks:
-            transfer_module.main()
-
-            first_call_df = mocks["push"].call_args_list[0][1]["df"]
-            assert len(first_call_df) == expected_rows
-            assert first_call_df["record"].iloc[0] == record_id
+            assert len(failures) == 1
+            assert failures[0] == "2"
+            assert mocks["new_account"].call_count == 3

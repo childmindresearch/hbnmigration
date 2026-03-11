@@ -119,6 +119,7 @@ class Fields:
             "language": "en",
             "parent_involvement": None,
         }
+        """Fields to import into Curious for child accounts."""
         parent: Final[dict[str, int | str | None]] = {
             "email": None,
             "nickname": None,
