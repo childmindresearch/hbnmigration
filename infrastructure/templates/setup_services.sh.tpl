@@ -93,7 +93,9 @@ chown -R "$CURRENT_USER":"${USER_GROUP}" /opt/app /var/log/app /opt/iceberg
 echo "Installing Python packages..."
 if [ -d "$PYTHON_JOBS_PATH" ] && [ -f "$PYTHON_JOBS_PATH/pyproject.toml" ]; then
     echo "Installing from: $PYTHON_JOBS_PATH"
-    uv pip install --python "${VENV_PATH}/bin/python" "$PYTHON_JOBS_PATH"
+    cd "$PYTHON_JOBS_PATH"
+    uv sync --python "${VENV_PATH}/bin/python"
+    cd -
 
     "${VENV_PATH}/bin/python" -c "import hbnmigration; print(f'✓ Installed hbnmigration v{hbnmigration.__version__}')" || {
         echo "❌ Failed to import hbnmigration"
