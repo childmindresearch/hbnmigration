@@ -3,6 +3,7 @@
 import argparse
 import asyncio
 from contextlib import asynccontextmanager
+import json
 import logging
 from typing import Any, AsyncIterator, cast, Optional
 
@@ -23,7 +24,6 @@ from ..utility_functions import (
 
 initialize_logging()
 logger = logging.getLogger(__name__)
-
 REDCAP_ENDPOINTS = redcap_variables.Endpoints()
 
 
@@ -96,34 +96,21 @@ def toggle_alerts(result: pd.DataFrame) -> pd.DataFrame:
     return pd.concat([result, summary], ignore_index=True)
 
 
-async def main(partial_redcap_landing: bool = False) -> None:
-    """Send Curious alerts to REDCap."""
-    tokens = _curious_authenticate()
-    endpoints = curious_variables.Endpoints(protocol="wss")
-    async with connect_to_websocket(tokens.access, endpoints.alerts) as websocket:
-        async for message in websocket:
-            logging.info(message)
+def process_alerts_for_redcap(
+    redcap_alerts: pd.DataFrame, partial_redcap_landing: bool = False
+) -> pd.DataFrame:
+    """
+    Process alerts and prepare them for REDCap push.
 
-
-def synchronous_main(partial_redcap_landing: bool = False) -> None:
-    """Send Curious alerts to REDCap."""
-    tokens = _curious_authenticate()
-    response = requests.get(
-        tokens.endpoints.alerts,
-        headers={
-            "Authorization": f"Bearer {tokens.access}",
-            **curious_variables.headers,
-        },
-    )
-    if response.status_code != requests.codes["okay"]:
-        response.raise_for_status()
-        return
-    results: list[CuriousAlert] = response.json()["result"]
-    redcap_alerts_list: list[pd.DataFrame] = []
-    for alert in results:
-        redcap_alerts_list.append(parse_alert(alert))
-    redcap_alerts = pd.concat(redcap_alerts_list)
+    This function:
+    1. Fetches relevant REDCap metadata and data
+    2. Maps MRNs to record IDs
+    3. Converts response values to REDCap indices
+    4. Toggles alert flags
+    """
     alert_fields = redcap_alerts["field_name"].unique()
+
+    # Fetch alerts instrument metadata
     alerts_instrument = fetch_api_data(
         REDCAP_ENDPOINTS.base_url,
         redcap_variables.headers,
@@ -143,27 +130,37 @@ def synchronous_main(partial_redcap_landing: bool = False) -> None:
             "returnFormat": "csv",
         },
     )
+
     if partial_redcap_landing:
         alert_fields = intersect1d(
             alert_fields, alerts_instrument["field_name"].unique()
         )
+
+    # Fetch existing REDCap data
     redcap_fields = fetch_data(
         redcap_variables.Tokens.pid625, str(FieldList(alert_fields))
     )
+
+    # Prepare data types
     redcap_alerts["record"] = (
         redcap_alerts["record"].str.replace(r"\D", "", regex=True).astype(int)
     )
     redcap_fields["record"] = redcap_fields["record"].astype(int)
+
+    # Create MRN to record ID lookup
     mrn_lookup = (
         redcap_fields[redcap_fields["field_name"] == "mrn"]
         .set_index("value")["record"]
         .to_dict()
     )
     record_events = redcap_fields.groupby("record")["redcap_event_name"].first()
+
+    # Filter and map results
     result = redcap_alerts.loc[redcap_alerts["field_name"] != "mrn"].copy()
     result = result[result["field_name"].isin(redcap_fields["field_name"])]
     result["redcap_event_name"] = result["record"].map(mrn_lookup).map(record_events)
-    # replace response values with REDCap option indices
+
+    # Replace response values with REDCap option indices
     choice_lookup_tuples = [
         lookup_tuple
         for lookup_tuple in [
@@ -178,9 +175,15 @@ def synchronous_main(partial_redcap_landing: bool = False) -> None:
     result["lookup_key"] = list(zip(result["field_name"], result["value"].str.lower()))
     result["value"] = result["lookup_key"].map(choice_lookup).fillna(result["value"])
     result = toggle_alerts(result.drop("lookup_key", axis=1))
-    # set record IDs to match REDCap
+
+    # Set record IDs to match REDCap
     result["record"] = result["record"].map(mrn_lookup)
-    # push to REDCap
+
+    return result
+
+
+def push_alerts_to_redcap(result: pd.DataFrame) -> None:
+    """Push processed alerts to REDCap."""
     try:
         redcap_api_push(
             result,
@@ -189,13 +192,82 @@ def synchronous_main(partial_redcap_landing: bool = False) -> None:
             redcap_variables.headers,
         )
         logger.info(
-            "%d rows successfully updated for alerts in PID 625.", result.shape[1]
+            "%d rows successfully updated for alerts in PID 625.", result.shape[0]
         )
     except Exception:
         logger.exception("Pushing alerts from Curious to REDCap failed.")
         raise
 
-    return
+
+async def main(partial_redcap_landing: bool = False) -> None:
+    """Send Curious alerts to REDCap (async version via websocket)."""
+    tokens = _curious_authenticate()
+    endpoints = curious_variables.Endpoints(protocol="wss")
+
+    async with connect_to_websocket(tokens.access, endpoints.alerts) as websocket:
+        async for message in websocket:
+            logging.info("Received alert: %s", message)
+
+            # Parse the websocket message
+            try:
+                alert: CuriousAlert = json.loads(message)
+
+                # Validate message type (if needed)
+                if alert.get("type") != "answer":
+                    logger.debug(
+                        "Skipping non-answer message type: %s", alert.get("type")
+                    )
+                    continue
+
+                # Parse the single alert into a DataFrame
+                redcap_alert = parse_alert(alert)
+
+                # Process and push to REDCap
+                result = process_alerts_for_redcap(redcap_alert, partial_redcap_landing)
+
+                if result.empty:
+                    logger.warning(
+                        "No valid data to push for alert ID: %s", alert.get("id")
+                    )
+                    continue
+
+                push_alerts_to_redcap(result)
+
+            except json.JSONDecodeError:
+                logger.exception("Failed to parse message as JSON: %s", message)
+            except KeyError:
+                logger.exception("Missing expected field in alert message")
+            except Exception:
+                logger.exception("Error processing alert message: %s", message)
+
+
+def synchronous_main(partial_redcap_landing: bool = False) -> None:
+    """Send Curious alerts to REDCap (synchronous version via REST API)."""
+    tokens = _curious_authenticate()
+    response = requests.get(
+        tokens.endpoints.alerts,
+        headers={
+            "Authorization": f"Bearer {tokens.access}",
+            **curious_variables.headers,
+        },
+    )
+
+    if response.status_code != requests.codes["okay"]:
+        response.raise_for_status()
+        return
+
+    results: list[CuriousAlert] = response.json()["result"]
+
+    # Parse alerts
+    redcap_alerts_list: list[pd.DataFrame] = []
+    for alert in results:
+        redcap_alerts_list.append(parse_alert(alert))
+
+    redcap_alerts = pd.concat(redcap_alerts_list)
+
+    # Process and push to REDCap
+    result = process_alerts_for_redcap(redcap_alerts, partial_redcap_landing)
+    push_alerts_to_redcap(result)
 
 
 def cli() -> None:
@@ -207,6 +279,7 @@ def cli() -> None:
     parser.set_defaults(partial=False, synchronous=False)
     namespace = _SynchronousArgs()
     args = parser.parse_args(namespace=namespace)
+
     if args.synchronous:
         synchronous_main(args.partial)
     else:
