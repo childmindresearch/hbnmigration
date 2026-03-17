@@ -11,6 +11,20 @@ import pytest
 import requests
 
 from hbnmigration.from_redcap.config import Values
+from hbnmigration.utility_functions.datatypes import CuriousAlert, CuriousEncryption
+
+# ============================================================================
+# Constants
+# ============================================================================
+
+DEFAULT_ENCRYPTION: CuriousEncryption = {
+    "base": "base_value",
+    "prime": "prime_value",
+    "accountId": "account_001",
+    "publicKey": "public_key_value",
+}
+
+DEFAULT_REDCAP_BASE_URL = "https://redcap.test/api/"
 
 # ============================================================================
 # File System Fixtures
@@ -72,7 +86,7 @@ def mock_ripple_response():
 # ============================================================================
 
 
-def create_participant_df(  # noqa: PLR0913
+def create_participant_df(
     global_ids: Optional[List[str]] = None,
     custom_ids: Optional[List[int]] = None,
     first_names: Optional[List[str]] = None,
@@ -83,37 +97,7 @@ def create_participant_df(  # noqa: PLR0913
     import_types: Optional[List[str]] = None,
     **kwargs,
 ) -> pd.DataFrame:
-    """
-    Create participant DataFrames with flexible defaults.
-
-    Parameters
-    ----------
-    global_ids
-        List of global IDs
-    custom_ids
-        List of custom IDs
-    first_names
-        List of first names
-    last_names
-        List of last names
-    consent_forms
-        List of consent form statuses
-    contact_types
-        List of contact types
-    contact_info
-        List of contact information
-    import_types
-        List of import types
-    **kwargs
-        Additional columns to add
-
-    Returns
-    -------
-    pd.DataFrame
-        Participant data
-
-    """
-    # Determine length from first provided list or default to 1
+    """Create participant DataFrames with flexible defaults."""
     length = len(global_ids or custom_ids or first_names or [1])
     data = {
         "globalId": global_ids or [f"CUSTOM{i:03d}" for i in range(1, length + 1)],
@@ -126,7 +110,6 @@ def create_participant_df(  # noqa: PLR0913
         or [f"custom{i}@test.com" for i in range(1, length + 1)],
         "importType": import_types or ["HBN - Main"] * length,
     }
-    # Add any additional columns
     data.update(kwargs)
     return pd.DataFrame(data)
 
@@ -137,30 +120,9 @@ def create_redcap_eav_df(
     values: Optional[List[str]] = None,
     repeat_instruments: Optional[List[str]] = None,
     repeat_instances: Optional[List[Any]] = None,
+    event_names: Optional[List[str]] = None,
 ) -> pd.DataFrame:
-    """
-    Create REDCap EAV format DataFrames with flexible defaults.
-
-    Parameters
-    ----------
-    records
-        List of record IDs
-    field_names
-        List of field names
-    values
-        List of values
-    repeat_instruments
-        List of repeat instrument names
-    repeat_instances
-        List of repeat instance numbers
-
-    Returns
-    -------
-    pd.DataFrame
-        REDCap EAV formatted data
-
-    """
-    # Handle empty case
+    """Create REDCap EAV format DataFrames with flexible defaults."""
     if not any([records, field_names, values]):
         return pd.DataFrame(
             {
@@ -172,52 +134,29 @@ def create_redcap_eav_df(
             }
         )
     length = len(records or field_names or values or [0])
-    return pd.DataFrame(
-        {
-            "record": records or [""] * length,
-            "field_name": field_names or [""] * length,
-            "value": values or [""] * length,
-            "redcap_repeat_instrument": repeat_instruments or [""] * length,
-            "redcap_repeat_instance": repeat_instances or [""] * length,
-        }
-    )
+    data = {
+        "record": records or [""] * length,
+        "field_name": field_names or [""] * length,
+        "value": values or [""] * length,
+        "redcap_repeat_instrument": repeat_instruments or [""] * length,
+        "redcap_repeat_instance": repeat_instances or [""] * length,
+    }
+    if event_names is not None:
+        data["redcap_event_name"] = event_names
+    return pd.DataFrame(data)
 
 
 def create_curious_participant_df(
     secret_user_ids: Optional[List[str]] = None,
-    tags: Optional[List[str]] = None,  # parent/child
+    tags: Optional[List[str]] = None,
     first_names: Optional[List[str]] = None,
     last_names: Optional[List[str]] = None,
     **kwargs,
 ) -> pd.DataFrame:
-    """
-    Create Curious participant DataFrames with flexible defaults.
-
-    Parameters
-    ----------
-    secret_user_ids
-        List of secret user IDs
-    tags
-        List of tags (parent/child)
-    first_names
-        List of first names
-    last_names
-        List of last names
-    **kwargs
-        Additional columns to add
-
-    Returns
-    -------
-    pd.DataFrame
-        Curious participant data
-
-    """
+    """Create Curious participant DataFrames with flexible defaults."""
     length = len(secret_user_ids or tags or first_names or [1])
     default_tags = tags or ["child"] * length
-
-    # Map tags to account types
     account_types_list = ["full" if t == "parent" else "limited" for t in default_tags]
-
     data = {
         "secretUserId": secret_user_ids or [f"{i:05d}" for i in range(1, length + 1)],
         "tag": default_tags,
@@ -228,9 +167,76 @@ def create_curious_participant_df(
         "role": ["respondent"] * length,
         "language": ["en"] * length,
     }
-
     data.update(kwargs)
     return pd.DataFrame(data)
+
+
+# ============================================================================
+# Alert Data Factories
+# ============================================================================
+
+
+def create_curious_alert(
+    alert_id: str,
+    secret_id: str,
+    activity_item_id: str,
+    message: str,
+    respondent_id: str,
+    subject_id: str,
+    account_id: str = "account_001",
+    **kwargs,
+) -> CuriousAlert:
+    """Create CuriousAlert test data."""
+    encryption = DEFAULT_ENCRYPTION.copy()
+    encryption["accountId"] = account_id
+    return {
+        "id": alert_id,
+        "isWatched": kwargs.get("isWatched", False),
+        "appletId": kwargs.get("appletId", "hbn_applet_id"),
+        "appletName": kwargs.get("appletName", "HBN Questionnaires"),
+        "version": kwargs.get("version", "1.0.0"),
+        "secretId": secret_id,
+        "activityId": kwargs.get("activityId", "baseline_activity"),
+        "activityItemId": activity_item_id,
+        "message": message,
+        "createdAt": kwargs.get("createdAt", "2024-01-01T00:00:00Z"),
+        "answerId": kwargs.get("answerId", f"answer_{alert_id}"),
+        "encryption": encryption,
+        "workspace": kwargs.get("workspace", "workspace_1"),
+        "respondentId": respondent_id,
+        "subjectId": subject_id,
+        "type": kwargs.get("type", "answer"),
+    }
+
+
+def create_alert_redcap_data(
+    record_id: str,
+    mrn: str,
+    alert_field: str = "alerts_parent_baseline_1",
+    alert_value: str = "0",
+    event: str = "baseline_arm_1",
+) -> pd.DataFrame:
+    """Create alert-related REDCap EAV data."""
+    return pd.DataFrame(
+        {
+            "record": [record_id, record_id],
+            "field_name": ["mrn", alert_field],
+            "value": [mrn, alert_value],
+            "redcap_event_name": [event, event],
+        }
+    )
+
+
+def create_alert_metadata(field_names: list[str], choices: list[str]) -> pd.DataFrame:
+    """Create alert metadata."""
+    field_types = ["text"] + ["radio"] * (len(field_names) - 1)
+    return pd.DataFrame(
+        {
+            "field_name": field_names,
+            "field_type": field_types,
+            "select_choices_or_calculations": choices,
+        }
+    )
 
 
 # ============================================================================
@@ -301,7 +307,7 @@ def parliament_of_trees_participants():
 
 @pytest.fixture
 def sample_ripple_data():
-    """Return Ripple data with multiple participants - Alec Holland & Abby Arcane."""
+    """Return Ripple data with multiple participants."""
     return create_participant_df(
         global_ids=["ST001", "AA001", "TE001", "WOO001"],
         custom_ids=[12345, 67890, 11111, 22222],
@@ -334,13 +340,8 @@ def anton_arcane_corrupted_data():
 
 @pytest.fixture
 def mock_redcap_existing_subjects():
-    """Mock existing REDCap subjects - Alec and Abby already in system."""
-    return pd.DataFrame(
-        {
-            "mrn": [12345, 67890],
-            "record_id": [1, 2],
-        }
-    )
+    """Mock existing REDCap subjects."""
+    return pd.DataFrame({"mrn": [12345, 67890], "record_id": [1, 2]})
 
 
 @pytest.fixture
@@ -349,7 +350,7 @@ def incoming_subjects_mixed():
     return pd.DataFrame(
         {
             "record_id": [999, 998, 997],
-            "mrn": [12345, 67890, 99001],  # First two exist, last is new
+            "mrn": [12345, 67890, 99001],
             "email_consent": [
                 "alec@swamp.com",
                 "abby@parliament.org",
@@ -382,14 +383,7 @@ def sample_redcap_data():
     """Sample REDCap data in EAV format from PID 247."""
     return create_redcap_eav_df(
         records=["001", "001", "001", "002", "002", "002"],
-        field_names=[
-            "intake_ready",
-            "participant_name",
-            "permission_collab",
-            "intake_ready",
-            "participant_name",
-            "permission_collab",
-        ],
+        field_names=["intake_ready", "participant_name", "permission_collab"] * 2,
         values=[
             Values.PID247.intake_ready["Ready to Send to Intake Redcap"],
             "Alec Holland",
@@ -415,12 +409,7 @@ def expected_transformed_data():
     return pd.DataFrame(
         {
             "record": ["001", "001", "002", "002"],
-            "field_name": [
-                "participant_full_name",
-                "permission_collab",
-                "participant_full_name",
-                "permission_collab",
-            ],
+            "field_name": ["participant_full_name", "permission_collab"] * 2,
             "value": [
                 "Alec Holland",
                 Values.PID744.permission_collab["No"],
@@ -438,9 +427,9 @@ def expected_transformed_data():
 
 @pytest.fixture
 def sample_redcap_curious_data():
-    """Sample REDCap data ready for Curious transfer with proper field mapping."""
+    """Sample REDCap data ready for Curious transfer."""
     return create_redcap_eav_df(
-        records=["001", "001", "001", "001", "001"],
+        records=["001"] * 5,
         field_names=[
             "mrn",
             "enrollment_complete",
@@ -448,13 +437,7 @@ def sample_redcap_curious_data():
             "consent_child_first_name",
             "parent_involvement___1",
         ],
-        values=[
-            "12345",
-            "1",
-            "Alec",
-            "Tefé",
-            "1",
-        ],
+        values=["12345", "1", "Alec", "Tefé", "1"],
     )
 
 
@@ -463,18 +446,8 @@ def parliament_curious_redcap_data():
     """Parliament of Trees REDCap data for Curious transfer."""
     return create_redcap_eav_df(
         records=["ST001", "ST001", "AA001", "AA001"],
-        field_names=[
-            "mrn",
-            "parent_involvement___1",
-            "mrn",
-            "parent_involvement___1",
-        ],
-        values=[
-            "12345",
-            "1",
-            "67890",
-            "1",
-        ],
+        field_names=["mrn", "parent_involvement___1"] * 2,
+        values=["12345", "1", "67890", "1"],
     )
 
 
@@ -484,7 +457,7 @@ def formatted_curious_data():
     return pd.DataFrame(
         {
             "secretUserId": ["00001", "00001_P"],
-            "accountType": ["limited", "full"],  # child=limited, parent=full
+            "accountType": ["limited", "full"],
             "firstName": ["Tefé", "Alec"],
             "lastName": ["Holland", "Holland"],
             "nickname": [None, None],
@@ -504,7 +477,7 @@ def multi_record_curious_data():
             "accountType": ["limited", "full", "limited", "full"],
             "firstName": ["Tefé", "Alec", "Constantine", "Abby"],
             "lastName": ["Holland", "Holland", "Arcane", "Arcane"],
-            "nickname": [None, None, None, None],
+            "nickname": [None] * 4,
             "role": ["respondent"] * 4,
             "tag": ["child", "parent", "child", "parent"],
             "language": ["en"] * 4,
@@ -513,8 +486,25 @@ def multi_record_curious_data():
 
 
 # ============================================================================
-# Curious/MindLogger Fixtures
+# Mock Configuration
 # ============================================================================
+
+
+def _create_mock_redcap_variables(
+    pid247="token_247",
+    pid625="token_625",
+    pid744="token_744",
+    pid757="token_757",
+    base_url=DEFAULT_REDCAP_BASE_URL,
+) -> Mock:
+    """Create a standardized mock redcap_variables object."""
+    mock_vars = Mock()
+    mock_vars.Tokens.pid247, mock_vars.Tokens.pid625 = pid247, pid625
+    mock_vars.Tokens.pid744, mock_vars.Tokens.pid757 = pid744, pid757
+    mock_vars.headers = {"Content-Type": "application/x-www-form-urlencoded"}
+    mock_vars.Endpoints = Mock()
+    mock_vars.Endpoints.return_value.base_url = base_url
+    return mock_vars
 
 
 @pytest.fixture
@@ -523,46 +513,29 @@ def mock_curious_variables():
     mock_vars = Mock()
     mock_vars.headers = {"Content-Type": "application/json"}
     mock_vars.applet_ids = {"Healthy Brain Network Questionnaires": "test_applet_id"}
-
-    # Mock Credentials
     mock_creds = Mock()
     mock_creds.hbn_mindlogger = Mock(username="test_user", password="test_pass")
     mock_vars.Credentials = mock_creds
-
-    # Mock Tokens
     mock_tokens = Mock()
     mock_tokens.access = "test_access_token"
     mock_tokens.endpoints = Mock()
     mock_tokens.endpoints.base_url = "https://curious.test/api/"
     mock_vars.Tokens = Mock(return_value=mock_tokens)
-
-    # Mock Endpoints
     mock_endpoints = Mock()
     mock_endpoints.base_url = "https://curious.test/api/"
     mock_vars.Endpoints = Mock(return_value=mock_endpoints)
-
     return mock_vars
 
 
 @pytest.fixture
 def mock_redcap_variables_curious():
     """Mock redcap_variables for Curious transfer."""
-    mock_vars = Mock()
-    mock_vars.Tokens.pid247 = "token_247"
-    mock_vars.headers = {"Content-Type": "application/x-www-form-urlencoded"}
-    mock_vars.Endpoints = Mock()
-    mock_vars.Endpoints.return_value.base_url = "https://redcap.test/api/"
-    return mock_vars
-
-
-# ============================================================================
-# Mock Configuration Fixtures
-# ============================================================================
+    return _create_mock_redcap_variables()
 
 
 @pytest.fixture
 def mock_ripple_variables():
-    """Mock ripple_variables configuration with common defaults."""
+    """Mock ripple_variables configuration."""
     mock_vars = Mock()
     mock_vars.study_ids = {
         "HBN - Main": "main_study_id",
@@ -576,12 +549,7 @@ def mock_ripple_variables():
 @pytest.fixture
 def mock_redcap_variables():
     """Mock redcap_variables configuration."""
-    mock_vars = Mock()
-    mock_vars.Tokens.pid757 = "dev_token"
-    mock_vars.Tokens.pid247 = "prod_token"
-    mock_vars.Tokens.pid744 = "token_744"
-    mock_vars.headers = {"Content-Type": "application/x-www-form-urlencoded"}
-    return mock_vars
+    return _create_mock_redcap_variables()
 
 
 @pytest.fixture
@@ -603,20 +571,14 @@ def mock_endpoints():
 
 @pytest.fixture
 def mock_all_ripple_deps(mock_ripple_variables, mock_endpoints):
-    """Set up all common Ripple dependencies with Endpoints."""
-    return {
-        "endpoints": mock_endpoints,
-        "variables": mock_ripple_variables,
-    }
+    """Set up all common Ripple dependencies."""
+    return {"endpoints": mock_endpoints, "variables": mock_ripple_variables}
 
 
 @pytest.fixture
 def mock_main_workflow_deps(mock_redcap_variables, temp_excel_file):
     """Set up dependencies for main workflow tests."""
-    return {
-        "vars": mock_redcap_variables,
-        "excel_file": temp_excel_file,
-    }
+    return {"vars": mock_redcap_variables, "excel_file": temp_excel_file}
 
 
 # ============================================================================
@@ -626,14 +588,13 @@ def mock_main_workflow_deps(mock_redcap_variables, temp_excel_file):
 
 @pytest.fixture
 def excel_file_with_data(temp_excel_file):
-    """Create Excel file with test data - Swamp Thing consent completed."""
-    test_df = pd.DataFrame(
+    """Create Excel file with test data."""
+    pd.DataFrame(
         {
             "globalId": ["ST001"],
             "cv.consent_form": ["consent_form_created_in_redcap"],
         }
-    )
-    test_df.to_excel(temp_excel_file, index=False)
+    ).to_excel(temp_excel_file, index=False)
     return temp_excel_file
 
 
@@ -688,7 +649,7 @@ def green_realm_config():
 
 @pytest.fixture
 def mock_parliament_object():
-    """Mock Parliament of Trees object for testing."""
+    """Mock Parliament of Trees object."""
     mock_parliament = Mock()
     mock_parliament.members = ["Alec Holland", "Ghost Orchid", "Yggdrasil"]
     mock_parliament.collective_consciousness = True
@@ -714,10 +675,7 @@ def patched_main_workflow():
         "vars": "hbnmigration.from_ripple.to_redcap.redcap_variables",
     }
     with ExitStack() as stack:
-        mocks = {
-            name: stack.enter_context(patch(path)) for name, path in patches.items()
-        }
-        yield mocks
+        yield {name: stack.enter_context(patch(path)) for name, path in patches.items()}
 
 
 # ============================================================================
@@ -727,30 +685,9 @@ def patched_main_workflow():
 
 @contextmanager
 def patch_redcap_transfer_module(
-    fetch_return=None,
-    push_return=None,
-    update_return=None,
+    fetch_return=None, push_return=None, update_return=None
 ):
-    """
-    Context manager for patching REDCap transfer module dependencies.
-
-    Uses real Fields configuration from config module.
-
-    Parameters
-    ----------
-    fetch_return
-        Return value for fetch_data
-    push_return
-        Return value for redcap_api_push
-    update_return
-        Return value for update_source
-
-    Yields
-    ------
-    dict
-        Dictionary of mocked objects
-
-    """
+    """Context manager for patching REDCap transfer module dependencies."""
     with ExitStack() as stack:
         mocks = {
             "fetch": stack.enter_context(
@@ -769,11 +706,10 @@ def patch_redcap_transfer_module(
                 patch("hbnmigration.from_redcap.to_redcap.Endpoints")
             ),
         }
-        # Set up basic configurations
         mocks["redcap_vars"].Tokens.pid744 = "token_744"
         mocks["redcap_vars"].Tokens.pid247 = "token_247"
         mocks["redcap_vars"].headers = {}
-        mocks["endpoints"].return_value.base_url = "https://redcap.test/api/"
+        mocks["endpoints"].return_value.base_url = DEFAULT_REDCAP_BASE_URL
         if fetch_return is not None:
             mocks["fetch"].return_value = fetch_return
         if push_return is not None:
@@ -785,30 +721,9 @@ def patch_redcap_transfer_module(
 
 @contextmanager
 def patch_redcap_fetch_dependencies(
-    fetch_api_return=None,
-    endpoints_config=None,
-    redcap_vars_config=None,
+    fetch_api_return=None, endpoints_config=None, redcap_vars_config=None
 ):
-    """
-    Context manager for patching fetch_data dependencies.
-
-    Uses real Fields configuration from config module.
-
-    Parameters
-    ----------
-    fetch_api_return
-        Return value for fetch_api_data
-    endpoints_config
-        Mock Endpoints configuration
-    redcap_vars_config
-        Mock redcap_variables configuration
-
-    Yields
-    ------
-    dict
-        Dictionary of mocked objects
-
-    """
+    """Context manager for patching fetch_data dependencies."""
     with ExitStack() as stack:
         mocks = {
             "fetch_api": stack.enter_context(
@@ -832,31 +747,9 @@ def patch_redcap_fetch_dependencies(
 
 @contextmanager
 def patch_curious_transfer_module(
-    fetch_return=None,
-    format_return=None,
-    send_return=None,
-    update_return=None,
+    fetch_return=None, format_return=None, send_return=None, update_return=None
 ):
-    """
-    Context manager for patching Curious transfer module dependencies.
-
-    Parameters
-    ----------
-    fetch_return
-        Return value for fetch_data
-    format_return
-        Return value for format_redcap_data_for_curious
-    send_return
-        Return value for send_to_curious (list of failures)
-    update_return
-        Return value for update_redcap
-
-    Yields
-    ------
-    dict
-        Dictionary of mocked objects
-
-    """
+    """Context manager for patching Curious transfer module dependencies."""
     with ExitStack() as stack:
         mocks = {
             "fetch": stack.enter_context(
@@ -880,17 +773,12 @@ def patch_curious_transfer_module(
                 patch("hbnmigration.from_redcap.to_curious.redcap_variables")
             ),
         }
-
-        # Set up basic configurations
         mocks["curious_vars"].applet_ids = {
             "Healthy Brain Network Questionnaires": "test_applet_id"
         }
         mocks["redcap_vars"].Tokens.pid247 = "token_247"
         mocks["redcap_vars"].headers = {}
-        mocks[
-            "redcap_vars"
-        ].Endpoints.return_value.base_url = "https://redcap.test/api/"
-
+        mocks["redcap_vars"].Endpoints.return_value.base_url = DEFAULT_REDCAP_BASE_URL
         if fetch_return is not None:
             mocks["fetch"].return_value = fetch_return
         if format_return is not None:
@@ -899,55 +787,306 @@ def patch_curious_transfer_module(
             mocks["send"].return_value = send_return
         if update_return is not None:
             mocks["update"].return_value = update_return
-
         yield mocks
 
 
 @contextmanager
 def patch_curious_api_dependencies(
-    new_account_return=None,
-    new_account_side_effect=None,
+    new_account_return=None, new_account_side_effect=None
 ):
-    """
-    Context manager for patching Curious API calls.
-
-    Parameters
-    ----------
-    new_account_return
-        Return value for new_curious_account
-    new_account_side_effect
-        Side effect for new_curious_account (for testing multiple calls)
-
-    Yields
-    ------
-    dict
-        Dictionary of mocked objects
-
-    """
+    """Context manager for patching Curious API calls."""
     with ExitStack() as stack:
         mocks = {
             "new_account": stack.enter_context(
                 patch("hbnmigration.from_redcap.to_curious.new_curious_account")
-            ),
+            )
         }
-
         if new_account_return is not None:
             mocks["new_account"].return_value = new_account_return
         if new_account_side_effect is not None:
             mocks["new_account"].side_effect = new_account_side_effect
-
         yield mocks
 
 
 # ============================================================================
-# Helper Functions - Assertions
+# Alert Testing Fixtures
 # ============================================================================
 
 
+@pytest.fixture
+def sample_curious_alert() -> CuriousAlert:
+    """Sample alert from Curious websocket/API."""
+    return create_curious_alert(
+        "alert_001",
+        "00001_P",
+        "item_123",
+        "Does the child have difficulty concentrating?",
+        "respondent_12345",
+        "subject_001",
+        answerId="answer_456",
+    )
+
+
+@pytest.fixture
+def multiple_curious_alerts() -> list[CuriousAlert]:
+    """Multiple alerts from different respondents and instruments."""
+    return [
+        create_curious_alert(
+            "alert_001",
+            "00001_P",
+            "alerts_parent_baseline_1",
+            "Parent baseline alert 1",
+            "respondent_00001_P",
+            "subject_001",
+            activityId="parent_baseline",
+        ),
+        create_curious_alert(
+            "alert_002",
+            "00001",
+            "alerts_child_baseline_1",
+            "Child baseline alert 1",
+            "respondent_00001",
+            "subject_001",
+            activityId="child_baseline",
+            createdAt="2024-01-01T00:05:00Z",
+            answerId="answer_002",
+        ),
+        create_curious_alert(
+            "alert_003",
+            "00002_P",
+            "alerts_parent_followup_1",
+            "Parent followup alert 1",
+            "respondent_00002_P",
+            "subject_002",
+            account_id="account_002",
+            activityId="parent_followup",
+            createdAt="2024-01-01T00:10:00Z",
+            answerId="answer_003",
+        ),
+    ]
+
+
+@pytest.fixture
+def redcap_alert_df() -> pd.DataFrame:
+    """Alerts parsed into REDCap format (before processing)."""
+    return pd.DataFrame(
+        {
+            "record": ["12345", "12345", "67890"],
+            "field_name": [
+                "alerts_parent_baseline_1",
+                "alerts_child_baseline_2",
+                "alerts_parent_followup_1",
+            ],
+            "value": ["Yes", "Sometimes", "No"],
+        }
+    )
+
+
+@pytest.fixture
+def redcap_alerts_metadata() -> pd.DataFrame:
+    """REDCap metadata for alerts instrument."""
+    return create_alert_metadata(
+        [
+            "mrn",
+            "alerts_parent_baseline_1",
+            "alerts_child_baseline_2",
+            "alerts_parent_followup_1",
+            "parent_baseline_alerts",
+            "child_baseline_alerts",
+            "parent_followup_alerts",
+        ],
+        [
+            "",
+            "0, No | 1, Yes | 2, Sometimes",
+            "0, No | 1, Yes | 2, Sometimes",
+            "0, No | 1, Yes",
+            "0, No | 1, Yes",
+            "0, No | 1, Yes",
+            "0, No | 1, Yes",
+        ],
+    )
+
+
+@pytest.fixture
+def redcap_existing_alert_data() -> pd.DataFrame:
+    """Existing REDCap data in EAV format."""
+    return create_redcap_eav_df(
+        records=["001", "001", "002", "002"],
+        field_names=[
+            "mrn",
+            "alerts_parent_baseline_1",
+            "mrn",
+            "alerts_parent_followup_1",
+        ],
+        values=["12345", "0", "67890", ""],
+        event_names=[
+            "baseline_arm_1",
+            "baseline_arm_1",
+            "followup_arm_1",
+            "followup_arm_1",
+        ],
+    )
+
+
+@pytest.fixture
+def processed_alerts_for_push() -> pd.DataFrame:
+    """Alerts ready for REDCap push."""
+    return create_redcap_eav_df(
+        records=["001", "001", "001", "002", "002"],
+        field_names=[
+            "alerts_parent_baseline_1",
+            "alerts_child_baseline_2",
+            "parent_baseline_alerts",
+            "alerts_parent_followup_1",
+            "parent_followup_alerts",
+        ],
+        values=["1", "2", "yes", "0", "yes"],
+        event_names=[
+            "baseline_arm_1",
+            "baseline_arm_1",
+            "baseline_arm_1",
+            "followup_arm_1",
+            "followup_arm_1",
+        ],
+    )
+
+
+@pytest.fixture
+def kevin_alert() -> CuriousAlert:
+    """Alert from Kevin - urgent situation."""
+    return create_curious_alert(
+        "kevin_alert_001",
+        "11111_P",
+        "alerts_parent_baseline_5",
+        "Urgent: Child showing concerning behavior",
+        "respondent_11111_P",
+        "subject_005",
+        account_id="account_005",
+        activityId="parent_baseline",
+        createdAt="2024-01-01T12:00:00Z",
+        answerId="answer_urgent",
+    )
+
+
+@pytest.fixture
+def kevin_redcap_data() -> pd.DataFrame:
+    """Kevin's existing REDCap data."""
+    return create_alert_redcap_data("005", "11111", "alerts_parent_baseline_5", "")
+
+
+@pytest.fixture
+def kevin_metadata() -> pd.DataFrame:
+    """Kevin's alert metadata with urgency levels."""
+    return create_alert_metadata(
+        ["mrn", "alerts_parent_baseline_5", "parent_baseline_alerts"],
+        ["", "0, Normal | 1, Concerning | 2, Urgent", "0, No | 1, Yes"],
+    )
+
+
+@pytest.fixture
+def sample_curious_alert_response() -> dict[str, Any]:
+    """Mock Curious API response with alerts."""
+    return {
+        "result": [
+            create_curious_alert(
+                "alert_001",
+                "00001_P",
+                "alerts_parent_baseline_1",
+                "Parent baseline alert",
+                "respondent_00001_P",
+                "subject_001",
+                activityId="parent_baseline",
+                answerId="answer_001",
+            )
+        ]
+    }
+
+
+@pytest.fixture
+def mock_alerts_dependencies():
+    """Mock all external dependencies for alerts processing."""
+    with (
+        patch(
+            "hbnmigration.from_curious.alerts_to_redcap.fetch_api_data"
+        ) as mock_fetch_api,
+        patch("hbnmigration.from_curious.alerts_to_redcap.fetch_data") as mock_fetch,
+        patch(
+            "hbnmigration.from_curious.alerts_to_redcap.redcap_api_push"
+        ) as mock_push,
+        patch(
+            "hbnmigration.from_curious.alerts_to_redcap.redcap_variables"
+        ) as mock_vars,
+        patch(
+            "hbnmigration.from_curious.alerts_to_redcap._fetch_alerts_metadata"
+        ) as mock_fetch_metadata,
+        patch(
+            "hbnmigration.from_curious.alerts_to_redcap._create_choice_lookup"
+        ) as mock_choice_lookup,
+    ):
+        # Configure mocks
+        mock_vars.Tokens.pid625 = "token_625"
+        mock_vars.headers = {}
+        mock_vars.Endpoints.return_value.base_url = DEFAULT_REDCAP_BASE_URL
+
+        # Set up default returns for helpers
+        mock_choice_lookup.return_value = {}
+
+        yield {
+            "fetch_api": mock_fetch_api,
+            "fetch": mock_fetch,
+            "push": mock_push,
+            "vars": mock_vars,
+            "fetch_metadata": mock_fetch_metadata,
+            "choice_lookup": mock_choice_lookup,
+        }
+
+
+# ============================================================================
+# Helper Functions
+# ============================================================================
+
+
+def setup_curious_integration_mocks(
+    curious_vars_mock: Mock, redcap_vars_mock: Mock
+) -> None:
+    """Set up common mock configurations for integration tests."""
+    redcap_vars_mock.Tokens.pid247 = "token_247"
+    redcap_vars_mock.headers = {}
+    redcap_vars_mock.Endpoints.return_value.base_url = DEFAULT_REDCAP_BASE_URL
+    curious_vars_mock.applet_ids = {
+        "Healthy Brain Network Questionnaires": "test_applet"
+    }
+    curious_tokens = Mock()
+    curious_tokens.access, curious_tokens.endpoints.base_url = (
+        "test_token",
+        "https://curious.test/",
+    )
+    curious_vars_mock.Tokens.return_value = curious_tokens
+    curious_vars_mock.headers = {}
+
+
+def create_curious_api_failure(message: str = "API Error"):
+    """Create a RequestException for testing."""
+    return requests.exceptions.RequestException(message)
+
+
+@contextmanager
+def create_mock_module_in_sys(
+    module_path: str, attributes: Optional[Dict[str, Any]] = None
+):
+    """Return context manager to temporarily add mock module to sys.modules."""
+    mock_mod = Mock()
+    if attributes:
+        for key, value in attributes.items():
+            setattr(mock_mod, key, value)
+    with patch.dict("sys.modules", {module_path: mock_mod}):
+        yield mock_mod
+
+
+# Assertion helpers
 def assert_valid_redcap_columns(result_df: pd.DataFrame) -> None:
     """Assert DataFrame has valid REDCap columns."""
-    assert "record_id" in result_df.columns
-    assert "mrn" in result_df.columns
+    assert "record_id" in result_df.columns and "mrn" in result_df.columns
     assert result_df["record_id"].iloc[0] is not None
 
 
@@ -979,45 +1118,31 @@ def assert_is_callable_result(result: Any) -> None:
 
 def assert_has_name_attribute(result: Any, expected_name: str) -> None:
     """Assert result has __name__ attribute with expected value."""
-    assert hasattr(result, "__name__")
-    assert result.__name__ == expected_name
+    assert hasattr(result, "__name__") and result.__name__ == expected_name
 
 
 def assert_redcap_eav_structure(df: pd.DataFrame) -> None:
     """Assert DataFrame has valid REDCap EAV structure."""
-    required_columns = ["record", "field_name", "value"]
-    for col in required_columns:
+    for col in ["record", "field_name", "value"]:
         assert col in df.columns, f"Missing required column: {col}"
 
 
 def assert_field_renamed(df: pd.DataFrame, old_name: str, new_name: str) -> None:
     """Assert field was renamed correctly."""
-    assert new_name in df["field_name"].values, (
-        f"Field '{new_name}' not found. Available fields: {df['field_name'].unique()}"
-    )
-    assert old_name not in df["field_name"].values, (
-        f"Old field name '{old_name}' still present in DataFrame"
+    assert (
+        new_name in df["field_name"].values and old_name not in df["field_name"].values
     )
 
 
 def assert_permission_decremented(
-    df: pd.DataFrame,
-    original_value: str,
-    expected_value: str,
+    df: pd.DataFrame, original_value: str, expected_value: str
 ) -> None:
     """Assert permission_collab was decremented correctly."""
     perm_row = df[df["field_name"] == "permission_collab"]
-    assert len(perm_row) > 0, "No permission_collab field found in DataFrame"
-    actual_value = str(perm_row["value"].iloc[0])
-    expected_normalized = (
-        expected_value.rstrip(".0") if "." in expected_value else expected_value
-    )
-    actual_normalized = (
-        actual_value.rstrip(".0") if "." in actual_value else actual_value
-    )
-    assert actual_normalized == expected_normalized, (
-        f"Expected permission_collab value '{expected_value}', got '{actual_value}'"
-    )
+    assert len(perm_row) > 0
+    actual = str(perm_row["value"].iloc[0]).rstrip(".0")
+    expected = expected_value.rstrip(".0")
+    assert actual == expected
 
 
 def count_records_in_eav(df: pd.DataFrame) -> int:
@@ -1031,7 +1156,7 @@ def count_fields_per_record(df: pd.DataFrame) -> int:
 
 
 def calculate_total_eav_rows(df: pd.DataFrame) -> int:
-    """Calculate total rows in EAV format (records × fields)."""  # noqa: RUF002
+    """Calculate total rows in EAV format."""
     return count_records_in_eav(df) * count_fields_per_record(df)
 
 
@@ -1045,27 +1170,19 @@ def get_unique_field_values(df: pd.DataFrame, field_name: str) -> list:
     return sorted(df[df["field_name"] == field_name]["value"].unique())
 
 
-# ============================================================================
-# Helper Functions - Curious Data Assertions
-# ============================================================================
-
-
+# Curious assertions
 def assert_valid_curious_format(df: pd.DataFrame) -> None:
     """Assert DataFrame has valid Curious format."""
-    required_columns = ["secretUserId", "accountType"]
-    for col in required_columns:
-        assert col in df.columns, f"Missing required column: {col}"
+    for col in ["secretUserId", "accountType"]:
+        assert col in df.columns
 
 
 def assert_secret_user_id_format(df: pd.DataFrame, expected_length: int = 5) -> None:
     """Assert secretUserId is properly formatted."""
     for user_id in df["secretUserId"]:
         base_id = user_id.rstrip("_P")
-        assert len(base_id) == expected_length, (
-            f"secretUserId '{base_id}' should be {expected_length} characters"
-        )
-        assert base_id.isdigit() or base_id.isalnum(), (
-            f"secretUserId '{base_id}' should be numeric or alphanumeric"
+        assert len(base_id) == expected_length and (
+            base_id.isdigit() or base_id.isalnum()
         )
 
 
@@ -1073,36 +1190,28 @@ def assert_parent_suffix(df: pd.DataFrame) -> None:
     """Assert parent records have _P suffix."""
     parent_rows = df[df["tag"] == "parent"]
     if len(parent_rows) > 0:
-        assert all(parent_rows["secretUserId"].str.endswith("_P")), (
-            "All parent records should have _P suffix"
-        )
+        assert all(parent_rows["secretUserId"].str.endswith("_P"))
 
 
 def assert_no_parent_suffix(df: pd.DataFrame) -> None:
     """Assert child records do not have _P suffix."""
     child_rows = df[df["tag"] == "child"]
     if len(child_rows) > 0:
-        assert all(~child_rows["secretUserId"].str.endswith("_P")), (
-            "Child records should not have _P suffix"
-        )
+        assert all(~child_rows["secretUserId"].str.endswith("_P"))
 
 
 def assert_parent_account_type(df: pd.DataFrame) -> None:
     """Assert parent records have 'full' account type."""
     parent_rows = df[df["tag"] == "parent"]
     if len(parent_rows) > 0:
-        assert all(parent_rows["accountType"] == "full"), (
-            "All parent records should have accountType='full'"
-        )
+        assert all(parent_rows["accountType"] == "full")
 
 
 def assert_child_account_type(df: pd.DataFrame) -> None:
     """Assert child records have 'limited' account type."""
     child_rows = df[df["tag"] == "child"]
     if len(child_rows) > 0:
-        assert all(child_rows["accountType"] == "limited"), (
-            "All child records should have accountType='limited'"
-        )
+        assert all(child_rows["accountType"] == "limited")
 
 
 def get_curious_records_by_type(df: pd.DataFrame, account_type: str) -> pd.DataFrame:
@@ -1116,7 +1225,7 @@ def get_curious_records_by_tag(df: pd.DataFrame, tag: str) -> pd.DataFrame:
 
 
 def count_curious_accounts(df: pd.DataFrame) -> dict[str, int]:
-    """Count accounts by tag (parent/child) not accountType."""
+    """Count accounts by tag (parent/child)."""
     return {
         "parent": len(df[df["tag"] == "parent"]),
         "child": len(df[df["tag"] == "child"]),
@@ -1128,72 +1237,48 @@ def assert_no_none_in_records(records: list[dict]) -> None:
     """Assert that no None values exist in record dictionaries."""
     for record in records:
         for key, value in record.items():
-            assert value is not None, f"Field '{key}' should not be None in record"
+            assert value is not None
 
 
 def assert_enrollment_complete_updated(df: pd.DataFrame, expected_value: str) -> None:
     """Assert enrollment_complete field has expected value."""
     enrollment_rows = df[df["field_name"] == "enrollment_complete"]
-    assert len(enrollment_rows) > 0, "No enrollment_complete field found"
-    assert all(enrollment_rows["value"] == expected_value), (
-        f"All enrollment_complete values should be '{expected_value}'"
-    )
+    assert len(enrollment_rows) > 0 and all(enrollment_rows["value"] == expected_value)
 
 
-# ============================================================================
-# Helper Functions - Mock Setup
-# ============================================================================
+# Alert assertions
+def assert_alert_summary_toggled(df: pd.DataFrame, instrument: str) -> None:
+    """Assert that alert summary flag is properly toggled."""
+    summary_field = f"{instrument}_alerts"
+    assert summary_field in df["field_name"].values
+    assert all(df[df["field_name"] == summary_field]["value"] == "yes")
 
 
-def setup_curious_integration_mocks(
-    curious_vars_mock: Mock,
-    redcap_vars_mock: Mock,
+def assert_response_mapped_to_index(
+    df: pd.DataFrame, field: str, response: str, expected_index: int
 ) -> None:
-    """Set up common mock configurations for integration tests."""
-    # REDCap configuration
-    redcap_vars_mock.Tokens.pid247 = "token_247"
-    redcap_vars_mock.headers = {}
-    redcap_vars_mock.Endpoints.return_value.base_url = "https://redcap.test/api/"
-
-    # Curious configuration
-    curious_vars_mock.applet_ids = {
-        "Healthy Brain Network Questionnaires": "test_applet"
-    }
-    curious_tokens = Mock()
-    curious_tokens.access = "test_token"
-    curious_tokens.endpoints.base_url = "https://curious.test/"
-    curious_vars_mock.Tokens.return_value = curious_tokens
-    curious_vars_mock.headers = {}
+    """Assert that response value was mapped to correct index."""
+    rows = df[df["field_name"] == field]
+    assert len(rows) > 0 and str(expected_index) in rows["value"].values
 
 
-def create_curious_api_failure(message: str = "API Error"):
-    """Create a RequestException for testing."""
-    return requests.exceptions.RequestException(message)
+def assert_alert_has_event_name(df: pd.DataFrame) -> None:
+    """Assert that all alert rows have redcap_event_name."""
+    assert "redcap_event_name" in df.columns and all(df["redcap_event_name"].notna())
 
 
-# ============================================================================
-# Module Mocking
-# ============================================================================
+def assert_mrn_mapped_to_record(
+    df: pd.DataFrame, mrn: str, expected_record: str
+) -> None:
+    """Assert that MRN was correctly mapped to record ID."""
+    assert expected_record in df["record"].values and mrn not in df["record"].values
 
 
-@contextmanager
-def create_mock_module_in_sys(
-    module_path: str, attributes: Optional[Dict[str, Any]] = None
-):
-    """
-    Return context manager to temporarily add mock module to sys.modules.
+def count_alert_summary_rows(df: pd.DataFrame) -> int:
+    """Count instrument-level alert summary rows."""
+    return len(df[df["field_name"].str.endswith("_alerts")])
 
-    Parameters
-    ----------
-    module_path
-        String path like 'parent.child.module'
-    attributes
-        Dict of attributes to add to module
 
-    """
-    mock_mod = Mock()
-    if attributes:
-        for key, value in attributes.items():
-            setattr(mock_mod, key, value)
-    with patch.dict("sys.modules", {module_path: mock_mod}):
-        yield mock_mod
+def get_alert_values_by_instrument(df: pd.DataFrame, instrument: str) -> pd.DataFrame:
+    """Get all alert values for a specific instrument."""
+    return df[df["field_name"].str.match(f"alerts_{instrument}_.*")]
