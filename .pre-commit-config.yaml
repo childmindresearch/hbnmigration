@@ -24,12 +24,16 @@ repos:
   rev: v1.105.0
   hooks:
     - id: terraform_fmt
+      files: ^infrastructure/
     - id: terraform_tflint
       args:
       - --init
       - --config=__GIT_WORKING_DIR__/.tflint.hcl
+      files: ^infrastructure/
     - id: terraform_validate
+      files: ^infrastructure/
     - id: terraform_checkov
+      files: ^infrastructure/
 - repo: https://github.com/DavidAnson/markdownlint-cli2
   rev: v0.21.0
   hooks:

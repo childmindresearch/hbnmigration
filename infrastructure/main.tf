@@ -1,6 +1,5 @@
-# main.tf
 terraform {
-  required_version = ">= 1.0"
+  required_version = ">= 1.5.0"
   required_providers {
     local = {
       source  = "hashicorp/local"
@@ -10,190 +9,156 @@ terraform {
       source  = "hashicorp/null"
       version = "~> 3.2"
     }
-    external = {
-      source  = "hashicorp/external"
-      version = "~> 2.3"
-    }
+  }
+
+  # Use local backend with built-in file locking
+  backend "local" {
+    path = "/opt/hbnmigration/terraform/terraform.tfstate"
   }
 }
 
-data "external" "current_user" {
-  program = ["bash", "-c", <<-EOF
-    echo '{"user":"'$${SUDO_USER:-$(whoami)}'"}'
-  EOF
-  ]
-}
-
-locals {
-  current_user = data.external.current_user.result.user
-  instance_id  = var.instance_id
-}
-
-# Generate setup script from template
-locals {
-  setup_script_content = templatefile("${path.module}/templates/setup_services.sh.tpl", {
-    AWS_REGION    = var.aws_region
-    ENVIRONMENT   = var.environment
-    WEBSOCKET_URL = var.websocket_url
-    VENV_PATH     = var.venv_path
-    INSTANCE_NAME = var.instance_name
-    USER          = local.current_user
-    USER_GROUP    = var.user_group
-  })
-}
-
-# Write generated script to disk
-resource "local_file" "setup_script" {
-  content         = local.setup_script_content
-  filename        = "${path.module}/generated_setup.sh"
-  file_permission = "0755"
-}
-
-# Execute the generated script
-resource "null_resource" "setup_services" {
+# Create user and group if they don't exist
+resource "null_resource" "ensure_user_group" {
   triggers = {
-    script_hash = sha256(local.setup_script_content)
+    user_group = var.user_group
   }
 
   provisioner "local-exec" {
-    command = "sudo -E bash ${local_file.setup_script.filename}"
+    command     = <<-EOT
+      #!/bin/bash
+      set -e
+
+      USER="${var.user_group}"
+
+      # Check if user exists
+      if ! id "$USER" &>/dev/null; then
+        echo "Creating user: $USER"
+        sudo useradd --system --create-home --shell /bin/bash "$USER"
+        echo "✓ User $USER created"
+      else
+        echo "✓ User $USER already exists"
+      fi
+
+      # Check if group exists (in case user:group format is used)
+      if [[ "$USER" == *":"* ]]; then
+        GROUP="$${USER#*:}"
+        USER="$${USER%:*}"
+
+        if ! getent group "$GROUP" &>/dev/null; then
+          echo "Creating group: $GROUP"
+          sudo groupadd --system "$GROUP"
+          echo "✓ Group $GROUP created"
+        else
+          echo "✓ Group $GROUP already exists"
+        fi
+
+        # Add user to group
+        if ! id -nG "$USER" | grep -qw "$GROUP"; then
+          echo "Adding user $USER to group $GROUP"
+          sudo usermod -a -G "$GROUP" "$USER"
+          echo "✓ User $USER added to group $GROUP"
+        else
+          echo "✓ User $USER is already in group $GROUP"
+        fi
+      fi
+
+      # Verify user exists
+      if id "$USER" &>/dev/null; then
+        echo "✓ User verification successful"
+        id "$USER"
+      else
+        echo "ERROR: User $USER does not exist after creation attempt"
+        exit 1
+      fi
+    EOT
+    interpreter = ["bash", "-c"]
   }
-
-  depends_on = [
-    local_file.setup_script
-  ]
 }
 
-# ============================================================================
-# Sync Services (Ripple + REDCap)
-# ============================================================================
-
-# Generate ripple-sync service file
+# Generate systemd service files from templates
 resource "local_file" "ripple_sync_service" {
-  content = templatefile("${path.module}/templates/ripple-sync.service.tpl", {
-    USER        = local.current_user
-    USER_GROUP  = var.user_group
-    VENV_PATH   = var.venv_path
-    ENVIRONMENT = var.environment
+  content = templatefile("${path.module}/services/ripple-sync.service.tpl", {
+    user_group    = var.user_group
+    project_root  = var.project_root
+    venv_path     = local.venv_full_path
+    log_directory = local.log_full_path
   })
-  filename        = "${path.module}/generated_ripple-sync.service"
-  file_permission = "0644"
+  filename = "${path.module}/.generated/ripple-sync.service"
+
+  depends_on = [null_resource.ensure_user_group]
 }
 
-# Generate redcap-sync service file
 resource "local_file" "redcap_sync_service" {
-  content = templatefile("${path.module}/templates/redcap-sync.service.tpl", {
-    USER        = local.current_user
-    USER_GROUP  = var.user_group
-    VENV_PATH   = var.venv_path
-    ENVIRONMENT = var.environment
+  content = templatefile("${path.module}/services/redcap-sync.service.tpl", {
+    user_group    = var.user_group
+    project_root  = var.project_root
+    venv_path     = local.venv_full_path
+    log_directory = local.log_full_path
   })
-  filename        = "${path.module}/generated_redcap-sync.service"
-  file_permission = "0644"
+  filename = "${path.module}/.generated/redcap-sync.service"
+
+  depends_on = [null_resource.ensure_user_group]
 }
 
-# Generate redcap-to-curious service file
 resource "local_file" "redcap_to_curious_service" {
-  content = templatefile("${path.module}/templates/redcap-to-curious.service.tpl", {
-    USER        = local.current_user
-    USER_GROUP  = var.user_group
-    VENV_PATH   = var.venv_path
-    ENVIRONMENT = var.environment
+  content = templatefile("${path.module}/services/redcap-to-curious.service.tpl", {
+    user_group    = var.user_group
+    project_root  = var.project_root
+    venv_path     = local.venv_full_path
+    log_directory = local.log_full_path
   })
-  filename        = "${path.module}/generated_redcap-to-curious.service"
-  file_permission = "0644"
+  filename = "${path.module}/.generated/redcap-to-curious.service"
+
+  depends_on = [null_resource.ensure_user_group]
 }
 
-# Generate combined systemd timer file
-resource "local_file" "sync_timer" {
-  filename = "./generated_sync-services.timer"
-  content  = <<-EOT
-    [Unit]
-    Description=Ripple and REDCap Sync Timer
+resource "local_file" "curious_alerts_websocket_service" {
+  content = templatefile("${path.module}/services/curious-alerts-websocket.service.tpl", {
+    user_group    = var.user_group
+    project_root  = var.project_root
+    venv_path     = local.venv_full_path
+    log_directory = local.log_full_path
+  })
+  filename = "${path.module}/.generated/curious-alerts-websocket.service"
 
-    [Timer]
-    # Run 2 minutes after boot
-    OnBootSec=2min
-    # Run every $ripple_sync_interval_minutes after the last activation
-    OnUnitActiveSec=${var.ripple_sync_interval_minutes}min
-    # Keep timer accurate to within 1 second
-    AccuracySec=1s
-    # If the system was off when timer should have triggered, run it on next boot
-    Persistent=true
-
-    [Install]
-    WantedBy=timers.target
-  EOT
-
-  file_permission      = "0644"
-  directory_permission = "0777"
+  depends_on = [null_resource.ensure_user_group]
 }
 
-resource "local_file" "sync_services_wrapper" {
-  filename = "./generated_sync-services.service"
-  content  = <<-EOT
-    [Unit]
-    Description=Run Ripple, REDCap and Curious Sync Services
-    After=network.target
+resource "local_file" "hbn_sync_timer" {
+  content = templatefile("${path.module}/services/hbn-sync.timer.tpl", {
+    sync_interval_minutes = var.sync_interval_minutes
+  })
+  filename = "${path.module}/.generated/hbn-sync.timer"
 
-    [Service]
-    Type=oneshot
-    ExecStart=/bin/systemctl start ripple-sync.service
-    ExecStart=/bin/systemctl start redcap-sync.service
-    ExecStart=/bin/systemctl start redcap-to-curious.service
-
-    [Install]
-    WantedBy=multi-user.target
-  EOT
-
-  file_permission      = "0644"
-  directory_permission = "0777"
+  depends_on = [null_resource.ensure_user_group]
 }
 
-# Install and enable systemd services and timer
-resource "null_resource" "install_sync_services" {
+resource "local_file" "hbn_sync_target" {
+  content  = file("${path.module}/services/hbn-sync.target")
+  filename = "${path.module}/.generated/hbn-sync.target"
+
+  depends_on = [null_resource.ensure_user_group]
+}
+
+# Deploy generated service files
+resource "null_resource" "deploy_services" {
   triggers = {
-    ripple_service_hash            = sha256(local_file.ripple_sync_service.content)
-    redcap_service_hash            = sha256(local_file.redcap_sync_service.content)
-    redcap_to_curious_service_hash = sha256(local_file.redcap_to_curious_service.content)
-    wrapper_service_hash           = sha256(local_file.sync_services_wrapper.content)
-    timer_hash                     = sha256(local_file.sync_timer.content)
+    services_hash = sha256(join("", [
+      local_file.ripple_sync_service.content,
+      local_file.redcap_sync_service.content,
+      local_file.redcap_to_curious_service.content,
+      local_file.curious_alerts_websocket_service.content,
+      local_file.hbn_sync_timer.content,
+      local_file.hbn_sync_target.content,
+    ]))
   }
 
   provisioner "local-exec" {
     command = <<-EOT
-      set -e
-
-      # Copy service files
-      sudo cp ./generated_ripple-sync.service /etc/systemd/system/ripple-sync.service
-      sudo cp ./generated_redcap-sync.service /etc/systemd/system/redcap-sync.service
-      sudo cp ./generated_redcap-to-curious.service /etc/systemd/system/redcap-to-curious.service
-      sudo cp ./generated_sync-services.service /etc/systemd/system/sync-services.service
-      sudo cp ./generated_sync-services.timer /etc/systemd/system/sync-services.timer
-
-      # Create log directories
-      sudo mkdir -p /var/log/ripple-sync
-      sudo chown ${local.current_user}:hbnmigration /var/log/ripple-sync
-
-      sudo mkdir -p /var/log/redcap-sync
-      sudo chown ${local.current_user}:hbnmigration /var/log/redcap-sync
-
-      sudo mkdir -p /var/log/redcap-to-curious
-      sudo chown ${local.current_user}:hbnmigration /var/log/redcap-to-curious
-
-      # Reload systemd
+      sudo cp ${path.module}/.generated/*.service /etc/systemd/system/
+      sudo cp ${path.module}/.generated/*.timer /etc/systemd/system/
+      sudo cp ${path.module}/.generated/*.target /etc/systemd/system/
       sudo systemctl daemon-reload
-
-      # Enable and start timer (not the wrapper service directly)
-      sudo systemctl enable sync-services.timer
-      sudo systemctl restart sync-services.timer
-
-      # Show status
-      echo "Timer status:"
-      sudo systemctl status sync-services.timer --no-pager || true
-      echo ""
-      echo "Next run times:"
-      sudo systemctl list-timers sync-services.timer --no-pager || true
     EOT
   }
 
@@ -201,13 +166,199 @@ resource "null_resource" "install_sync_services" {
     local_file.ripple_sync_service,
     local_file.redcap_sync_service,
     local_file.redcap_to_curious_service,
-    local_file.sync_services_wrapper,
-    local_file.sync_timer,
-    null_resource.setup_services
+    local_file.curious_alerts_websocket_service,
+    local_file.hbn_sync_timer,
+    local_file.hbn_sync_target,
   ]
 }
 
-# Output timer status
-output "sync_services_status" {
-  value = "Run 'systemctl status sync-services.timer' to check status"
+# Set ownership and permissions for project root
+resource "null_resource" "set_project_ownership" {
+  triggers = {
+    user_group   = var.user_group
+    project_root = var.project_root
+  }
+
+  provisioner "local-exec" {
+    command = <<-EOT
+      # Extract user (handle both "user" and "user:group" formats)
+      USER="${var.user_group}"
+      if [[ "$USER" == *":"* ]]; then
+        USER="$${USER%:*}"
+      fi
+
+      # Set ownership of project root
+      sudo chown -R ${var.user_group}:${var.user_group} ${var.project_root}
+
+      # Set directory permissions (rwxr-x---)
+      sudo find ${var.project_root} -type d -exec chmod 750 {} \;
+
+      # Set file permissions (rw-r-----)
+      sudo find ${var.project_root} -type f -exec chmod 640 {} \;
+
+      # Make venv binaries executable
+      sudo find ${local.venv_full_path}/bin -type f -exec chmod 750 {} \;
+
+      # Make any shell scripts executable
+      sudo find ${var.project_root} -type f -name "*.sh" -exec chmod 750 {} \;
+    EOT
+  }
+
+  depends_on = [null_resource.deploy_services, null_resource.ensure_user_group]
+}
+
+# Secure config files (stricter permissions)
+resource "null_resource" "secure_config" {
+  triggers = {
+    user_group   = var.user_group
+    project_root = var.project_root
+  }
+
+  provisioner "local-exec" {
+    command = <<-EOT
+      # Secure config directory
+      sudo chown -R ${var.user_group}:${var.user_group} ${var.project_root}/python_jobs/src/hbnmigration/_config_variables
+      sudo chmod -R 600 ${var.project_root}/python_jobs/src/hbnmigration/_config_variables
+
+      # Make the directory itself executable/searchable
+      sudo find ${var.project_root}/python_jobs/src/hbnmigration/_config_variables -type d -exec chmod 700 {} \;
+    EOT
+  }
+
+  depends_on = [null_resource.set_project_ownership]
+}
+
+# Set up systemd journal access and log directory
+resource "null_resource" "setup_logging" {
+  triggers = {
+    user_group    = var.user_group
+    log_directory = local.log_full_path
+  }
+
+  provisioner "local-exec" {
+    command = <<-EOT
+      # Extract user (handle both "user" and "user:group" formats)
+      USER="${var.user_group}"
+      if [[ "$USER" == *":"* ]]; then
+        USER="$${USER%:*}"
+      fi
+
+      # Add user to systemd-journal group for log access
+      sudo usermod -a -G systemd-journal "$USER"
+
+      # Create custom log directory
+      sudo mkdir -p ${local.log_full_path}
+      sudo chown ${var.user_group}:${var.user_group} ${local.log_full_path}
+      sudo chmod 755 ${local.log_full_path}
+
+      # Set up log rotation
+      sudo tee /etc/logrotate.d/hbnmigration > /dev/null <<'LOGROTATE'
+${local.log_full_path}/*.log {
+    daily
+    missingok
+    rotate 14
+    compress
+    delaycompress
+    notifempty
+    create 0640 ${var.user_group} ${var.user_group}
+    sharedscripts
+}
+LOGROTATE
+    EOT
+  }
+
+  depends_on = [null_resource.secure_config]
+}
+
+# Set up automated state backups via cron
+resource "null_resource" "setup_state_backup_cron" {
+  triggers = {
+    project_root  = var.project_root
+    log_directory = local.log_full_path
+    user_group    = var.user_group
+  }
+
+  provisioner "local-exec" {
+    command = <<-EOT
+      # Create the backup script
+      sudo tee /usr/local/bin/terraform-state-backup > /dev/null <<'BACKUP_SCRIPT'
+#!/bin/bash
+# Automated Terraform state backup
+
+STATE_FILE="${var.project_root}/infrastructure/terraform.tfstate"
+BACKUP_DIR="${local.log_full_path}/terraform-backups"
+DAILY_BACKUP_DIR="$${BACKUP_DIR}/daily"
+TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+DATE=$(date +%Y%m%d)
+
+# Create backup directories
+mkdir -p "$${DAILY_BACKUP_DIR}"
+
+if [ -f "$${STATE_FILE}" ]; then
+    # Timestamped backup (for immediate reference)
+    cp "$${STATE_FILE}" "$${BACKUP_DIR}/terraform.tfstate.$${TIMESTAMP}"
+
+    # Daily backup (one per day)
+    cp "$${STATE_FILE}" "$${DAILY_BACKUP_DIR}/terraform.tfstate.$${DATE}"
+
+    # Keep only last 30 timestamped backups
+    cd "$${BACKUP_DIR}"
+    ls -t terraform.tfstate.* 2>/dev/null | tail -n +31 | xargs -r rm
+
+    # Keep only last 7 daily backups
+    cd "$${DAILY_BACKUP_DIR}"
+    ls -t terraform.tfstate.* 2>/dev/null | tail -n +8 | xargs -r rm
+
+    # Set ownership
+    chown -R ${var.user_group}:${var.user_group} "$${BACKUP_DIR}"
+    chmod -R 640 "$${BACKUP_DIR}"/*.tfstate.* 2>/dev/null || true
+
+    # Log success
+    echo "$(date): Terraform state backed up successfully" >> "$${BACKUP_DIR}/backup.log"
+else
+    echo "$(date): ERROR - State file not found: $${STATE_FILE}" >> "$${BACKUP_DIR}/backup.log"
+fi
+BACKUP_SCRIPT
+
+      # Make script executable
+      sudo chmod +x /usr/local/bin/terraform-state-backup
+
+      # Create cron job
+      sudo tee /etc/cron.daily/terraform-state-backup > /dev/null <<'CRON_SCRIPT'
+#!/bin/bash
+/usr/local/bin/terraform-state-backup
+CRON_SCRIPT
+
+      sudo chmod +x /etc/cron.daily/terraform-state-backup
+
+      # Run initial backup
+      sudo /usr/local/bin/terraform-state-backup
+
+      echo "✓ State backup cron job installed"
+      echo "  - Script: /usr/local/bin/terraform-state-backup"
+      echo "  - Cron: /etc/cron.daily/terraform-state-backup"
+      echo "  - Backups: ${local.log_full_path}/terraform-backups/"
+      echo "  - Retention: 30 timestamped backups, 7 daily backups"
+    EOT
+  }
+
+  depends_on = [null_resource.setup_logging]
+}
+
+# Enable and start services
+resource "null_resource" "enable_services" {
+  triggers = {
+    services_hash = null_resource.deploy_services.triggers.services_hash
+  }
+
+  provisioner "local-exec" {
+    command = <<-EOT
+      sudo systemctl enable hbn-sync.timer
+      sudo systemctl enable curious-alerts-websocket.service
+      sudo systemctl restart hbn-sync.timer 2>/dev/null || sudo systemctl start hbn-sync.timer
+      sudo systemctl restart curious-alerts-websocket.service 2>/dev/null || sudo systemctl start curious-alerts-websocket.service
+    EOT
+  }
+
+  depends_on = [null_resource.setup_state_backup_cron]
 }

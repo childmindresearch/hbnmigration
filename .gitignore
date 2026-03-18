@@ -27,6 +27,14 @@ terraform.rc
 generated_*
 **/generated_*
 
+# Keep backups in git (they're important!)
+!backups/
+!backups/*.tfstate.*
+
+# Lockfiles
+.lock
+!**/.terraform.lock.hcl
+
 # Linting temporary files
 .lint_temp
 **/.lint_temp/

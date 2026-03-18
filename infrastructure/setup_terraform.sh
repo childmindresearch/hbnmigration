@@ -21,7 +21,6 @@ echo "Installing Terraform ${TERRAFORM_VERSION}..."
 if command -v terraform &> /dev/null; then
     CURRENT_VERSION=$(terraform version -json | jq -r '.terraform_version')
     echo "Terraform ${CURRENT_VERSION} is already installed"
-
     if [ "$CURRENT_VERSION" == "$TERRAFORM_VERSION" ]; then
         echo "✓ Correct version already installed"
     else
@@ -51,7 +50,6 @@ TFLINT_VERSION="0.50.3"
 if command -v tflint &> /dev/null; then
     CURRENT_TFLINT_VERSION=$(tflint --version | grep -oP 'version \K[0-9]+\.[0-9]+\.[0-9]+')
     echo "TFLint v${CURRENT_TFLINT_VERSION} is already installed"
-
     if [ "$CURRENT_TFLINT_VERSION" == "$TFLINT_VERSION" ]; then
         echo "✓ Correct version already installed"
     else
@@ -90,7 +88,6 @@ echo "Installing Terragrunt ${TERRAGRUNT_VERSION}..."
 if command -v terragrunt &> /dev/null; then
     CURRENT_TG_VERSION=$(terragrunt --version | grep -oP 'v\K[0-9]+\.[0-9]+\.[0-9]+' | head -1)
     echo "Terragrunt v${CURRENT_TG_VERSION} is already installed"
-
     if [ "$CURRENT_TG_VERSION" == "$TERRAGRUNT_VERSION" ]; then
         echo "✓ Correct version already installed"
     else
@@ -141,9 +138,9 @@ fi
 
 # Python 3 and pip
 if ! command -v python3 &> /dev/null || ! command -v pipx &> /dev/null; then
-    echo "Installing Python 3 and pip..."
-    sudo apt-get install -y python3 pipx
-    echo "✓ Python 3 and pip installed"
+    echo "Installing Python 3 and pipx..."
+    sudo apt-get install -y python3 python3-pip pipx
+    echo "✓ Python 3 and pipx installed"
 else
     echo "✓ Python 3 already installed"
     python3 --version
@@ -154,7 +151,7 @@ echo "Installing Python linters..."
 pipx install --quiet mypy ruff
 pipx ensurepath
 
-# Add pip user bin to PATH if not already there
+# Add pipx bin to PATH if not already there
 if [[ ":$PATH:" != *":$HOME/.local/bin:"* ]]; then
     echo "export PATH=\"\$HOME/.local/bin:\$PATH\"" >> ~/.bashrc
     export PATH="$HOME/.local/bin:$PATH"
@@ -196,16 +193,21 @@ else
     echo "⚠️  WARNING: No IAM role detected!"
     echo ""
     echo "You need to attach an IAM role to this instance with permissions for:"
-    echo "  • S3 (read/write)"
-    echo "  • Glue (create/manage catalog)"
-    echo "  • EC2 (describe instances)"
+    echo "  • S3 (read/write for Terraform state)"
+    echo "  • Any other AWS services you'll manage"
     echo ""
-    echo "Run terraform apply first to create the IAM role, then attach it:"
+    echo "Attach an IAM role to this instance:"
     echo "  aws ec2 associate-iam-instance-profile \\"
     echo "    --instance-id <your-instance-id> \\"
     echo "    --iam-instance-profile Name=<profile-name>"
     echo ""
 fi
+
+# Create .generated directory for templated files
+echo ""
+echo "Creating .generated directory..."
+mkdir -p .generated
+echo "✓ Created .generated directory"
 
 echo ""
 echo "========================================"
@@ -223,11 +225,23 @@ echo "  • mypy $(mypy --version 2>/dev/null || echo 'not in PATH yet')"
 echo "  • pre-commit $(pre-commit --version 2>/dev/null || echo 'not in PATH yet')"
 echo ""
 echo "Next steps:"
-echo "  1. cp terraform.tfvars.example terraform.tfvars"
-echo "  2. vim terraform.tfvars  # Configure your settings"
-echo "  3. terraform init"
-echo "  4. terraform plan"
-echo "  5. terraform apply"
+echo "  1. Configure your settings:"
+echo "       cp terraform.tfvars.example terraform.tfvars"
+echo "       vim terraform.tfvars"
+echo ""
+echo "  2. Initialize and apply Terraform:"
+echo "       terraform init"
+echo "       terraform plan"
+echo "       terraform apply"
+echo ""
+echo "  3. Verify services are running:"
+echo "       sudo systemctl status curious-alerts-websocket.service"
+echo "       sudo systemctl status hbn-sync.timer"
+echo "       sudo systemctl list-timers"
+echo ""
+echo "  4. Monitor logs:"
+echo "       sudo journalctl -u curious-alerts-websocket -f"
+echo "       sudo journalctl -u ripple-sync -u redcap-sync -u redcap-to-curious -f"
 echo ""
 echo "Optional - Set up pre-commit hooks:"
 echo "  pre-commit install"

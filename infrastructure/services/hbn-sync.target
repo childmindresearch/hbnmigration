@@ -1,0 +1,8 @@
+[Unit]
+Description=HBN Migration Sync Target
+Requires=ripple-sync.service
+Requires=redcap-sync.service
+Requires=redcap-to-curious.service
+
+[Install]
+WantedBy=multi-user.target
