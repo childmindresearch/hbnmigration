@@ -78,7 +78,7 @@ output "monitoring_commands" {
   value       = <<-EOT
     View logs:
       sudo journalctl -u curious-alerts-websocket -f
-      sudo journalctl -u ripple-sync -u redcap-sync -u redcap-to-curious -f
+      sudo journalctl -u ripple-to-redcap -u redcap-to-redcap -u redcap-to-curious -f
       tail -f ${local.log_full_path}/*.log
 
     Check permissions:

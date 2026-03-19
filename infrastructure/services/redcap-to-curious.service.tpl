@@ -1,5 +1,5 @@
 [Unit]
-Description=REDCap to Curious Sync Service
+Description=REDCap to Curious Sync Service [${workspace}]
 After=network.target
 
 [Service]
@@ -8,11 +8,12 @@ User=${user_group}
 Group=${user_group}
 WorkingDirectory=${project_root}
 ExecStart=${venv_path}/bin/redcap-to-curious
+Environment="WORKSPACE=${workspace}"
 
 # Logging
 StandardOutput=append:${log_directory}/redcap-to-curious.log
 StandardError=append:${log_directory}/redcap-to-curious-error.log
-SyslogIdentifier=redcap-to-curious
+SyslogIdentifier=redcap-to-curious-${workspace}
 
 # Security hardening
 NoNewPrivileges=true

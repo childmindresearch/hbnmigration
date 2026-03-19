@@ -1,5 +1,5 @@
 [Unit]
-Description=Ripple to REDCap Sync Service
+Description=Ripple to REDCap Sync Service [${workspace}]
 After=network.target
 
 [Service]
@@ -8,11 +8,12 @@ User=${user_group}
 Group=${user_group}
 WorkingDirectory=${project_root}
 ExecStart=${venv_path}/bin/ripple-to-redcap
+Environment="WORKSPACE=${workspace}"
 
 # Logging
-StandardOutput=append:${log_directory}/ripple-sync.log
-StandardError=append:${log_directory}/ripple-sync-error.log
-SyslogIdentifier=ripple-sync
+StandardOutput=append:${log_directory}/ripple-to-redcap.log
+StandardError=append:${log_directory}/ripple-to-redcap-error.log
+SyslogIdentifier=ripple-to-redcap-${workspace}
 
 # Security hardening
 NoNewPrivileges=true

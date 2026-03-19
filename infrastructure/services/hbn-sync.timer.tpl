@@ -1,11 +1,9 @@
 [Unit]
-Description=Ripple, REDCap and Curious Sync Timer
-Requires=ripple-sync.service
-Requires=redcap-sync.service
-Requires=redcap-to-curious.service
+Description=Ripple, REDCap and Curious Sync Timer [${workspace}]
+Requires=${service_name}.service
 
 [Timer]
-OnCalendar=hourly
+OnCalendar=*:0/${sync_interval_minutes}
 Persistent=true
 
 [Install]
