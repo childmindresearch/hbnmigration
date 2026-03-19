@@ -70,6 +70,9 @@ class Fields:
             "par_rel_2",
             "email_2_1821",
             "phone_2_1821",
+            "ci_date",
+            "ci_forms_due",
+            "guardian2_consent_due",
         ]
     )
     import_744: Final[FieldList] = FieldList(
@@ -105,6 +108,9 @@ class Fields:
             "email_2",
             "phone_2",
             "complete_parent_second_guardian_consent",
+            "ci_date",
+            "ci_forms_due",
+            "guardian2_consent_due",
         ]
     )
     rename_247_to_744: Final[dict[str, str]] = {
