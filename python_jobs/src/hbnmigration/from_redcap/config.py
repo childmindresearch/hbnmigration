@@ -20,7 +20,7 @@ class Fields:
             "record_id",
             "mrn",
             "consent1",
-            "consent2",
+            "consent5",
             "prefname",
             "biosex",
             "gender",
@@ -109,7 +109,7 @@ class Fields:
     )
     rename_247_to_744: Final[dict[str, str]] = {
         "consent1": "first_name",
-        "consent2": "last_name",
+        "consent5": "last_name",
         "biosex": "sex",
         "parent_last_name": "parentlastname",
         "parent_second_guardian"
