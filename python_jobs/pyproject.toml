@@ -76,3 +76,6 @@ exclude = [
 
 [tool.setuptools.dynamic]
 version = {file = ["VERSION"]}
+
+[tool.uv]
+cache-dir = "./.uv_cache"
