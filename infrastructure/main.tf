@@ -141,8 +141,8 @@ resource "local_file" "curious_alerts_websocket_service" {
 resource "local_file" "hbn_sync_timer" {
   content = templatefile("${path.module}/services/hbn-sync.timer.tpl", {
     sync_interval_minutes = var.sync_interval_minutes
-    service_name          = local.services.ripple_sync
-    workspace             = terraform.workspace # ADD THIS
+    service_prefix        = local.service_prefix
+    workspace             = terraform.workspace
   })
   filename   = "${path.module}/.generated/${local.services.hbn_sync_timer}"
   depends_on = [null_resource.ensure_user_group]
