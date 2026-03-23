@@ -1,7 +1,5 @@
 """Transfer data from Ripple to REDCap."""
 
-from dataclasses import dataclass
-import logging
 from pathlib import Path
 from typing import Literal, Optional
 
@@ -13,11 +11,9 @@ from .._config_variables import redcap_variables, ripple_variables
 from ..exceptions import NoData
 from ..utility_functions import fetch_api_data, initialize_logging, yesterday
 
-initialize_logging()
-logger = logging.getLogger(__name__)
+logger = initialize_logging(__name__)
 
 
-@dataclass
 class Endpoints:
     """API Endpoints."""
 
@@ -275,8 +271,8 @@ def set_status_in_ripple(ripple_study: str, ripple_import_file: str) -> None:
                 # Raise an exception for bad status codes (4xx or 5xx)
                 response.raise_for_status()
             except requests.exceptions.HTTPError:
-                logging.debug(study_import_url)
-                logging.debug(file_content)
+                logger.debug(study_import_url)
+                logger.debug(file_content)
                 raise
             logger.info("Request was successful!\nResponse: %s", response.text)
     except FileNotFoundError as e:

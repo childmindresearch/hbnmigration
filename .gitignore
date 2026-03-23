@@ -24,8 +24,8 @@ override.tf.json
 terraform.rc
 
 # Generated files
-generated_setup.sh
-**/generated_setup.sh
+generated_*
+**/generated_*
 
 # Linting temporary files
 .lint_temp

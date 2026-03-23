@@ -8,35 +8,37 @@ dynamic = ["version"]
 description = "WebSocket and API monitoring with Iceberg logging"
 requires-python = ">=3.12,<3.14"
 dependencies = [
-    "pyiceberg[s3fs,glue,pyarrow]>=0.5.0",
+    "aiohttp>=3.9.0",
     "boto3>=1.34.0",
+    "ipython>=9.10.0",
+    "msal>=1.35.1",
+    "openpyxl>=3.1.5",
     "pandas>=2.1.0",
     "pyarrow>=14.0.0",
-    "aiohttp>=3.9.0",
-    "websockets>=12.0",
-    "requests>=2.32.5",
-    "pytz>=2025.2",
-    "types-requests>=2.32.4.20260107",
-    "types-pytz>=2025.2.0.20251108",
+    "pyiceberg[s3fs,glue,pyarrow]>=0.5.0",
     "pyspark>=4.1.1",
-    "ipython>=9.10.0",
-    "pytest>=9.0.2",
-    "openpyxl>=3.1.5",
     "pytest-cov>=7.0.0",
+    "pytest>=9.0.2",
+    "pytz>=2025.2",
+    "requests>=2.32.5",
+    "types-pytz>=2025.2.0.20251108",
+    "types-requests>=2.32.4.20260107",
+    "websockets>=12.0",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "ruff>=0.1.0",
-    "mypy>=1.8.0",
-    "pytest>=7.4.0",
-    "pytest-asyncio>=0.23.0",
-    "types-boto3",
     "aiohttp",
-    "boto3-stubs[s3,glue]"
+    "boto3-stubs[s3,glue]",
+    "mypy>=1.8.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest>=7.4.0",
+    "ruff>=0.1.0",
+    "types-boto3",
 ]
 
 [project.scripts]
+redcap-to-redcap = "hbnmigration.from_redcap.to_redcap:main"
 ripple-to-redcap = "hbnmigration.from_ripple.to_redcap:main"
 websocket-monitor = "hbnmigration.websocket_monitor:main"
 api-scheduler = "hbnmigration.api_scheduler:main"

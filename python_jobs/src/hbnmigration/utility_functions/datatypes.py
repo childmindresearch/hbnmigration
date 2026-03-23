@@ -1,7 +1,6 @@
 """Custom datatypes."""
 
 from abc import ABC
-from dataclasses import dataclass
 from typing import Literal
 
 ApiProtocol = Literal["https", "wss"]
@@ -41,7 +40,6 @@ class Endpoints(ABC):
         return NotImplemented
 
 
-@dataclass
 class Tokens:
     """Class to store tokens."""
 

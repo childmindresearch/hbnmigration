@@ -1,5 +1,5 @@
 [Unit]
-Description=Ripple to REDCap Sync Service
+Description=REDCap to REDCap Sync Service
 After=network.target
 
 [Service]
@@ -8,12 +8,12 @@ User=${USER}
 Group=${USER_GROUP}
 
 # Use the virtual environment Python
-ExecStart=${VENV_PATH}/bin/ripple-to-redcap
+ExecStart=${VENV_PATH}/bin/redcap-to-redcap
 Environment="USER_GROUP=${USER_GROUP}"
 
 # Logging
-StandardOutput=append:/var/log/ripple-sync/sync.log
-StandardError=append:/var/log/ripple-sync/error.log
+StandardOutput=append:/var/log/redcap-sync/sync.log
+StandardError=append:/var/log/redcap-sync/error.log
 
 # Restart policy (don't restart on failure for oneshot)
 Restart=no

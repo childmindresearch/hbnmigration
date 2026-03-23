@@ -1,12 +1,9 @@
 """Typestubs for secret Curious variables."""
 
-from dataclasses import dataclass
-
 from ...utility_functions import ApiProtocol
 from ...utility_functions import Credentials as CredentialsABC
 from ...utility_functions import Endpoints as EndpointsABC
 
-@dataclass
 class Credentials(CredentialsABC):
     hbn_mindlogger: dict[str, str]
 
