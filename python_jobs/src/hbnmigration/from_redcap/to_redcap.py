@@ -19,7 +19,7 @@ Endpoints = redcap_variables.Endpoints()
 logger = initialize_logging(__name__)
 
 
-def update_source(df: pd.DataFrame) -> int:
+def update_source(df: pd.DataFrame, record_ids: dict[int | str, int | str]) -> int:
     """
     Update `intake_ready` column in source project.
 
@@ -27,6 +27,9 @@ def update_source(df: pd.DataFrame) -> int:
     ----------
     df
         destination DataFrame
+
+    record_ids
+        mapping of record_ids between two REDCap projects
 
     Returns
     -------
@@ -43,6 +46,7 @@ def update_source(df: pd.DataFrame) -> int:
             ],
         }
     )
+    df_274["record"] = df_274["record"].replace({v: k for k, v in record_ids.items()})
     return redcap_api_push(
         df=df_274,
         token=redcap_variables.Tokens.pid247,
@@ -73,6 +77,14 @@ def main() -> None:
         df_744 = data247.loc[
             data247["field_name"].str.startswith(tuple(Fields.import_744))
         ]
+        record_ids: dict[int | str, int | str] = {
+            row["record"]: row["value"]
+            for _, row in df_744[df_744["field_name"] == "mrn"].iterrows()
+        }
+        df_744["record"] = df_744["record"].replace(record_ids)
+        df_744.loc[df_744["field_name"] == "record_id", "value"] = df_744.loc[
+            df_744["field_name"] == "record_id", "record"
+        ]
         assert isinstance(df_744, pd.DataFrame)
         df_744 = (
             df_744.sort_values("redcap_repeat_instance", ascending=False)
@@ -96,7 +108,7 @@ def main() -> None:
         )
         if not rows_imported_744:
             raise NoData
-        rows_updated_274 = update_source(df_744)
+        rows_updated_274 = update_source(df_744, record_ids)
         assert rows_imported_744 == rows_updated_274, (
             f"rows imported to PID 744 ({rows_imported_744}) "
             f"≠ rows updated in PID 274 ({rows_updated_274})."
