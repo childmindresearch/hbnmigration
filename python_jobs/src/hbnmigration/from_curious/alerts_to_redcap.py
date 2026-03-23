@@ -11,6 +11,11 @@ from numpy import intersect1d
 import pandas as pd
 import requests
 import websockets
+from websockets.exceptions import (
+    ConnectionClosedError,
+    ConnectionClosedOK,
+    InvalidStatus,
+)
 
 from .._config_variables import curious_variables, redcap_variables
 from ..from_redcap.config import FieldList
@@ -25,14 +30,19 @@ from ..utility_functions import (
 initialize_logging()
 logger = logging.getLogger(__name__)
 REDCAP_ENDPOINTS = redcap_variables.Endpoints()
-
 # ============================================================================
 # Constants
 # ============================================================================
-
 ALERTS_INSTRUMENT_FORM = "ra_alerts_instrument"
 ALERT_FIELD_PATTERN = r"alerts_([^_]+(?:_[^_]+)?)_\d+"
 PID_625 = redcap_variables.Tokens.pid625
+
+# WebSocket configuration constants
+WS_RECONNECT_DELAY = 5  # seconds
+WS_MAX_RECONNECT_ATTEMPTS = None  # None = infinite retries
+WS_PING_INTERVAL = 20  # seconds
+WS_PING_TIMEOUT = 10  # seconds
+WS_CLOSE_TIMEOUT = 5  # seconds
 
 # Standard REDCap metadata fetch parameters
 METADATA_PARAMS = {
@@ -48,7 +58,6 @@ METADATA_PARAMS = {
     "exportDataAccessGroups": "false",
     "returnFormat": "csv",
 }
-
 # ============================================================================
 # Type Definitions
 # ============================================================================
@@ -59,6 +68,7 @@ class _SynchronousArgs(argparse.Namespace):
 
     synchronous: bool
     partial: bool
+    max_reconnect_attempts: Optional[int]
 
 
 # ============================================================================
@@ -82,9 +92,13 @@ def _curious_authenticate() -> curious_variables.Tokens:
 async def connect_to_websocket(
     token: str, uri: str
 ) -> AsyncIterator[websockets.ClientConnection]:
-    """Connect to a websocket with an auth token."""
+    """Connect to a websocket with an auth token and proper configuration."""
     websocket = await websockets.connect(
-        uri, subprotocols=[cast(websockets.typing.Subprotocol, f"bearer|{token}")]
+        uri,
+        subprotocols=[cast(websockets.typing.Subprotocol, f"bearer|{token}")],
+        ping_interval=WS_PING_INTERVAL,
+        ping_timeout=WS_PING_TIMEOUT,
+        close_timeout=WS_CLOSE_TIMEOUT,
     )
     try:
         yield websocket
@@ -184,7 +198,6 @@ def _map_mrns_to_records(
         redcap_alerts["record"].str.replace(r"\D", "", regex=True).astype(int)
     )
     redcap_fields["record"] = redcap_fields["record"].astype(int)
-
     # Create lookups
     mrn_lookup = cast(
         dict[str, int],
@@ -196,11 +209,9 @@ def _map_mrns_to_records(
         dict[int, str],
         redcap_fields.groupby("record")["redcap_event_name"].first().to_dict(),
     )
-
     # Filter results
     result = redcap_alerts.loc[redcap_alerts["field_name"] != "mrn"].copy()
     result = result[result["field_name"].isin(redcap_fields["field_name"])]
-
     return result, mrn_lookup, record_events
 
 
@@ -231,36 +242,28 @@ def process_alerts_for_redcap(
     4. Toggles alert flags
     """
     alert_fields = redcap_alerts["field_name"].unique()
-
     # Fetch metadata
     alerts_instrument = _fetch_alerts_metadata()
-
     # Filter fields if partial landing
     if partial_redcap_landing:
         alert_fields = intersect1d(
             alert_fields, alerts_instrument["field_name"].unique()
         )
-
     # Fetch existing REDCap data
     redcap_fields = fetch_data(PID_625, str(FieldList(alert_fields)))
-
     # Map MRNs to records
     result, mrn_lookup, record_events = _map_mrns_to_records(
         redcap_alerts, redcap_fields
     )
-
     # Add event names
     result["redcap_event_name"] = result["record"].map(mrn_lookup).map(record_events)
-
     # Map response values to indices
     choice_lookup = _create_choice_lookup(alerts_instrument)
     result["lookup_key"] = list(zip(result["field_name"], result["value"].str.lower()))
     result["value"] = result["lookup_key"].map(choice_lookup).fillna(result["value"])
-
     # Toggle alerts and set final record IDs
     result = toggle_alerts(result.drop("lookup_key", axis=1))
     result["record"] = result["record"].map(mrn_lookup)
-
     return result
 
 
@@ -302,15 +305,12 @@ def _process_single_alert(
     if alert.get("type") != "answer":
         logger.debug("Skipping non-answer message type: %s", alert.get("type"))
         return None
-
     # Parse and process
     redcap_alert = parse_alert(alert)
     result = process_alerts_for_redcap(redcap_alert, partial_redcap_landing)
-
     if result.empty:
         logger.warning("No valid data to push for alert ID: %s", alert.get("id"))
         return None
-
     return result
 
 
@@ -325,28 +325,143 @@ def _handle_alert_errors(message: str, error: Exception) -> None:
 
 
 # ============================================================================
+# WebSocket Listener
+# ============================================================================
+
+
+async def websocket_listener(
+    websocket: websockets.ClientConnection, partial_redcap_landing: bool = False
+) -> None:
+    """Listen to websocket messages and process alerts."""
+    try:
+        async for message in websocket:
+            logger.info("Received alert: %s", message)
+            try:
+                alert: CuriousAlert = json.loads(message)
+                result = _process_single_alert(alert, partial_redcap_landing)
+                if result is not None:
+                    push_alerts_to_redcap(result)
+            except Exception as e:
+                _handle_alert_errors(str(message), e)
+    except ConnectionClosedError:
+        logger.warning("WebSocket connection closed")
+        raise
+    except ConnectionClosedOK:
+        logger.info("WebSocket connection closed normally")
+    except Exception:
+        logger.exception("Unexpected error in websocket listener")
+        raise
+
+
+async def main_with_reconnect(
+    token: str,
+    uri: str,
+    partial_redcap_landing: bool = False,
+    max_attempts: Optional[int] = WS_MAX_RECONNECT_ATTEMPTS,
+) -> None:
+    """
+    Automatically reconnect when websocket connection breaks.
+
+    Parameters
+    ----------
+    token
+        Authentication token for WebSocket connection
+    uri
+        WebSocket URI to connect to
+    partial_redcap_landing
+        Whether to use partial REDCap landing
+    max_attempts
+        Maximum number of reconnection attempts. None = infinite.
+
+    """
+    attempt = 0
+    while max_attempts is None or attempt < max_attempts:
+        try:
+            if attempt > 0:
+                logger.info(
+                    "Reconnection attempt %d%s",
+                    attempt,
+                    f" of {max_attempts}" if max_attempts else "",
+                )
+
+            async with connect_to_websocket(token, uri) as websocket:
+                # Reset attempt counter on successful connection
+                if attempt > 0:
+                    logger.info("Successfully reconnected to WebSocket")
+                attempt = 0
+                await websocket_listener(websocket, partial_redcap_landing)
+                logger.info("WebSocket listener completed normally")
+                break
+
+        except ConnectionClosedError:
+            attempt += 1
+            if max_attempts and attempt >= max_attempts:
+                logger.exception("Max reconnection attempts reached. Exiting.")
+                raise
+
+            logger.warning(
+                "Connection lost. Reconnecting in %d seconds...", WS_RECONNECT_DELAY
+            )
+            await asyncio.sleep(WS_RECONNECT_DELAY)
+
+        except InvalidStatus as e:
+            # Authentication or server errors
+            logger.exception(
+                "WebSocket connection failed with status %s", e.response.status_code
+            )
+            if e.response.status_code == requests.codes["unauthorized"]:
+                logger.exception(
+                    "Authentication failed. Token may be invalid or expired."
+                )
+            attempt += 1
+            if max_attempts and attempt >= max_attempts:
+                logger.exception("Max reconnection attempts reached. Exiting.")
+                raise
+            await asyncio.sleep(WS_RECONNECT_DELAY)
+
+        except asyncio.CancelledError:
+            logger.info("Operation cancelled")
+            raise
+
+        except KeyboardInterrupt:
+            logger.info("WebSocket listener cancelled manually")
+            break
+
+        except Exception:
+            logger.exception("Fatal error in main loop")
+            raise
+
+
+# ============================================================================
 # Main Functions
 # ============================================================================
 
 
-async def main(partial_redcap_landing: bool = False) -> None:
-    """Send Curious alerts to REDCap (async version via websocket)."""
+async def main(
+    partial_redcap_landing: bool = False, max_attempts: Optional[int] = None
+) -> None:
+    """
+    Send Curious alerts to REDCap (async version via websocket).
+
+    This version includes automatic reconnection on connection failures.
+
+    Parameters
+    ----------
+    partial_redcap_landing
+        Whether to use partial REDCap landing
+    max_attempts
+        Maximum number of reconnection attempts. None = infinite.
+
+    """
     tokens = _curious_authenticate()
     endpoints = curious_variables.Endpoints(protocol="wss")
 
-    async with connect_to_websocket(tokens.access, endpoints.alerts) as websocket:
-        async for message in websocket:
-            logger.info("Received alert: %s", message)
-
-            try:
-                alert: CuriousAlert = json.loads(message)
-                result = _process_single_alert(alert, partial_redcap_landing)
-
-                if result is not None:
-                    push_alerts_to_redcap(result)
-
-            except Exception as e:
-                _handle_alert_errors(str(message), e)
+    await main_with_reconnect(
+        token=tokens.access,
+        uri=endpoints.alerts,
+        partial_redcap_landing=partial_redcap_landing,
+        max_attempts=max_attempts,
+    )
 
 
 def synchronous_main(partial_redcap_landing: bool = False) -> None:
@@ -359,16 +474,12 @@ def synchronous_main(partial_redcap_landing: bool = False) -> None:
             **curious_variables.headers,
         },
     )
-
     if response.status_code != requests.codes["okay"]:
         response.raise_for_status()
         return
-
     results: list[CuriousAlert] = response.json()["result"]
-
     # Parse and concatenate all alerts
     redcap_alerts = pd.concat([parse_alert(alert) for alert in results])
-
     # Process and push to REDCap
     result = process_alerts_for_redcap(redcap_alerts, partial_redcap_landing)
     push_alerts_to_redcap(result)
@@ -385,6 +496,12 @@ def cli() -> None:
     parser.add_argument("--asynchronous", action="store_false", dest="synchronous")
     parser.add_argument("--partial", action="store_true", dest="partial")
     parser.add_argument("--synchronous", action="store_true", dest="synchronous")
+    parser.add_argument(
+        "--max-reconnect-attempts",
+        type=int,
+        default=None,
+        help="Maximum number of reconnection attempts (default: infinite)",
+    )
     parser.set_defaults(partial=False, synchronous=False)
     namespace = _SynchronousArgs()
     args = parser.parse_args(namespace=namespace)
@@ -392,7 +509,7 @@ def cli() -> None:
     if args.synchronous:
         synchronous_main(args.partial)
     else:
-        asyncio.run(main(args.partial))
+        asyncio.run(main(args.partial, args.max_reconnect_attempts))
 
 
 if __name__ == "__main__":
