@@ -1,14 +1,16 @@
 """Shared pytest configuration and fixtures."""
 
 from contextlib import contextmanager, ExitStack
+import json
 from pathlib import Path
 import tempfile
 from typing import Any, Dict, List, Optional, TypedDict
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pandas as pd
 import pytest
 import requests
+from websockets.exceptions import InvalidStatus
 
 from hbnmigration.from_redcap.config import Values
 from hbnmigration.utility_functions.datatypes import CuriousAlert, CuriousEncryption
@@ -16,16 +18,13 @@ from hbnmigration.utility_functions.datatypes import CuriousAlert, CuriousEncryp
 # ============================================================================
 # Constants
 # ============================================================================
-
 DEFAULT_ENCRYPTION: CuriousEncryption = {
     "base": "base_value",
     "prime": "prime_value",
     "accountId": "account_001",
     "publicKey": "public_key_value",
 }
-
 DEFAULT_REDCAP_BASE_URL = "https://redcap.test/api/"
-
 # ============================================================================
 # File System Fixtures
 # ============================================================================
@@ -72,13 +71,13 @@ def _create_mock_response(status_code: int, text: str) -> Mock:
 @pytest.fixture
 def mock_redcap_response():
     """Mock successful REDCap API response."""
-    return _create_mock_response(200, "1")
+    return _create_mock_response(requests.codes["okay"], "1")
 
 
 @pytest.fixture
 def mock_ripple_response():
     """Mock successful Ripple API response."""
-    return _create_mock_response(200, "Success")
+    return _create_mock_response(requests.codes["okay"], "Success")
 
 
 # ============================================================================
@@ -176,6 +175,32 @@ def create_curious_participant_df(
 # ============================================================================
 
 
+def create_alert_df(
+    records: Optional[list[str]] = None,
+    field_names: Optional[list[str]] = None,
+    values: Optional[list[str]] = None,
+    events: Optional[list[str]] = None,
+) -> pd.DataFrame:
+    """
+    Create alert DataFrames for testing.
+
+    If no arguments provided, returns empty DataFrame with correct schema.
+    Otherwise wraps create_redcap_eav_df with event_names mapping.
+    """
+    result = create_redcap_eav_df(
+        records=records,
+        field_names=field_names,
+        values=values,
+        event_names=events,
+    )
+
+    # Ensure redcap_event_name column exists (not just when events provided)
+    if "redcap_event_name" not in result.columns:
+        result["redcap_event_name"] = pd.Series([], dtype=str) if result.empty else ""
+
+    return result
+
+
 def create_curious_alert(
     alert_id: str,
     secret_id: str,
@@ -207,24 +232,6 @@ def create_curious_alert(
         "subjectId": subject_id,
         "type": kwargs.get("type", "answer"),
     }
-
-
-def create_alert_redcap_data(
-    record_id: str,
-    mrn: str,
-    alert_field: str = "alerts_parent_baseline_1",
-    alert_value: str = "0",
-    event: str = "baseline_arm_1",
-) -> pd.DataFrame:
-    """Create alert-related REDCap EAV data."""
-    return pd.DataFrame(
-        {
-            "record": [record_id, record_id],
-            "field_name": ["mrn", alert_field],
-            "value": [mrn, alert_value],
-            "redcap_event_name": [event, event],
-        }
-    )
 
 
 def create_alert_metadata(field_names: list[str], choices: list[str]) -> pd.DataFrame:
@@ -971,7 +978,12 @@ def kevin_alert() -> CuriousAlert:
 @pytest.fixture
 def kevin_redcap_data() -> pd.DataFrame:
     """Kevin's existing REDCap data."""
-    return create_alert_redcap_data("005", "11111", "alerts_parent_baseline_5", "")
+    return create_alert_df(
+        ["005", "005"],
+        ["mrn", "alerts_parent_baseline_5"],
+        ["11111", ""],
+        ["baseline_arm_1", "baseline_arm_1"],
+    )
 
 
 @pytest.fixture
@@ -1027,10 +1039,8 @@ def mock_alerts_dependencies():
         mock_vars.Tokens.pid625 = "token_625"
         mock_vars.headers = {}
         mock_vars.Endpoints.return_value.base_url = DEFAULT_REDCAP_BASE_URL
-
         # Set up default returns for helpers
         mock_choice_lookup.return_value = {}
-
         yield {
             "fetch_api": mock_fetch_api,
             "fetch": mock_fetch,
@@ -1038,6 +1048,216 @@ def mock_alerts_dependencies():
             "vars": mock_vars,
             "fetch_metadata": mock_fetch_metadata,
             "choice_lookup": mock_choice_lookup,
+        }
+
+
+# ============================================================================
+# WebSocket / Reconnection Testing Utilities
+# ============================================================================
+
+
+def create_mock_tokens_ws(auth_token: str = "test_token") -> Mock:
+    """Create mock authentication tokens for WebSocket connections."""
+    mock_tokens = Mock()
+    mock_tokens.access = auth_token
+    mock_tokens.endpoints = Mock()
+    mock_tokens.endpoints.alerts = "wss://curious.test/alerts"
+    return mock_tokens
+
+
+def create_mock_invalid_status(
+    status_code: int = requests.codes["unauthorized"],
+) -> InvalidStatus:
+    """Create mock InvalidStatus exception for testing auth failures."""
+    mock_response = Mock()
+    mock_response.status_code = status_code
+    exc = InvalidStatus(mock_response)
+    exc.response = mock_response
+    return exc
+
+
+def setup_standard_alert_mocks(
+    mock_alerts_dependencies: dict[str, Mock],
+    metadata: Optional[pd.DataFrame] = None,
+    existing_data: Optional[pd.DataFrame] = None,
+) -> None:
+    """Set up standard mock returns for alert processing tests."""
+    mocks = mock_alerts_dependencies
+
+    # Use 'is not None' instead of truthy check for DataFrames
+    mocks["fetch_metadata"].return_value = (
+        metadata
+        if metadata is not None
+        else create_alert_metadata(
+            ["mrn", "alerts_parent_baseline_1"],
+            ["", "0, No | 1, Yes"],
+        )
+    )
+    mocks["fetch"].return_value = (
+        existing_data
+        if existing_data is not None
+        else create_alert_df(
+            ["1", "1"],
+            ["mrn", "alerts_parent_baseline_1"],
+            ["12345", "0"],
+            ["baseline_arm_1", "baseline_arm_1"],
+        )
+    )
+
+
+@pytest.fixture
+def multi_instrument_alert_df():
+    """Create alert DataFrame with multiple instruments for testing."""
+    return create_alert_df(
+        ["12345", "12345", "67890"],
+        [
+            "alerts_parent_baseline_1",
+            "alerts_child_baseline_2",
+            "alerts_parent_followup_1",
+        ],
+        ["Yes", "Sometimes", "No"],
+        ["baseline_arm_1", "baseline_arm_1", "followup_arm_1"],
+    )
+
+
+# ============================================================================
+# Context Managers for WebSocket / Reconnection Tests
+# ============================================================================
+
+
+@contextmanager
+def setup_reconnect_mocks(listener_side_effect=None):
+    """Set up mocks for main_with_reconnect tests."""
+    with ExitStack() as stack:
+        mocks = {
+            "ws": stack.enter_context(
+                patch("hbnmigration.from_curious.alerts_to_redcap.connect_to_websocket")
+            ),
+            "listener": stack.enter_context(
+                patch(
+                    "hbnmigration.from_curious.alerts_to_redcap.websocket_listener",
+                    new_callable=AsyncMock,
+                )  # Use AsyncMock
+            ),
+            "sleep": stack.enter_context(
+                patch(
+                    "hbnmigration.from_curious.alerts_to_redcap.asyncio.sleep",
+                    new_callable=AsyncMock,
+                )  # Also make sleep async
+            ),
+        }
+        mock_websocket = AsyncMock()
+        mocks["ws"].return_value.__aenter__.return_value = mock_websocket
+
+        if listener_side_effect is not None:
+            mocks["listener"].side_effect = listener_side_effect
+
+        yield mocks
+
+
+@contextmanager
+def setup_main_test_mocks(
+    mock_alerts_dependencies,
+    sample_alert=None,
+    parse_return=None,
+    metadata_return=None,
+):
+    """Context manager for common async main test setup."""
+    setup_standard_alert_mocks(
+        mock_alerts_dependencies,
+        metadata_return
+        if metadata_return is not None
+        else create_alert_metadata(
+            ["mrn", "alerts_parent_baseline_1"],
+            ["", "0, No | 1, Yes"],
+        ),
+    )
+
+    with ExitStack() as stack:
+        mocks = {
+            "auth": stack.enter_context(
+                patch(
+                    "hbnmigration.from_curious.alerts_to_redcap._curious_authenticate"
+                )
+            ),
+            "ws": stack.enter_context(
+                patch("hbnmigration.from_curious.alerts_to_redcap.connect_to_websocket")
+            ),
+            "parse": stack.enter_context(
+                patch("hbnmigration.from_curious.alerts_to_redcap.parse_alert")
+            ),
+        }
+        mocks["auth"].return_value = create_mock_tokens_ws()
+        mock_websocket = AsyncMock()
+        if sample_alert is not None:
+            mock_websocket.__aiter__.return_value = [json.dumps(sample_alert)]
+        mocks["ws"].return_value.__aenter__.return_value = mock_websocket
+        if parse_return is not None:
+            mocks["parse"].return_value = parse_return
+        yield mocks
+
+
+@contextmanager
+def setup_sync_main_mocks(
+    mock_alerts_dependencies,
+    alerts_list,
+    parse_returns,
+    metadata_return=None,
+    status_code=requests.codes["okay"],
+):
+    """Set up synchronous main test mocks."""
+    setup_standard_alert_mocks(
+        mock_alerts_dependencies,
+        metadata_return
+        if metadata_return is not None
+        else create_alert_metadata(
+            ["mrn", "alerts_parent_baseline_1"],
+            ["", "0, No | 1, Yes"],
+        ),
+    )
+
+    with ExitStack() as stack:
+        mocks = {
+            "auth": stack.enter_context(
+                patch(
+                    "hbnmigration.from_curious.alerts_to_redcap._curious_authenticate"
+                )
+            ),
+            "get": stack.enter_context(
+                patch("hbnmigration.from_curious.alerts_to_redcap.requests.get")
+            ),
+            "parse": stack.enter_context(
+                patch("hbnmigration.from_curious.alerts_to_redcap.parse_alert")
+            ),
+        }
+        mocks["auth"].return_value = create_mock_tokens_ws()
+        mock_response = Mock()
+        mock_response.status_code = status_code
+        if status_code == requests.codes["okay"]:
+            mock_response.json.return_value = {"result": alerts_list}
+        mocks["get"].return_value = mock_response
+        if parse_returns is not None:
+            mocks["parse"].side_effect = parse_returns
+        yield mocks
+
+
+@contextmanager
+def setup_cli_mocks(**patches):
+    """Set up CLI test mocks with specified patches."""
+    with ExitStack() as stack:
+        yield {
+            "run": stack.enter_context(
+                patch("hbnmigration.from_curious.alerts_to_redcap.asyncio.run")
+            ),
+            "sync": stack.enter_context(
+                patch("hbnmigration.from_curious.alerts_to_redcap.synchronous_main")
+            ),
+            "main": stack.enter_context(
+                patch("hbnmigration.from_curious.alerts_to_redcap.main")
+            ),
+            "argv": stack.enter_context(
+                patch("sys.argv", patches.get("argv", ["alerts_to_redcap.py"]))
+            ),
         }
 
 
