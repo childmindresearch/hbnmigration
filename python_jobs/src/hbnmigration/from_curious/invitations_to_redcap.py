@@ -6,6 +6,8 @@ from typing import Literal
 import pandas as pd
 import requests
 
+from mindlogger_data_export.outputs import RedcapImportFormat
+
 from .._config_variables import curious_variables, redcap_variables
 from ..from_redcap.config import Values as RedcapValues
 from ..utility_functions import (
@@ -15,6 +17,7 @@ from ..utility_functions import (
     yesterday_or_more_recent,
 )
 from .config import curious_authenticate, invitation_statuses
+from .decryption import decrypt_single, get_applet_encryption, pair_qanda
 
 initialize_logging()
 logger = logging.getLogger(__name__)
@@ -34,6 +37,7 @@ def check_activity_response(
     token, respondent_id: CuriousId, applet_id: CuriousId, activity_id: CuriousId
 ) -> pd.Series:
     """Check for response to activity."""
+    encryption = get_applet_encryption(Endpoints.Curious.applet(applet_id), token)
     response = requests.get(
         Endpoints.Curious.applet_activity_answers_list(applet_id, activity_id)
         + f"?respondentId={respondent_id}",
@@ -42,7 +46,23 @@ def check_activity_response(
     if response.status_code == requests.codes["okay"]:
         result = response.json()["result"]
         if result:
-            breakpoint()
+            for answer in result:
+                decrypted_answer = decrypt_single(
+                    answer,
+                    encryption,
+                    curious_variables.AppletCredentials.hbn_mindlogger[
+                        "Healthy Brain Network Questionnaires"
+                    ]["applet_password"],
+                )
+                breakpoint()
+                paired_responses = pair_qanda(decrypted_answer)  # noqa: F841
+                # for response in paired_responses:
+                #     if response['item'].get('queston', {}).get('en', None) == (
+                #         "Please click below to confirm that you have created a "
+                #         "Curious account"
+                #     ):
+
+                format_for_redcap(decrypted_answer)
     return pd.Series()
 
 
@@ -82,6 +102,15 @@ def create_invitation_record(respondent: dict, applet_id: CuriousId) -> pd.Serie
             "respondent_id": detail["subjectId"],
         }
     )
+
+
+def format_for_redcap(ml_data):
+    """Format response data for REDCap import."""
+    formatter = RedcapImportFormat(
+        project={"curious_account_created": "curious_parent_arm_1"}
+    )
+    outputs = formatter.produce(ml_data)  # noqa: F841
+    breakpoint()
 
 
 def pull_data_from_curious(token: str) -> pd.DataFrame:

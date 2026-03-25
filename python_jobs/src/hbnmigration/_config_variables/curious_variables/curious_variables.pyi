@@ -11,7 +11,7 @@ from ...utility_functions import (
 )
 
 class AppletCredentials(CredentialsABC):
-    hbn_mindlogger: dict[str, str]
+    hbn_mindlogger: dict[str, dict[str, str]]
 
 class Credentials(CredentialsABC):
     hbn_mindlogger: dict[str, str]
@@ -20,6 +20,7 @@ class Endpoints(EndpointsABC):
     def __init__(self, host: str = ..., protocol: ApiProtocol = ...) -> None: ...
     @property
     def alerts(self) -> str: ...
+    def applet(self, applet_id: CuriousId) -> str: ...
     def applet_activity_answers_list(
         self, applet_id: CuriousId, activity_id: CuriousId
     ) -> str: ...

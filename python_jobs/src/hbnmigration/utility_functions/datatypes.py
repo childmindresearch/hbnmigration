@@ -1,7 +1,7 @@
 """Custom datatypes."""
 
 from abc import ABC
-from typing import Annotated, Literal, NotRequired, Optional, TypedDict
+from typing import Annotated, Any, Literal, NotRequired, Optional, TypedDict
 
 from pydantic.types import StringConstraints
 
@@ -11,6 +11,61 @@ ApiProtocols: list[ApiProtocol] = ["https", "wss"]
 
 class Credentials(ABC):
     """Class to store credentials."""
+
+
+class CuriousAppletEncryption(TypedDict):
+    """
+    Encryption info for a Curious applet.
+
+    "encryption": {
+      "publicKey": "string",
+      "prime": "string",
+      "base": "string",
+      "accountId": "string"
+    },
+    """
+
+    accountId: "CuriousId"
+    base: str
+    prime: str
+    publicKey: str
+
+
+class CuriousAnswer(TypedDict):
+    """Encrypted answer from Curious API."""
+
+    activityId: "CuriousId"
+    activityHistoryId: "CuriousId"
+    answerId: "CuriousId"
+    createdAt: "Datetime"
+    endDatetime: "Datetime"
+    flowHistoryId: "Optional[CuriousId]"
+    id: "CuriousId"
+    identifier: Optional[str]
+    itemIds: "list[CuriousId]"
+    items: list[dict]
+    migratedData: Optional[Any]
+    reviewCount: dict
+    sourceSubject: dict
+    startDatetime: "Datetime"
+    submitId: "CuriousId"
+    subscaleSetting: Optional[dict]
+    version: "SemanticVersion"
+    userPublicKey: str
+
+
+class CuriousDecryptedAnswer(CuriousAnswer):
+    """Encrypted answer from Curious API."""
+
+    answer: list[Any]
+    events: list[dict]
+
+
+class CuriousEncryptedAnswer(CuriousAnswer):
+    """Encrypted answer from Curious API."""
+
+    answer: str
+    events: str
 
 
 CuriousId = Annotated[
