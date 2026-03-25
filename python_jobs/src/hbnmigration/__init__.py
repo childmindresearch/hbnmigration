@@ -1,9 +1,6 @@
-"""Monitoring services with Iceberg logging."""
+"""Automatic transfers for Healthy Brain Network data."""
 
-__version__ = "1.0.0"
+from importlib.metadata import version
 
-from .config import Config
-
-# from .iceberg_logger import IcebergLogger
-
-__all__ = ["Config", "IcebergLogger", "__version__"]
+__version__ = version("hbnmigration")
+__all__ = ["__version__"]

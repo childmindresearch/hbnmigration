@@ -86,6 +86,10 @@ class Endpoints(ABC):
         """Return base URL."""
         return self._base_url
 
+    def invitation_statuses(self, owner_id: str, applet_id: str) -> str:
+        """Return applet activity answers list endpoint."""
+        return NotImplemented
+
     @property
     def login(self) -> str:
         """Authentication endpoint."""

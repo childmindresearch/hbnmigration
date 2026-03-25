@@ -363,5 +363,10 @@ class Values:
     class PID744(ValueClass):
         """Values for PID 744 HBN - Intake and Curious (TEMP for Transition)."""
 
+        curious_account_created_complete = _FieldDescriptor(
+            {"Incomplete": "0", "Unverified": "1", "Complete": "2"}
+        )
+        """Form status: Complete?"""
+
         permission_collab = _FieldDescriptor({"Yes": "0", "No": "1"})
         """Permission to share your child's records with partnering scientific institution(s)."""  # noqa: E501

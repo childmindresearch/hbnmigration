@@ -1,9 +1,14 @@
 """Typestubs for secret Curious variables."""
 
-from ...utility_functions import ApiProtocol
-from ...utility_functions import Credentials as CredentialsABC
-from ...utility_functions import Endpoints as EndpointsABC
-from ...utility_functions import Tokens as TokensABC
+from typing import Optional
+
+from ...utility_functions import (
+    ApiProtocol,
+    Credentials as CredentialsABC,
+    CuriousId,
+    Endpoints as EndpointsABC,
+    Tokens as TokensABC,
+)
 
 class AppletCredentials(CredentialsABC):
     hbn_mindlogger: dict[str, str]
@@ -15,15 +20,20 @@ class Endpoints(EndpointsABC):
     def __init__(self, host: str = ..., protocol: ApiProtocol = ...) -> None: ...
     @property
     def alerts(self) -> str: ...
-    def applet_activity_answers_list(self, applet_id: str, activity_id: str) -> str: ...
+    def applet_activity_answers_list(
+        self, applet_id: CuriousId, activity_id: CuriousId
+    ) -> str: ...
     @property
     def auth(self) -> str: ...
+    def invitation_statuses(self, owner_id: CuriousId, applet_id: CuriousId) -> str: ...
     @property
     def login(self) -> str: ...
 
-headers: dict[str, str]
-owner_ids: dict[str, str]
-applet_ids: dict[str, str]
+activity_ids: dict[str, CuriousId]
+applet_ids: dict[str, CuriousId]
+owner_ids: dict[str, CuriousId]
+
+def headers(token: Optional[str] = None) -> dict[str, str]: ...
 
 class Tokens(TokensABC):
     access: str
