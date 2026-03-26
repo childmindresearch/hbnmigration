@@ -55,6 +55,68 @@ def update_source(df: pd.DataFrame, record_ids: dict[int | str, int | str]) -> i
     )
 
 
+def update_complete_parent_second_guardian_consent(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Update `"parent_second_guardian_consent_complete"` based on `"guardian2_consent"`.
+
+    Only records whose `"guardian2_consent"` value is in `mapping` are affected.
+    All other records are left unchanged.
+    """
+    mapping = {
+        Values.PID247.guardian2_consent[
+            _247
+        ]: Values.PID744.complete_parent_second_guardian_consent[_744]
+        for _247, _744 in [
+            ("No", "Not Required"),
+            (
+                "Not Applicable (Adult Participant)",
+                "Not Applicable (Adult Participant)",
+            ),
+        ]
+    }
+    # compute desired target value per record
+    record_to_value = (
+        df.query("field_name == 'guardian2_consent'")
+        .set_index("record")["value"]
+        .map(mapping)
+        .dropna()
+    )
+    if record_to_value.empty:
+        return df
+    records_to_update = record_to_value.index
+
+    # update existing rows
+    mask = (df["field_name"] == "complete_parent_second_guardian_consent") & (
+        df["record"].isin(records_to_update)
+    )
+    df.loc[mask, "value"] = df.loc[mask, "record"].map(record_to_value)
+
+    # append missing rows
+    missing_records = records_to_update.difference(
+        df.loc[
+            df["field_name"] == "complete_parent_second_guardian_consent", "record"
+        ].tolist()
+    )
+    if len(missing_records):
+        df = pd.concat(
+            [
+                df,
+                pd.DataFrame(
+                    {
+                        "record": missing_records,
+                        "field_name": "complete_parent_second_guardian_consent",
+                        "value": record_to_value.loc[missing_records].values,
+                    }
+                ),
+            ],
+            ignore_index=True,
+        )
+    df = df.sort_values(["record", "field_name"], kind="stable").reset_index(drop=True)
+    return df.sort_values(["record", "field_name"], kind="stable").reset_index(
+        drop=True
+    )
+
+
 def main() -> None:
     """Transfer data from REDCap to REDCap."""
     try:
@@ -70,6 +132,7 @@ def main() -> None:
         if data247.empty:
             raise NoData
         # rename columns for PID744
+        data247 = update_complete_parent_second_guardian_consent(data247)
         data247["field_name"] = data247["field_name"].replace(
             Fields.rename.redcap247_to_redcap744
         )

@@ -783,6 +783,7 @@ def patch_curious_transfer_module(
         mocks["curious_vars"].applet_ids = {
             "Healthy Brain Network Questionnaires": "test_applet_id"
         }
+        mocks["curious_vars"].headers = {}
         mocks["redcap_vars"].Tokens.pid247 = "token_247"
         mocks["redcap_vars"].headers = {}
         mocks["redcap_vars"].Endpoints.return_value.base_url = DEFAULT_REDCAP_BASE_URL
@@ -806,8 +807,12 @@ def patch_curious_api_dependencies(
         mocks = {
             "new_account": stack.enter_context(
                 patch("hbnmigration.from_redcap.to_curious.new_curious_account")
-            )
+            ),
+            "curious_vars": stack.enter_context(
+                patch("hbnmigration.from_redcap.to_curious.curious_variables")
+            ),
         }
+        mocks["curious_vars"].headers = {}
         if new_account_return is not None:
             mocks["new_account"].return_value = new_account_return
         if new_account_side_effect is not None:
@@ -1229,6 +1234,9 @@ def setup_sync_main_mocks(
             "parse": stack.enter_context(
                 patch("hbnmigration.from_curious.alerts_to_redcap.parse_alert")
             ),
+            "curious_vars": stack.enter_context(
+                patch("hbnmigration.from_curious.alerts_to_redcap.curious_variables")
+            ),
         }
         mocks["auth"].return_value = create_mock_tokens_ws()
         mock_response = Mock()
@@ -1238,6 +1246,7 @@ def setup_sync_main_mocks(
         mocks["get"].return_value = mock_response
         if parse_returns is not None:
             mocks["parse"].side_effect = parse_returns
+        mocks["curious_vars"].headers = {}
         yield mocks
 
 
