@@ -38,6 +38,7 @@ dev = [
 ]
 
 [project.scripts]
+redcap-to-curious = "hbnmigration.from_redcap.to_curious:main"
 redcap-to-redcap = "hbnmigration.from_redcap.to_redcap:main"
 ripple-to-redcap = "hbnmigration.from_ripple.to_redcap:main"
 websocket-monitor = "hbnmigration.websocket_monitor:main"
@@ -59,7 +60,8 @@ force-sort-within-sections = true
 order-by-type = false
 
 [tool.ruff.lint.per-file-ignores]
-"test_ripple.py" = ["PLR0913", "PLR2004"]
+"src/hbnmigration/from_redcap/config.py" = ["N801"]
+"test_*.py" = ["PLR0913", "PLR2004"]
 
 [tool.mypy]
 python_version = "3.12"

@@ -1,7 +1,8 @@
 [Unit]
-Description=Ripple and REDCap Sync Timer
+Description=Ripple, REDCap and Curious Sync Timer
 Requires=ripple-sync.service
 Requires=redcap-sync.service
+Requires=redcap-to-curious.service
 
 [Timer]
 # Run 2 minutes after boot

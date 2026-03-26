@@ -92,6 +92,18 @@ resource "local_file" "redcap_sync_service" {
   file_permission = "0644"
 }
 
+# Generate redcap-to-curious service file
+resource "local_file" "redcap_to_curious_service" {
+  content = templatefile("${path.module}/templates/redcap-to-curious.service.tpl", {
+    USER        = local.current_user
+    USER_GROUP  = var.user_group
+    VENV_PATH   = var.venv_path
+    ENVIRONMENT = var.environment
+  })
+  filename        = "${path.module}/generated_redcap-to-curious.service"
+  file_permission = "0644"
+}
+
 # Generate combined systemd timer file
 resource "local_file" "sync_timer" {
   filename = "./generated_sync-services.timer"
@@ -121,13 +133,14 @@ resource "local_file" "sync_services_wrapper" {
   filename = "./generated_sync-services.service"
   content  = <<-EOT
     [Unit]
-    Description=Run Ripple and REDCap Sync Services
+    Description=Run Ripple, REDCap and Curious Sync Services
     After=network.target
 
     [Service]
     Type=oneshot
     ExecStart=/bin/systemctl start ripple-sync.service
     ExecStart=/bin/systemctl start redcap-sync.service
+    ExecStart=/bin/systemctl start redcap-to-curious.service
 
     [Install]
     WantedBy=multi-user.target
@@ -140,10 +153,11 @@ resource "local_file" "sync_services_wrapper" {
 # Install and enable systemd services and timer
 resource "null_resource" "install_sync_services" {
   triggers = {
-    ripple_service_hash  = sha256(local_file.ripple_sync_service.content)
-    redcap_service_hash  = sha256(local_file.redcap_sync_service.content)
-    wrapper_service_hash = sha256(local_file.sync_services_wrapper.content)
-    timer_hash           = sha256(local_file.sync_timer.content)
+    ripple_service_hash            = sha256(local_file.ripple_sync_service.content)
+    redcap_service_hash            = sha256(local_file.redcap_sync_service.content)
+    redcap_to_curious_service_hash = sha256(local_file.redcap_to_curious_service.content)
+    wrapper_service_hash           = sha256(local_file.sync_services_wrapper.content)
+    timer_hash                     = sha256(local_file.sync_timer.content)
   }
 
   provisioner "local-exec" {
@@ -153,6 +167,7 @@ resource "null_resource" "install_sync_services" {
       # Copy service files
       sudo cp ./generated_ripple-sync.service /etc/systemd/system/ripple-sync.service
       sudo cp ./generated_redcap-sync.service /etc/systemd/system/redcap-sync.service
+      sudo cp ./generated_redcap-to-curious.service /etc/systemd/system/redcap-to-curious.service
       sudo cp ./generated_sync-services.service /etc/systemd/system/sync-services.service
       sudo cp ./generated_sync-services.timer /etc/systemd/system/sync-services.timer
 
@@ -162,6 +177,9 @@ resource "null_resource" "install_sync_services" {
 
       sudo mkdir -p /var/log/redcap-sync
       sudo chown ${local.current_user}:hbnmigration /var/log/redcap-sync
+
+      sudo mkdir -p /var/log/redcap-to-curious
+      sudo chown ${local.current_user}:hbnmigration /var/log/redcap-to-curious
 
       # Reload systemd
       sudo systemctl daemon-reload
@@ -182,6 +200,7 @@ resource "null_resource" "install_sync_services" {
   depends_on = [
     local_file.ripple_sync_service,
     local_file.redcap_sync_service,
+    local_file.redcap_to_curious_service,
     local_file.sync_services_wrapper,
     local_file.sync_timer,
     null_resource.setup_services

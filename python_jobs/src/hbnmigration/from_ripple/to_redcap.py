@@ -166,12 +166,12 @@ def get_redcap_subjects_to_update(
         redcap_participant_consent_data,
     )
     mask = df["mrn"].isin(df_redcap_consent_instruments["mrn"])
-    to_update = df[mask].copy()
+    to_update = pd.DataFrame(df[mask]).copy()
     to_update = to_update.drop(columns=["record_id"]).merge(
         df_redcap_consent_instruments[["mrn", "record_id"]], on="mrn", how="left"
     )
-    to_update = to_update[["record_id", "mrn", "email_consent"]]
-    return to_update, df[~mask].copy()
+    to_update = pd.DataFrame(to_update[["record_id", "mrn", "email_consent"]]).copy()
+    return to_update, pd.DataFrame(df[~mask]).copy()
 
 
 def prepare_ripple_to_ripple(df: pd.DataFrame) -> dict[str, str]:

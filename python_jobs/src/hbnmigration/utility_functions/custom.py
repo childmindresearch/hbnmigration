@@ -10,9 +10,10 @@ import os
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from types import ModuleType
-from typing import Literal, Optional, overload
+from typing import Any, Literal, Optional, overload
 
 from IPython.display import display
+import numpy as np
 import pandas as pd
 from pyspark.sql import DataFrame as SparkDataFrame
 from pyspark.sql import SparkSession
@@ -322,9 +323,10 @@ def get_mindlogger_token(
                 .get("refreshToken", None)
             )  # Get refresh token
         else:
-            logger.info(
+            logger.exception(
                 "Failed to fetch data: %d - %s", response.status_code, response.text
             )
+            response.raise_for_status()
             return None
 
         # return response_data
@@ -388,6 +390,14 @@ def redcap_api_push(df: pd.DataFrame, token: str, url: str, headers: dict) -> in
     return 0
 
 
+def isnan(x: Any) -> bool:
+    """Is np.nan?"""  # noqa: D400
+    try:
+        return np.isnan(x)
+    except TypeError:
+        return x == np.nan  # noqa: PLW0177
+
+
 def new_curious_account(
     host: str, applet_id: str, record: dict, headers: dict[str, str]
 ) -> Optional[str]:
@@ -400,8 +410,14 @@ def new_curious_account(
         case _:
             msg = f"No valid account type specified: {record.get('accountType')}"
             raise ValueError(msg)
-    curious_url = f"https://{host}/invitations/{applet_id}/{account_type}"
-    response = requests.post(curious_url, json=record, headers=headers)
+    curious_url = f"{host}/invitations/{applet_id}/{account_type}"
+    new_record = {}
+    for key, value in record.items():
+        if isinstance(value, (list, set, tuple)) and len(value) == 1:
+            new_record[key] = next(iter(value))
+        elif not isnan(value):
+            new_record[key] = value
+    response = requests.post(curious_url, json=new_record, headers=headers)
     logger.info("Status Code: %d", response.status_code)
     response_body = response.json()
     logger.info("Response Body: %s", response_body)

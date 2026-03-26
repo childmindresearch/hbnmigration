@@ -8,6 +8,7 @@ from unittest.mock import Mock, patch
 
 import pandas as pd
 import pytest
+import requests
 
 from hbnmigration.from_redcap.config import Values
 
@@ -170,9 +171,7 @@ def create_redcap_eav_df(
                 "redcap_repeat_instance": pd.Series([], dtype=str),
             }
         )
-
     length = len(records or field_names or values or [0])
-
     return pd.DataFrame(
         {
             "record": records or [""] * length,
@@ -182,6 +181,56 @@ def create_redcap_eav_df(
             "redcap_repeat_instance": repeat_instances or [""] * length,
         }
     )
+
+
+def create_curious_participant_df(
+    secret_user_ids: Optional[List[str]] = None,
+    tags: Optional[List[str]] = None,  # parent/child
+    first_names: Optional[List[str]] = None,
+    last_names: Optional[List[str]] = None,
+    **kwargs,
+) -> pd.DataFrame:
+    """
+    Create Curious participant DataFrames with flexible defaults.
+
+    Parameters
+    ----------
+    secret_user_ids
+        List of secret user IDs
+    tags
+        List of tags (parent/child)
+    first_names
+        List of first names
+    last_names
+        List of last names
+    **kwargs
+        Additional columns to add
+
+    Returns
+    -------
+    pd.DataFrame
+        Curious participant data
+
+    """
+    length = len(secret_user_ids or tags or first_names or [1])
+    default_tags = tags or ["child"] * length
+
+    # Map tags to account types
+    account_types_list = ["full" if t == "parent" else "limited" for t in default_tags]
+
+    data = {
+        "secretUserId": secret_user_ids or [f"{i:05d}" for i in range(1, length + 1)],
+        "tag": default_tags,
+        "accountType": account_types_list,
+        "firstName": first_names or ["Test"] * length,
+        "lastName": last_names or ["User"] * length,
+        "nickname": [None] * length,
+        "role": ["respondent"] * length,
+        "language": ["en"] * length,
+    }
+
+    data.update(kwargs)
+    return pd.DataFrame(data)
 
 
 # ============================================================================
@@ -380,6 +429,130 @@ def expected_transformed_data():
             ],
         }
     )
+
+
+# ============================================================================
+# REDCap Data Fixtures - Curious Format
+# ============================================================================
+
+
+@pytest.fixture
+def sample_redcap_curious_data():
+    """Sample REDCap data ready for Curious transfer with proper field mapping."""
+    return create_redcap_eav_df(
+        records=["001", "001", "001", "001", "001"],
+        field_names=[
+            "mrn",
+            "enrollment_complete",
+            "consent_parent_first_name",
+            "consent_child_first_name",
+            "parent_involvement___1",
+        ],
+        values=[
+            "12345",
+            "1",
+            "Alec",
+            "Tefé",
+            "1",
+        ],
+    )
+
+
+@pytest.fixture
+def parliament_curious_redcap_data():
+    """Parliament of Trees REDCap data for Curious transfer."""
+    return create_redcap_eav_df(
+        records=["ST001", "ST001", "AA001", "AA001"],
+        field_names=[
+            "mrn",
+            "parent_involvement___1",
+            "mrn",
+            "parent_involvement___1",
+        ],
+        values=[
+            "12345",
+            "1",
+            "67890",
+            "1",
+        ],
+    )
+
+
+@pytest.fixture
+def formatted_curious_data():
+    """Sample formatted data ready for Curious API."""
+    return pd.DataFrame(
+        {
+            "secretUserId": ["00001", "00001_P"],
+            "accountType": ["limited", "full"],  # child=limited, parent=full
+            "firstName": ["Tefé", "Alec"],
+            "lastName": ["Holland", "Holland"],
+            "nickname": [None, None],
+            "role": ["respondent", "respondent"],
+            "tag": ["child", "parent"],
+            "language": ["en", "en"],
+        }
+    )
+
+
+@pytest.fixture
+def multi_record_curious_data():
+    """Multiple records formatted for Curious."""
+    return pd.DataFrame(
+        {
+            "secretUserId": ["00001", "00001_P", "00002", "00002_P"],
+            "accountType": ["limited", "full", "limited", "full"],
+            "firstName": ["Tefé", "Alec", "Constantine", "Abby"],
+            "lastName": ["Holland", "Holland", "Arcane", "Arcane"],
+            "nickname": [None, None, None, None],
+            "role": ["respondent"] * 4,
+            "tag": ["child", "parent", "child", "parent"],
+            "language": ["en"] * 4,
+        }
+    )
+
+
+# ============================================================================
+# Curious/MindLogger Fixtures
+# ============================================================================
+
+
+@pytest.fixture
+def mock_curious_variables():
+    """Mock curious_variables configuration."""
+    mock_vars = Mock()
+    mock_vars.headers = {"Content-Type": "application/json"}
+    mock_vars.applet_ids = {"Healthy Brain Network Questionnaires": "test_applet_id"}
+
+    # Mock Credentials
+    mock_creds = Mock()
+    mock_creds.hbn_mindlogger = Mock(username="test_user", password="test_pass")
+    mock_vars.Credentials = mock_creds
+
+    # Mock Tokens
+    mock_tokens = Mock()
+    mock_tokens.access = "test_access_token"
+    mock_tokens.endpoints = Mock()
+    mock_tokens.endpoints.base_url = "https://curious.test/api/"
+    mock_vars.Tokens = Mock(return_value=mock_tokens)
+
+    # Mock Endpoints
+    mock_endpoints = Mock()
+    mock_endpoints.base_url = "https://curious.test/api/"
+    mock_vars.Endpoints = Mock(return_value=mock_endpoints)
+
+    return mock_vars
+
+
+@pytest.fixture
+def mock_redcap_variables_curious():
+    """Mock redcap_variables for Curious transfer."""
+    mock_vars = Mock()
+    mock_vars.Tokens.pid247 = "token_247"
+    mock_vars.headers = {"Content-Type": "application/x-www-form-urlencoded"}
+    mock_vars.Endpoints = Mock()
+    mock_vars.Endpoints.return_value.base_url = "https://redcap.test/api/"
+    return mock_vars
 
 
 # ============================================================================
@@ -596,20 +769,17 @@ def patch_redcap_transfer_module(
                 patch("hbnmigration.from_redcap.to_redcap.Endpoints")
             ),
         }
-
         # Set up basic configurations
         mocks["redcap_vars"].Tokens.pid744 = "token_744"
         mocks["redcap_vars"].Tokens.pid247 = "token_247"
         mocks["redcap_vars"].headers = {}
         mocks["endpoints"].return_value.base_url = "https://redcap.test/api/"
-
         if fetch_return is not None:
             mocks["fetch"].return_value = fetch_return
         if push_return is not None:
             mocks["push"].return_value = push_return
         if update_return is not None:
             mocks["update"].return_value = update_return
-
         yield mocks
 
 
@@ -642,22 +812,129 @@ def patch_redcap_fetch_dependencies(
     with ExitStack() as stack:
         mocks = {
             "fetch_api": stack.enter_context(
-                patch("hbnmigration.from_redcap.to_redcap.fetch_api_data")
+                patch("hbnmigration.from_redcap.from_redcap.fetch_api_data")
             ),
             "endpoints": stack.enter_context(
-                patch("hbnmigration.from_redcap.to_redcap.Endpoints")
+                patch("hbnmigration.from_redcap.from_redcap.Endpoints")
             ),
             "redcap_vars": stack.enter_context(
-                patch("hbnmigration.from_redcap.to_redcap.redcap_variables")
+                patch("hbnmigration.from_redcap.from_redcap.redcap_variables")
             ),
         }
-
         if fetch_api_return is not None:
             mocks["fetch_api"].return_value = fetch_api_return
         if endpoints_config is not None:
             mocks["endpoints"].return_value = endpoints_config
         if redcap_vars_config is not None:
             mocks["redcap_vars"] = redcap_vars_config
+        yield mocks
+
+
+@contextmanager
+def patch_curious_transfer_module(
+    fetch_return=None,
+    format_return=None,
+    send_return=None,
+    update_return=None,
+):
+    """
+    Context manager for patching Curious transfer module dependencies.
+
+    Parameters
+    ----------
+    fetch_return
+        Return value for fetch_data
+    format_return
+        Return value for format_redcap_data_for_curious
+    send_return
+        Return value for send_to_curious (list of failures)
+    update_return
+        Return value for update_redcap
+
+    Yields
+    ------
+    dict
+        Dictionary of mocked objects
+
+    """
+    with ExitStack() as stack:
+        mocks = {
+            "fetch": stack.enter_context(
+                patch("hbnmigration.from_redcap.to_curious.fetch_data")
+            ),
+            "format": stack.enter_context(
+                patch(
+                    "hbnmigration.from_redcap.to_curious.format_redcap_data_for_curious"
+                )
+            ),
+            "send": stack.enter_context(
+                patch("hbnmigration.from_redcap.to_curious.send_to_curious")
+            ),
+            "update": stack.enter_context(
+                patch("hbnmigration.from_redcap.to_curious.update_redcap")
+            ),
+            "curious_vars": stack.enter_context(
+                patch("hbnmigration.from_redcap.to_curious.curious_variables")
+            ),
+            "redcap_vars": stack.enter_context(
+                patch("hbnmigration.from_redcap.to_curious.redcap_variables")
+            ),
+        }
+
+        # Set up basic configurations
+        mocks["curious_vars"].applet_ids = {
+            "Healthy Brain Network Questionnaires": "test_applet_id"
+        }
+        mocks["redcap_vars"].Tokens.pid247 = "token_247"
+        mocks["redcap_vars"].headers = {}
+        mocks[
+            "redcap_vars"
+        ].Endpoints.return_value.base_url = "https://redcap.test/api/"
+
+        if fetch_return is not None:
+            mocks["fetch"].return_value = fetch_return
+        if format_return is not None:
+            mocks["format"].return_value = format_return
+        if send_return is not None:
+            mocks["send"].return_value = send_return
+        if update_return is not None:
+            mocks["update"].return_value = update_return
+
+        yield mocks
+
+
+@contextmanager
+def patch_curious_api_dependencies(
+    new_account_return=None,
+    new_account_side_effect=None,
+):
+    """
+    Context manager for patching Curious API calls.
+
+    Parameters
+    ----------
+    new_account_return
+        Return value for new_curious_account
+    new_account_side_effect
+        Side effect for new_curious_account (for testing multiple calls)
+
+    Yields
+    ------
+    dict
+        Dictionary of mocked objects
+
+    """
+    with ExitStack() as stack:
+        mocks = {
+            "new_account": stack.enter_context(
+                patch("hbnmigration.from_redcap.to_curious.new_curious_account")
+            ),
+        }
+
+        if new_account_return is not None:
+            mocks["new_account"].return_value = new_account_return
+        if new_account_side_effect is not None:
+            mocks["new_account"].side_effect = new_account_side_effect
 
         yield mocks
 
@@ -731,7 +1008,6 @@ def assert_permission_decremented(
     """Assert permission_collab was decremented correctly."""
     perm_row = df[df["field_name"] == "permission_collab"]
     assert len(perm_row) > 0, "No permission_collab field found in DataFrame"
-
     actual_value = str(perm_row["value"].iloc[0])
     expected_normalized = (
         expected_value.rstrip(".0") if "." in expected_value else expected_value
@@ -739,7 +1015,6 @@ def assert_permission_decremented(
     actual_normalized = (
         actual_value.rstrip(".0") if "." in actual_value else actual_value
     )
-
     assert actual_normalized == expected_normalized, (
         f"Expected permission_collab value '{expected_value}', got '{actual_value}'"
     )
@@ -768,6 +1043,132 @@ def get_field_values(df: pd.DataFrame, field_name: str) -> pd.Series:
 def get_unique_field_values(df: pd.DataFrame, field_name: str) -> list:
     """Get unique values for a specific field from EAV DataFrame."""
     return sorted(df[df["field_name"] == field_name]["value"].unique())
+
+
+# ============================================================================
+# Helper Functions - Curious Data Assertions
+# ============================================================================
+
+
+def assert_valid_curious_format(df: pd.DataFrame) -> None:
+    """Assert DataFrame has valid Curious format."""
+    required_columns = ["secretUserId", "accountType"]
+    for col in required_columns:
+        assert col in df.columns, f"Missing required column: {col}"
+
+
+def assert_secret_user_id_format(df: pd.DataFrame, expected_length: int = 5) -> None:
+    """Assert secretUserId is properly formatted."""
+    for user_id in df["secretUserId"]:
+        base_id = user_id.rstrip("_P")
+        assert len(base_id) == expected_length, (
+            f"secretUserId '{base_id}' should be {expected_length} characters"
+        )
+        assert base_id.isdigit() or base_id.isalnum(), (
+            f"secretUserId '{base_id}' should be numeric or alphanumeric"
+        )
+
+
+def assert_parent_suffix(df: pd.DataFrame) -> None:
+    """Assert parent records have _P suffix."""
+    parent_rows = df[df["tag"] == "parent"]
+    if len(parent_rows) > 0:
+        assert all(parent_rows["secretUserId"].str.endswith("_P")), (
+            "All parent records should have _P suffix"
+        )
+
+
+def assert_no_parent_suffix(df: pd.DataFrame) -> None:
+    """Assert child records do not have _P suffix."""
+    child_rows = df[df["tag"] == "child"]
+    if len(child_rows) > 0:
+        assert all(~child_rows["secretUserId"].str.endswith("_P")), (
+            "Child records should not have _P suffix"
+        )
+
+
+def assert_parent_account_type(df: pd.DataFrame) -> None:
+    """Assert parent records have 'full' account type."""
+    parent_rows = df[df["tag"] == "parent"]
+    if len(parent_rows) > 0:
+        assert all(parent_rows["accountType"] == "full"), (
+            "All parent records should have accountType='full'"
+        )
+
+
+def assert_child_account_type(df: pd.DataFrame) -> None:
+    """Assert child records have 'limited' account type."""
+    child_rows = df[df["tag"] == "child"]
+    if len(child_rows) > 0:
+        assert all(child_rows["accountType"] == "limited"), (
+            "All child records should have accountType='limited'"
+        )
+
+
+def get_curious_records_by_type(df: pd.DataFrame, account_type: str) -> pd.DataFrame:
+    """Get records filtered by account type."""
+    return df[df["accountType"] == account_type]
+
+
+def get_curious_records_by_tag(df: pd.DataFrame, tag: str) -> pd.DataFrame:
+    """Get records filtered by tag (parent/child)."""
+    return df[df["tag"] == tag]
+
+
+def count_curious_accounts(df: pd.DataFrame) -> dict[str, int]:
+    """Count accounts by tag (parent/child) not accountType."""
+    return {
+        "parent": len(df[df["tag"] == "parent"]),
+        "child": len(df[df["tag"] == "child"]),
+        "total": len(df),
+    }
+
+
+def assert_no_none_in_records(records: list[dict]) -> None:
+    """Assert that no None values exist in record dictionaries."""
+    for record in records:
+        for key, value in record.items():
+            assert value is not None, f"Field '{key}' should not be None in record"
+
+
+def assert_enrollment_complete_updated(df: pd.DataFrame, expected_value: str) -> None:
+    """Assert enrollment_complete field has expected value."""
+    enrollment_rows = df[df["field_name"] == "enrollment_complete"]
+    assert len(enrollment_rows) > 0, "No enrollment_complete field found"
+    assert all(enrollment_rows["value"] == expected_value), (
+        f"All enrollment_complete values should be '{expected_value}'"
+    )
+
+
+# ============================================================================
+# Helper Functions - Mock Setup
+# ============================================================================
+
+
+def setup_curious_integration_mocks(
+    curious_vars_mock: Mock,
+    redcap_vars_mock: Mock,
+) -> None:
+    """Set up common mock configurations for integration tests."""
+    # REDCap configuration
+    redcap_vars_mock.Tokens.pid247 = "token_247"
+    redcap_vars_mock.headers = {}
+    redcap_vars_mock.Endpoints.return_value.base_url = "https://redcap.test/api/"
+
+    # Curious configuration
+    curious_vars_mock.applet_ids = {
+        "Healthy Brain Network Questionnaires": "test_applet"
+    }
+    curious_tokens = Mock()
+    curious_tokens.access = "test_token"
+    curious_tokens.endpoints.base_url = "https://curious.test/"
+    curious_vars_mock.Tokens.return_value = curious_tokens
+    curious_vars_mock.headers = {}
+
+
+def create_curious_api_failure(message: str = "API Error"):
+    """Create a RequestException for testing."""
+    return requests.exceptions.RequestException(message)
 
 
 # ============================================================================

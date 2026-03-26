@@ -17,5 +17,19 @@ headers: dict[str, str] = ImportWithFallback.literal(
 )
 """Curious headers."""
 
+owner_ids: dict[str, str] = ImportWithFallback.literal(
+    ".curious_variables", "owner_ids", {}
+)
+"""Curious project owner IDs."""
+
+applet_ids: dict[str, str] = ImportWithFallback.literal(
+    ".curious_variables", "applet_ids", {}
+)
+"""Curious applet IDs."""
+
+Tokens = ImportWithFallback.module(
+    ".curious_variables", "Tokens", "...utility_functions.Tokens"
+)
+"""Curious tokens."""
 
 __all__ = ["Credentials", "Endpoints", "headers"]

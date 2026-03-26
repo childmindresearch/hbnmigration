@@ -42,5 +42,3 @@ class Endpoints(ABC):
 
 class Tokens:
     """Class to store tokens."""
-
-    ...
