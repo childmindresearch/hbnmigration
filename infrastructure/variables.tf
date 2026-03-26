@@ -1,32 +1,39 @@
-variable "instance_name" {
-  description = "Name for this instance"
-  type        = string
+variable "ripple_sync_interval_minutes" {
+  description = "How often to run the Ripple sync (in minutes)"
+  type        = number
+  default     = 5
 }
-
-variable "instance_id" {
-  description = "EC2 instance ID"
-  type        = string
-}
-
 variable "aws_region" {
   description = "AWS region"
   type        = string
-  default     = "us-east-1"
 }
 
 variable "environment" {
   description = "Environment name"
   type        = string
-  default     = "production"
-}
-
-variable "venv_path" {
-  description = "Virtual environment path"
-  type        = string
-  default     = "/opt/hbnmigration_venv"
 }
 
 variable "websocket_url" {
-  description = "WebSocket URL for the application"
+  description = "WebSocket URL"
+  type        = string
+}
+
+variable "venv_path" {
+  description = "Path to Python virtual environment"
+  type        = string
+}
+
+variable "instance_name" {
+  description = "EC2 instance name"
+  type        = string
+}
+
+variable "user_group" {
+  description = "User and group for running services"
+  type        = string
+}
+
+variable "instance_id" {
+  description = "EC2 instance ID"
   type        = string
 }

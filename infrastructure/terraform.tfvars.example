@@ -1,9 +1,10 @@
 # Copy to terraform.tfvars and fill in your values
 
-instance_id   = ""
-instance_name = ""
-aws_region    = ""
-environment   = ""
-venv_path     = "/opt/hbnmigration_venv"
-
-websocket_url = ""
+instance_id                  = ""
+instance_name                = ""
+aws_region                   = ""
+environment                  = "dev"
+websocket_url                = "wss://api-v2.gettingcurious.com/ws/alerts"
+user_group                   = ""
+venv_path                    = ""
+ripple_sync_interval_minutes = 5

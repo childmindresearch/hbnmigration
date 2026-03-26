@@ -52,3 +52,7 @@ The setup script installs all required tools:
    terraform plan
    terraform apply
    ```
+
+## Python jobs
+
+See READMEs in [`./python_jobs`](./python_jobs) for details.

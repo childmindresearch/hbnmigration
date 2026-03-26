@@ -34,14 +34,19 @@ repos:
   rev: v0.21.0
   hooks:
   - id: markdownlint-cli2
+- repo: https://github.com/ninoseki/uv-sort
+  rev: v0.7.0
+  hooks:
+    - id: uv-sort
+      files: pyproject.toml
 - repo: https://github.com/astral-sh/uv-pre-commit
-  rev: "0.10.3"
+  rev: "0.10.8"
   hooks:
     - id: uv-lock
       files: ^python_jobs/pyproject\.toml$
       args: [--project, python_jobs]
 - repo: https://github.com/astral-sh/ruff-pre-commit
-  rev: v0.15.1
+  rev: v0.15.5
   hooks:
     - id: ruff-check
       args: [ --fix ]
@@ -50,7 +55,11 @@ repos:
   rev: v1.19.1
   hooks:
   - id: mypy
+    exclude: \**/_config_variables/.*_variables/__init__\.py$
     files: ^python_jobs/src/
+    additional_dependencies:
+      - types-pytz
+      - types-requests
 - repo: local
   hooks:
   - id: sync-version

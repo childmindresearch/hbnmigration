@@ -1,0 +1,5 @@
+# line length
+MD013: false
+# no duplicate headers
+MD024:
+  siblings_only: true

@@ -1,6 +1,6 @@
 {
   "name": "hbnmigration-node-services",
-  "version": "1.0.0",
+  "version": "1.2.0-dev",
   "description": "Node.js monitoring services for HBN data migration",
   "type": "module",
   "main": "src/index.js",
