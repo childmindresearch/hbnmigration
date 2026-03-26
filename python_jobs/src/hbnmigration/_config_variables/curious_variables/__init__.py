@@ -2,6 +2,14 @@
 
 from ...utility_functions import ImportWithFallback
 
+AppletCredentials = ImportWithFallback.module(
+    ".curious_variables",
+    "AppletCredentials",
+    "...utility_functions.datatypes",
+    "Credentials",
+)
+"""Applet credentials for decryption."""
+
 Credentials = ImportWithFallback.module(
     ".curious_variables", "Credentials", "...utility_functions.datatypes"
 )
@@ -28,7 +36,7 @@ applet_ids: dict[str, str] = ImportWithFallback.literal(
 """Curious applet IDs."""
 
 Tokens = ImportWithFallback.module(
-    ".curious_variables", "Tokens", "...utility_functions.Tokens"
+    ".curious_variables", "Tokens", "...utility_functions", "Tokens"
 )
 """Curious tokens."""
 

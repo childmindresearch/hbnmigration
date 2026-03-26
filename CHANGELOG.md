@@ -11,4 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - initial Terraform configuration
 - utility function library
-- Ripple to REDCap Python script / job
+- Python scripts / jobs
+  - Ripple to REDCap
+  - REDCap to REDCap
+  - REDCap to Curious
+  - Curious alerts to REDCap

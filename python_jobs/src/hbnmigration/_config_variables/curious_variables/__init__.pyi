@@ -2,6 +2,7 @@
 
 from .curious_variables import (
     applet_ids,
+    AppletCredentials,
     Credentials,
     Endpoints,
     headers,
@@ -9,4 +10,12 @@ from .curious_variables import (
     Tokens,
 )
 
-__all__ = ["Credentials", "Endpoints", "Tokens", "applet_ids", "headers", "owner_ids"]
+__all__ = [
+    "AppletCredentials",
+    "Credentials",
+    "Endpoints",
+    "Tokens",
+    "applet_ids",
+    "headers",
+    "owner_ids",
+]

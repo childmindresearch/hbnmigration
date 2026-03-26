@@ -623,7 +623,7 @@ class TestEdgeCases:
                 mock_curious_variables.Endpoints(),
                 mock_curious_variables.Credentials.hbn_mindlogger,
             )
-            # Create truly empty DataFrame - not using factory function
+            # Create empty DataFrame
             empty_df = pd.DataFrame(columns=["secretUserId", "accountType", "tag"])
 
             failures = to_curious.send_to_curious(empty_df, tokens, "test_applet")

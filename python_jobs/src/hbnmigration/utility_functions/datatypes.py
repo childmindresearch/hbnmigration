@@ -1,13 +1,65 @@
 """Custom datatypes."""
 
 from abc import ABC
-from typing import Literal
+from typing import Annotated, Literal, NotRequired, Optional, TypedDict
+
+from pydantic.types import StringConstraints
 
 ApiProtocol = Literal["https", "wss"]
+ApiProtocols: list[ApiProtocol] = ["https", "wss"]
 
 
 class Credentials(ABC):
     """Class to store credentials."""
+
+
+CuriousId = Annotated[
+    str,
+    StringConstraints(pattern=r"^[a-zA-Z0-9]{8}-([a-zA-Z0-9]{4}){3}-[a-zA-Z0-9]{12}$"),
+]
+"""ID string for a Curious entity."""
+
+_iso_8601_pattern = (
+    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?$"
+)
+Datetime = Annotated[str, StringConstraints(pattern=_iso_8601_pattern)]
+"""ISO 8601 datetime string."""
+
+SemanticVersion = Annotated[
+    str, StringConstraints(pattern=r"^v?\d+\.\d+\.\d+([-+]\w+)?$")
+]
+"""Semver string."""
+
+
+class CuriousEncryption(TypedDict):
+    """Curious encryption data."""
+
+    base: str
+    prime: str
+    accountId: CuriousId
+    publicKey: str
+
+
+class CuriousAlert(TypedDict):
+    """API response from Curious alerts endpoint."""
+
+    id: CuriousId
+    isWatched: bool
+    appletId: CuriousId
+    appletName: str
+    version: SemanticVersion
+    secretId: str
+    activityId: CuriousId
+    activityItemId: CuriousId
+    message: str
+    createdAt: Datetime
+    answerId: CuriousId
+    encryption: CuriousEncryption
+    image: NotRequired[Optional[str]]
+    workspace: str
+    respondentId: CuriousId
+    subjectId: CuriousId
+    type: str
 
 
 class Endpoints(ABC):

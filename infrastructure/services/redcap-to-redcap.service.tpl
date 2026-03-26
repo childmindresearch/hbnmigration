@@ -1,0 +1,27 @@
+[Unit]
+Description=REDCap Sync Service [${workspace}]
+After=network.target
+
+[Service]
+Type=oneshot
+User=${user_group}
+Group=${user_group}
+WorkingDirectory=${project_root}
+ExecStart=${venv_path}/bin/redcap-to-redcap
+Environment="WORKSPACE=${workspace}"
+
+# Logging
+StandardOutput=append:${log_directory}/redcap-to-redcap.log
+StandardError=append:${log_directory}/redcap-to-redcap-error.log
+SyslogIdentifier=redcap-to-redcap-${workspace}
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=${project_root}
+ReadWritePaths=${log_directory}
+
+[Install]
+WantedBy=multi-user.target

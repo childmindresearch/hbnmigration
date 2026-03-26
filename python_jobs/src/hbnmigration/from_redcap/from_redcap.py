@@ -63,4 +63,22 @@ def fetch_data(
     return df_redcap_participant_consent_data
 
 
+def response_index_reverse_lookup(row: pd.Series) -> Optional[tuple[str, str, int]]:
+    """Get response index reverse lookups from REDCap metadata."""
+    field = row["field_name"]
+    choices = row["select_choices_or_calculations"]
+
+    if pd.notna(choices):
+        for choice in str(choices).split("|"):
+            parts = choice.strip().split(",", 1)
+            # index, key
+            if len(parts) == 2:  # noqa: PLR2004
+                value, label = parts
+                try:
+                    return field, label.strip().lower(), int(value.strip())
+                except (TypeError, ValueError):
+                    pass
+    return None
+
+
 __all__ = ["fetch_data"]

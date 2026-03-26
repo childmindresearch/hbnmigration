@@ -13,6 +13,7 @@ headers: dict[str, str]
 
 class Tokens:
     pid247: str
+    pid625: str
     pid744: str
     pid757: str
 

@@ -15,8 +15,10 @@ dependencies = [
     "openpyxl>=3.1.5",
     "pandas>=2.1.0",
     "pyarrow>=14.0.0",
+    "pydantic>=2.12.5",
     "pyiceberg[s3fs,glue,pyarrow]>=0.5.0",
     "pyspark>=4.1.1",
+    "pytest-asyncio>=1.3.0",
     "pytest-cov>=7.0.0",
     "pytest>=9.0.2",
     "pytz>=2025.2",
@@ -38,6 +40,7 @@ dev = [
 ]
 
 [project.scripts]
+curious-alerts-to-redcap = "hbnmigration.from_curious.alerts_to_redcap:cli"
 redcap-to-curious = "hbnmigration.from_redcap.to_curious:main"
 redcap-to-redcap = "hbnmigration.from_redcap.to_redcap:main"
 ripple-to-redcap = "hbnmigration.from_ripple.to_redcap:main"
@@ -61,6 +64,7 @@ order-by-type = false
 
 [tool.ruff.lint.per-file-ignores]
 "src/hbnmigration/from_redcap/config.py" = ["N801"]
+"conftest.py" = ["PLR0913"]
 "test_*.py" = ["PLR0913", "PLR2004"]
 
 [tool.mypy]
@@ -72,3 +76,6 @@ exclude = [
 
 [tool.setuptools.dynamic]
 version = {file = ["VERSION"]}
+
+[tool.uv]
+cache-dir = "./.uv_cache"

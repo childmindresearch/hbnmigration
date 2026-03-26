@@ -20,13 +20,24 @@ from .custom import (
     yesterday,
     yesterday_or_more_recent,
 )
-from .datatypes import ApiProtocol, Credentials, Endpoints, Tokens
+from .datatypes import (
+    ApiProtocol,
+    ApiProtocols,
+    Credentials,
+    CuriousAlert,
+    CuriousId,
+    Endpoints,
+    Tokens,
+)
 from .logging import initialize_logging
 from .secrets import ImportWithFallback
 
 __all__ = [
     "ApiProtocol",
+    "ApiProtocols",
     "Credentials",
+    "CuriousAlert",
+    "CuriousId",
     "Endpoints",
     "ImportWithFallback",
     "Tokens",

@@ -5,6 +5,9 @@ from ...utility_functions import Credentials as CredentialsABC
 from ...utility_functions import Endpoints as EndpointsABC
 from ...utility_functions import Tokens as TokensABC
 
+class AppletCredentials(CredentialsABC):
+    hbn_mindlogger: dict[str, str]
+
 class Credentials(CredentialsABC):
     hbn_mindlogger: dict[str, str]
 
