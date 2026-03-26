@@ -15,8 +15,7 @@ from typing import Any, Literal, Optional, overload
 from IPython.display import display
 import numpy as np
 import pandas as pd
-from pyspark.sql import DataFrame as SparkDataFrame
-from pyspark.sql import SparkSession
+from pyspark.sql import DataFrame as SparkDataFrame, SparkSession
 import pytz
 import requests
 
@@ -471,7 +470,7 @@ def get_redcap_event_names(
         return {}
 
 
-_yesterday_date = date.today() - timedelta(days=1)
+_yesterday_date = date.today() - timedelta(days=400)
 """Date representation of yesterday."""
 
 yesterday = str(_yesterday_date)

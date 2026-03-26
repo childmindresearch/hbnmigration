@@ -1,6 +1,7 @@
 """Type stubs for Curious variables."""
 
 from .curious_variables import (
+    activity_ids,
     applet_ids,
     AppletCredentials,
     Credentials,
@@ -15,6 +16,7 @@ __all__ = [
     "Credentials",
     "Endpoints",
     "Tokens",
+    "activity_ids",
     "applet_ids",
     "headers",
     "owner_ids",

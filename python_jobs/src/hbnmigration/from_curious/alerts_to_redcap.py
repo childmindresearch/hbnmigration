@@ -26,6 +26,7 @@ from ..utility_functions import (
     initialize_logging,
     redcap_api_push,
 )
+from .config import curious_authenticate
 
 initialize_logging()
 logger = logging.getLogger(__name__)
@@ -74,18 +75,6 @@ class _SynchronousArgs(argparse.Namespace):
 # ============================================================================
 # Authentication & Connection
 # ============================================================================
-
-
-def _curious_authenticate() -> curious_variables.Tokens:
-    """Authenticate to Curious."""
-    endpoints = curious_variables.Endpoints()
-    tokens = curious_variables.Tokens(
-        endpoints, curious_variables.Credentials.hbn_mindlogger
-    )
-    if not tokens:
-        msg = f"Could not authenticate to {endpoints.host}"
-        raise ConnectionError(msg)
-    return tokens
 
 
 @asynccontextmanager
@@ -453,7 +442,7 @@ async def main(
         Maximum number of reconnection attempts. None = infinite.
 
     """
-    tokens = _curious_authenticate()
+    tokens = curious_authenticate()
     endpoints = curious_variables.Endpoints(protocol="wss")
 
     await main_with_reconnect(
@@ -466,13 +455,10 @@ async def main(
 
 def synchronous_main(partial_redcap_landing: bool = False) -> None:
     """Send Curious alerts to REDCap (synchronous version via REST API)."""
-    tokens = _curious_authenticate()
+    tokens = curious_authenticate()
     response = requests.get(
         tokens.endpoints.alerts,
-        headers={
-            "Authorization": f"Bearer {tokens.access}",
-            **curious_variables.headers,
-        },
+        headers=curious_variables.headers(tokens.access),
     )
     if response.status_code != requests.codes["okay"]:
         response.raise_for_status()
@@ -509,7 +495,10 @@ def cli() -> None:
     if args.synchronous:
         synchronous_main(args.partial)
     else:
-        asyncio.run(main(args.partial, args.max_reconnect_attempts))
+        try:
+            asyncio.run(main(args.partial, args.max_reconnect_attempts))
+        except KeyboardInterrupt:
+            logger.info("Asynchronous connection cancelled manually.")
 
 
 if __name__ == "__main__":

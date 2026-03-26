@@ -25,18 +25,27 @@ from .datatypes import (
     ApiProtocols,
     Credentials,
     CuriousAlert,
+    CuriousAnswer,
+    CuriousAppletEncryption,
+    CuriousDecryptedAnswer,
+    CuriousEncryptedAnswer,
     CuriousId,
     Endpoints,
     Tokens,
 )
 from .logging import initialize_logging
 from .secrets import ImportWithFallback
+from .typescript import tsx
 
 __all__ = [
     "ApiProtocol",
     "ApiProtocols",
     "Credentials",
     "CuriousAlert",
+    "CuriousAnswer",
+    "CuriousAppletEncryption",
+    "CuriousDecryptedAnswer",
+    "CuriousEncryptedAnswer",
     "CuriousId",
     "Endpoints",
     "ImportWithFallback",
@@ -58,6 +67,7 @@ __all__ = [
     "print_module_variables",
     "read_vars_file_as_module",
     "redcap_api_push",
+    "tsx",
     "yesterday",
     "yesterday_or_more_recent",
 ]

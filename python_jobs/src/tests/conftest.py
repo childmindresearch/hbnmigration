@@ -518,7 +518,7 @@ def _create_mock_redcap_variables(
 def mock_curious_variables():
     """Mock curious_variables configuration."""
     mock_vars = Mock()
-    mock_vars.headers = {"Content-Type": "application/json"}
+    mock_vars.headers.return_value = {"Content-Type": "application/json"}
     mock_vars.applet_ids = {"Healthy Brain Network Questionnaires": "test_applet_id"}
     mock_creds = Mock()
     mock_creds.hbn_mindlogger = Mock(username="test_user", password="test_pass")
@@ -783,7 +783,7 @@ def patch_curious_transfer_module(
         mocks["curious_vars"].applet_ids = {
             "Healthy Brain Network Questionnaires": "test_applet_id"
         }
-        mocks["curious_vars"].headers = {}
+        mocks["curious_vars"].headers.return_value = {}
         mocks["redcap_vars"].Tokens.pid247 = "token_247"
         mocks["redcap_vars"].headers = {}
         mocks["redcap_vars"].Endpoints.return_value.base_url = DEFAULT_REDCAP_BASE_URL
@@ -812,7 +812,11 @@ def patch_curious_api_dependencies(
                 patch("hbnmigration.from_redcap.to_curious.curious_variables")
             ),
         }
-        mocks["curious_vars"].headers = {}
+        token = "test_access_token"
+        mocks["curious_vars"].headers.return_value = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {token}",
+        }
         if new_account_return is not None:
             mocks["new_account"].return_value = new_account_return
         if new_account_side_effect is not None:
@@ -1181,9 +1185,7 @@ def setup_main_test_mocks(
     with ExitStack() as stack:
         mocks = {
             "auth": stack.enter_context(
-                patch(
-                    "hbnmigration.from_curious.alerts_to_redcap._curious_authenticate"
-                )
+                patch("hbnmigration.from_curious.alerts_to_redcap.curious_authenticate")
             ),
             "ws": stack.enter_context(
                 patch("hbnmigration.from_curious.alerts_to_redcap.connect_to_websocket")
@@ -1224,9 +1226,7 @@ def setup_sync_main_mocks(
     with ExitStack() as stack:
         mocks = {
             "auth": stack.enter_context(
-                patch(
-                    "hbnmigration.from_curious.alerts_to_redcap._curious_authenticate"
-                )
+                patch("hbnmigration.from_curious.alerts_to_redcap.curious_authenticate")
             ),
             "get": stack.enter_context(
                 patch("hbnmigration.from_curious.alerts_to_redcap.requests.get")
@@ -1246,7 +1246,7 @@ def setup_sync_main_mocks(
         mocks["get"].return_value = mock_response
         if parse_returns is not None:
             mocks["parse"].side_effect = parse_returns
-        mocks["curious_vars"].headers = {}
+        mocks["curious_vars"].headers.return_value = {}
         yield mocks
 
 
@@ -1291,7 +1291,7 @@ def setup_curious_integration_mocks(
         "https://curious.test/",
     )
     curious_vars_mock.Tokens.return_value = curious_tokens
-    curious_vars_mock.headers = {}
+    curious_vars_mock.headers.return_value = {}
 
 
 def create_curious_api_failure(message: str = "API Error"):
