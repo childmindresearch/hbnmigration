@@ -1,5 +1,6 @@
 """Test code for data transfer from REDCap to Curious."""
 
+from typing import Literal
 from unittest.mock import patch
 
 import pandas as pd
@@ -7,8 +8,11 @@ import pytest
 
 from hbnmigration.exceptions import NoData
 from hbnmigration.from_curious.config import account_types
-from hbnmigration.from_redcap import to_curious
+from hbnmigration.from_redcap import to_curious, to_redcap
 from hbnmigration.from_redcap.config import Values
+from hbnmigration.from_redcap.to_redcap import (
+    update_complete_parent_second_guardian_consent,
+)
 
 from .conftest import (
     assert_enrollment_complete_updated,
@@ -20,6 +24,7 @@ from .conftest import (
     get_curious_records_by_tag,
     patch_curious_api_dependencies,
     patch_curious_transfer_module,
+    patch_redcap_transfer_module,
     setup_curious_integration_mocks,
 )
 
@@ -676,3 +681,180 @@ class TestEdgeCases:
             assert len(failures) == 1
             assert failures[0] == "2"
             assert mocks["new_account"].call_count == 3
+
+
+class TestUpdateCompleteParentSecondGuardianConsent:
+    """Tests for update_complete_parent_second_guardian_consent."""
+
+    @pytest.mark.parametrize(
+        "guardian_value_label, expected_label",
+        [
+            ("No", "Not Required"),
+            (
+                "Not Applicable (Adult Participant)",
+                "Not Applicable (Adult Participant)",
+            ),
+        ],
+    )
+    def test_appends_when_missing(
+        self,
+        guardian_value_label: Literal["No", "Not Applicable (Adult Participant)"],
+        expected_label: Literal["Not Required", "Not Applicable (Adult Participant)"],
+    ) -> None:
+        """Test appending missing `complete_parent_second_guardian_consent`s."""
+        df = create_redcap_eav_df(
+            records=["001"],
+            field_names=["guardian2_consent"],
+            values=[
+                Values.PID247.guardian2_consent[guardian_value_label],
+            ],
+        )
+
+        result = update_complete_parent_second_guardian_consent(df)
+
+        rows = result[result["field_name"] == "complete_parent_second_guardian_consent"]
+
+        assert len(rows) == 1
+        assert rows.iloc[0]["record"] == "001"
+        assert (
+            rows.iloc[0]["value"]
+            == Values.PID744.complete_parent_second_guardian_consent[expected_label]
+        )
+
+    @pytest.mark.parametrize(
+        "initial_label, guardian_label, expected_label",
+        [
+            (
+                "Incomplete",
+                "No",
+                "Not Required",
+            ),
+            (
+                "Unverified",
+                "Not Applicable (Adult Participant)",
+                "Not Applicable (Adult Participant)",
+            ),
+        ],
+    )
+    def test_updates_existing_value(
+        self,
+        initial_label: Literal["Incomplete", "Unverified"],
+        guardian_label: Literal["No", "Not Applicable (Adult Participant)"],
+        expected_label: Literal["Not Required", "Not Applicable (Adult Participant)"],
+    ) -> None:
+        """Test updating existing `complete_parent_second_guardian_consent`s."""
+        df = create_redcap_eav_df(
+            records=["001", "001"],
+            field_names=[
+                "guardian2_consent",
+                "complete_parent_second_guardian_consent",
+            ],
+            values=[
+                Values.PID247.guardian2_consent[guardian_label],
+                Values.PID744.complete_parent_second_guardian_consent[initial_label],
+            ],
+        )
+
+        result = update_complete_parent_second_guardian_consent(df)
+
+        rows = result[result["field_name"] == "complete_parent_second_guardian_consent"]
+
+        assert len(rows) == 1
+        assert (
+            rows.iloc[0]["value"]
+            == Values.PID744.complete_parent_second_guardian_consent[expected_label]
+        )
+
+    def test_leaves_unmapped_records_unchanged(self) -> None:
+        """Test applicable records."""
+        df = create_redcap_eav_df(
+            records=["001"],
+            field_names=["guardian2_consent"],
+            values=[Values.PID247.guardian2_consent["Yes"]],
+        )
+
+        result = update_complete_parent_second_guardian_consent(df)
+
+        assert (
+            result["field_name"] == "complete_parent_second_guardian_consent"
+        ).sum() == 0
+
+    def test_handles_multiple_records_independently(self) -> None:
+        """Test pairings."""
+        df = create_redcap_eav_df(
+            records=["001", "002"],
+            field_names=["guardian2_consent", "guardian2_consent"],
+            values=[
+                Values.PID247.guardian2_consent["No"],
+                Values.PID247.guardian2_consent["Not Applicable (Adult Participant)"],
+            ],
+        )
+
+        result = update_complete_parent_second_guardian_consent(df)
+
+        rows = result[
+            result["field_name"] == "complete_parent_second_guardian_consent"
+        ].set_index("record")["value"]
+
+        assert (
+            rows["001"]
+            == Values.PID744.complete_parent_second_guardian_consent["Not Required"]
+        )
+        assert (
+            rows["002"]
+            == Values.PID744.complete_parent_second_guardian_consent[
+                "Not Applicable (Adult Participant)"
+            ]
+        )
+
+    def test_does_not_modify_other_fields(self) -> None:
+        """Test `guardian2_consent` against unrelated field."""
+        df = create_redcap_eav_df(
+            records=["001", "001"],
+            field_names=["guardian2_consent", "intake_ready"],
+            values=[
+                Values.PID247.guardian2_consent["No"],
+                Values.PID247.intake_ready["Ready to Send to Intake Redcap"],
+            ],
+        )
+
+        result = update_complete_parent_second_guardian_consent(df)
+
+        intake_row = result[result["field_name"] == "intake_ready"].iloc[0]
+        assert (
+            intake_row["value"]
+            == Values.PID247.intake_ready["Ready to Send to Intake Redcap"]
+        )
+
+
+class TestMainSecondGuardianConsentRegression:
+    """Regression tests for second guardian consent logic in main()."""
+
+    def test_main_applies_second_guardian_consent_mapping(self) -> None:
+        """Test `update_complete_parent_second_guardian_consent` from `main`."""
+        source_df = create_redcap_eav_df(
+            records=["001"],
+            field_names=["guardian2_consent"],
+            values=[
+                Values.PID247.guardian2_consent["No"],
+            ],
+        )
+
+        with patch_redcap_transfer_module(
+            fetch_return=source_df, push_return=1, update_return=1
+        ) as mocks:
+            to_redcap.main()
+
+            # update_source() should receive transformed data
+            update_df = mocks["update"].call_args[0][0]
+
+            rows = update_df[
+                update_df["field_name"] == "complete_parent_second_guardian_consent"
+            ]
+
+            assert len(rows) == 1
+            assert rows.iloc[0]["record"] == "001"
+            assert (
+                rows.iloc[0]["value"]
+                == Values.PID744.complete_parent_second_guardian_consent["Not Required"]
+            )

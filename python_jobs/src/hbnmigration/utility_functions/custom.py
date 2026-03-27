@@ -364,7 +364,13 @@ def print_module_variables(  # noqa: RUF100,T201
     print("\n")  # noqa: T201
 
 
-def redcap_api_push(df: pd.DataFrame, token: str, url: str, headers: dict) -> int:
+def redcap_api_push(
+    df: pd.DataFrame,
+    token: str,
+    url: str,
+    headers: dict,
+    force_auto_number: bool = False,
+) -> int:
     """Push data to REDCap API."""
     csv_buffer = StringIO()
     df.to_csv(csv_buffer, index=False)
@@ -378,6 +384,7 @@ def redcap_api_push(df: pd.DataFrame, token: str, url: str, headers: dict) -> in
         "type": "eav",
         "csvDelimiter": "",
         "returnFormat": "csv",
+        "forceAutoNumber": str(force_auto_number).lower(),
         "data": csv_content,
     }
 

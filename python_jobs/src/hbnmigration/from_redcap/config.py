@@ -101,6 +101,8 @@ class Fields:
                 "ci_date",
                 "ci_forms_due",
                 "guardian2_consent_due",
+                "role_consent",
+                "guardian2_consent",
             ]
         )
         """Fields to export from REDCap PID 247 for import into REDCap PID 744."""
@@ -170,6 +172,7 @@ class Fields:
             "ci_date",
             "ci_forms_due",
             "guardian2_consent_due",
+            "role_consent",
         ]
     )
     """Fields to import into REDCap PID 744."""
@@ -338,6 +341,16 @@ class Values:
         )
         """Is enrollment complete and we can create parent and participant profiles in Curious?"""  # noqa: E501
 
+        guardian2_consent = _FieldDescriptor(
+            {
+                "No": "0",
+                "Yes": "1",
+                "Yes, but email not yet available": "2",
+                "Not Applicable (Adult Participant)": "3",
+            }
+        )
+        """Second guardian consent required?"""
+
         intake_ready = _FieldDescriptor(
             {
                 "Not sent": "0",
@@ -352,6 +365,11 @@ class Values:
         This will create the participant profile in the HBN - Intake and Curious (TEMP for Transition) project and send out the survey.
         """  # noqa: E501
 
+        parent_second_guardian_consent_complete = _FieldDescriptor(
+            {"Incomplete": "0", "Unverified": "1", "Complete": "2"}
+        )
+        """Form status: Complete?"""
+
         permission_collab = _FieldDescriptor(
             {
                 "YES, you may share my child's records.": "1",
@@ -362,6 +380,17 @@ class Values:
 
     class PID744(ValueClass):
         """Values for PID 744 HBN - Intake and Curious (TEMP for Transition)."""
+
+        complete_parent_second_guardian_consent = _FieldDescriptor(
+            {
+                "Incomplete": "0",
+                "Unverified": "1",
+                "Complete": "2",
+                "Not Required": "3",
+                "Not Applicable (Adult Participant)": "4",
+            }
+        )
+        """Second guardian consent form complete?"""
 
         curious_account_created_complete = _FieldDescriptor(
             {"Incomplete": "0", "Unverified": "1", "Complete": "2"}

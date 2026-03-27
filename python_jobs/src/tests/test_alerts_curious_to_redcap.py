@@ -390,7 +390,7 @@ async def test_main_passes_max_attempts():
     """Test that main() passes max_attempts parameter."""
     with (
         patch(
-            "hbnmigration.from_curious.alerts_to_redcap._curious_authenticate"
+            "hbnmigration.from_curious.alerts_to_redcap.curious_authenticate"
         ) as mock_auth,
         patch(
             "hbnmigration.from_curious.alerts_to_redcap.main_with_reconnect"
