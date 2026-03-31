@@ -1,36 +1,14 @@
 """Utility functions to run TypeScript."""
 
 import json
+import logging
 import subprocess
-from typing import Any, cast, Optional
+from typing import Optional
 
-from ..config import Config
-from .datatypes import CuriousDecryptedAnswer
+from .logging import initialize_logging
 
-
-def transform_to_report_csv(
-    decrypted_answers: list[CuriousDecryptedAnswer],
-    enable_data_export_renaming: bool = False,
-    raw_answers_object: dict[str, Any] | None = None,
-) -> list[dict[str, Any]]:
-    """Transform decrypted answers to report CSV format using TypeScript."""
-    # Prepare input data
-    input_data = {
-        "answers": decrypted_answers,
-        "enableDataExportRenaming": enable_data_export_renaming,
-        "rawAnswersObject": raw_answers_object or {},
-    }
-
-    return cast(
-        list[dict[str, Any]],
-        tsx(
-            str(
-                Config.PROJECT_ROOT
-                / "javascript_jobs/autoexport/src/transformReport.ts"
-            ),
-            _input=json.dumps(input_data, ensure_ascii=False),
-        ),
-    )
+initialize_logging()
+logger = logging.getLogger(__name__)
 
 
 def tsx(
@@ -44,5 +22,32 @@ def tsx(
         text=True,
         check=False,
     )
-    result.check_returncode()
-    return json.loads(result.stdout)
+
+    # Log stderr (debug messages)
+    if result.stderr:
+        logger.debug("TypeScript stderr: %s", result.stderr)
+
+    # Check for errors first
+    try:
+        result.check_returncode()
+    except subprocess.CalledProcessError as cpe:
+        logger.exception("TypeScript error: %s", cpe.stderr)
+        raise
+
+    # Debug: Check what we got back
+    logger.debug("TypeScript stdout length: %d bytes", len(result.stdout))
+    logger.debug("TypeScript stdout (first 500 chars): %s", result.stdout[:500])
+
+    # Check if stdout is empty
+    if not result.stdout.strip():
+        logger.exception("TypeScript returned empty stdout")
+        logger.exception("stderr was: %s", result.stderr)
+        msg = "TypeScript script returned no output"
+        raise ValueError(msg)
+
+    # Try to parse JSON
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError:
+        logger.exception("Output was: %s", {result.stdout[:1000]})
+        raise

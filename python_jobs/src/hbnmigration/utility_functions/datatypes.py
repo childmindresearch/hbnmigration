@@ -57,7 +57,7 @@ class CuriousAnswer(TypedDict):
 class CuriousDecryptedAnswer(CuriousAnswer):
     """Encrypted answer from Curious API."""
 
-    answer: list[Any]
+    answer: list[dict]
     events: list[dict]
 
 
