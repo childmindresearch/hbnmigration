@@ -62,6 +62,7 @@ repos:
     exclude: \**/_config_variables/.*_variables/__init__\.py$
     files: ^python_jobs/src/
     additional_dependencies:
+      - pandas-stubs
       - types-pytz
       - types-requests
 - repo: local

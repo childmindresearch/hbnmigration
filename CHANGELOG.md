@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Python scripts / jobs
   - Curious invitations to REDCap
+- TypeScript scripts / jobs
+  - decrypt single answer
 
 ## 1.4.0
 

@@ -1,7 +1,9 @@
 """Custom datatypes."""
 
 from abc import ABC
-from typing import Annotated, Any, Literal, NotRequired, Optional, TypedDict
+from collections import UserDict
+from collections.abc import ItemsView, KeysView, ValuesView
+from typing import Annotated, Any, Iterator, Literal, NotRequired, Optional, TypedDict
 
 from pydantic.types import StringConstraints
 
@@ -153,3 +155,68 @@ class Endpoints(ABC):
 
 class Tokens:
     """Class to store tokens."""
+
+
+class FieldDescriptor(UserDict):
+    """Descriptor that creates a ValueField instance with the field name."""
+
+    def __init__(self, value_dict: dict[str, str]) -> None:
+        """Initialize _FieldDescriptor."""
+        self.value_dict = value_dict
+        self.field_name = None
+
+    def __set_name__(self, owner, name) -> None:
+        """Set field name."""
+        self.field_name = name
+
+    def __get__(self, obj, owner) -> "ValueField":
+        """Return ValueField."""
+        if not self.field_name:
+            raise AttributeError
+        return ValueField(self.field_name, self.value_dict)
+
+
+class ValueField:
+    """A field with values and filter logic generation."""
+
+    def __init__(self, field_name: str, value_dict: dict[str, str]) -> None:
+        """Initialize a `ValueField`."""
+        self._field_name = field_name
+        self._value_dict = value_dict
+
+    def filter_logic(self, label: str) -> str:
+        """Generate REDCap filter logic for a given label."""
+        value = self._value_dict[label]
+        return f"[{self._field_name}] = '{value}'"
+
+    def __getitem__(self, key) -> str:
+        """Allow dict-like access: `field['label']`."""
+        return self._value_dict[key]
+
+    def __iter__(self) -> Iterator[str]:
+        """Allow iteration over the dict."""
+        return iter(self._value_dict)
+
+    def __repr__(self) -> str:
+        """Return reproducible string representation."""
+        return f"ValueField({self._field_name}, {self})"
+
+    def __str__(self) -> str:
+        """Return string representation."""
+        return str(self._value_dict)
+
+    def items(self) -> ItemsView[str, str]:
+        """Return ValueField items."""
+        return self._value_dict.items()
+
+    def keys(self) -> KeysView[str]:
+        """Return ValueField keys."""
+        return self._value_dict.keys()
+
+    def values(self) -> ValuesView[str]:
+        """Return ValueField values."""
+        return self._value_dict.values()
+
+
+class ValueClass:
+    """Base class for value classes."""

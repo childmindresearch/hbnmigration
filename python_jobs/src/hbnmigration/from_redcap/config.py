@@ -1,8 +1,14 @@
 """Nonsesitive for REDCap API calls."""
 
-from collections import UserDict, UserList
-from collections.abc import ItemsView, KeysView, ValuesView
-from typing import Final, Iterator
+from collections import UserList
+from typing import Final
+
+from ..utility_functions import FieldDescriptor, ValueClass
+
+RedcapComplete = FieldDescriptor(
+    {"Incomplete": "0", "Unverified": "1", "Complete": "2"}
+)
+"""Common `*_complete` values."""
 
 
 class FieldList(UserList):
@@ -237,102 +243,13 @@ class Fields:
         """Columns to rename from REDCap PID 247 to REDCap PID 744."""
 
 
-class _FlippedDescriptor:
-    """Descriptor that returns a flipped version of the class."""
-
-    def __get__(self, _obj, owner):
-        if not hasattr(owner, "_flipped_cache"):
-            flipped_attrs = {}
-            for attr in dir(owner):
-                if not attr.startswith("__") and attr not in (
-                    "flipped",
-                    "_flipped_cache",
-                ):
-                    value = getattr(owner, attr)
-                    if isinstance(value, dict):
-                        flipped_attrs[attr] = {v: k for k, v in value.items()}
-
-            owner._flipped_cache = type(
-                f"{owner.__name__}Flipped", (ValueClass,), flipped_attrs
-            )
-
-        return owner._flipped_cache
-
-
-class _FieldDescriptor(UserDict):
-    """Descriptor that creates a ValueField instance with the field name."""
-
-    def __init__(self, value_dict: dict[str, str]) -> None:
-        """Initialize _FieldDescriptor."""
-        self.value_dict = value_dict
-        self.field_name = None
-
-    def __set_name__(self, owner, name) -> None:
-        """Set field name."""
-        self.field_name = name
-
-    def __get__(self, obj, owner) -> "ValueField":
-        """Return ValueField."""
-        if not self.field_name:
-            raise AttributeError
-        return ValueField(self.field_name, self.value_dict)
-
-
-class ValueField:
-    """A field with values and filter logic generation."""
-
-    def __init__(self, field_name: str, value_dict: dict[str, str]) -> None:
-        """Initialize a `ValueField`."""
-        self._field_name = field_name
-        self._value_dict = value_dict
-
-    def filter_logic(self, label: str) -> str:
-        """Generate REDCap filter logic for a given label."""
-        value = self._value_dict[label]
-        return f"[{self._field_name}] = '{value}'"
-
-    def __getitem__(self, key) -> str:
-        """Allow dict-like access: `field['label']`."""
-        return self._value_dict[key]
-
-    def __iter__(self) -> Iterator[str]:
-        """Allow iteration over the dict."""
-        return iter(self._value_dict)
-
-    def __repr__(self) -> str:
-        """Return reproducible string representation."""
-        return f"ValueField({self._field_name}, {self})"
-
-    def __str__(self) -> str:
-        """Return string representation."""
-        return str(self._value_dict)
-
-    def items(self) -> ItemsView[str, str]:
-        """Return ValueField items."""
-        return self._value_dict.items()
-
-    def keys(self) -> KeysView[str]:
-        """Return ValueField keys."""
-        return self._value_dict.keys()
-
-    def values(self) -> ValuesView[str]:
-        """Return ValueField values."""
-        return self._value_dict.values()
-
-
-class ValueClass:
-    """Base class for value classes."""
-
-    flipped = _FlippedDescriptor()
-
-
 class Values:
     """Values for REDCap fields."""
 
     class PID247(ValueClass):
         """Values for PID 247 ― Healthy Brain Network Study Consent (IRB Approved)."""
 
-        enrollment_complete = _FieldDescriptor(
+        enrollment_complete = FieldDescriptor(
             {
                 "Not Sent": "0",
                 "Ready to Send to Curious": "1",
@@ -341,7 +258,7 @@ class Values:
         )
         """Is enrollment complete and we can create parent and participant profiles in Curious?"""  # noqa: E501
 
-        guardian2_consent = _FieldDescriptor(
+        guardian2_consent = FieldDescriptor(
             {
                 "No": "0",
                 "Yes": "1",
@@ -351,7 +268,7 @@ class Values:
         )
         """Second guardian consent required?"""
 
-        intake_ready = _FieldDescriptor(
+        intake_ready = FieldDescriptor(
             {
                 "Not sent": "0",
                 "Ready to Send to Intake Redcap": "1",
@@ -365,12 +282,10 @@ class Values:
         This will create the participant profile in the HBN - Intake and Curious (TEMP for Transition) project and send out the survey.
         """  # noqa: E501
 
-        parent_second_guardian_consent_complete = _FieldDescriptor(
-            {"Incomplete": "0", "Unverified": "1", "Complete": "2"}
-        )
+        parent_second_guardian_consent_complete = RedcapComplete
         """Form status: Complete?"""
 
-        permission_collab = _FieldDescriptor(
+        permission_collab = FieldDescriptor(
             {
                 "YES, you may share my child's records.": "1",
                 "NO, you may not share my child's records.": "2",
@@ -381,21 +296,22 @@ class Values:
     class PID744(ValueClass):
         """Values for PID 744 HBN - Intake and Curious (TEMP for Transition)."""
 
-        complete_parent_second_guardian_consent = _FieldDescriptor(
+        complete_parent_second_guardian_consent = FieldDescriptor(
             {
-                "Incomplete": "0",
-                "Unverified": "1",
-                "Complete": "2",
+                **RedcapComplete.value_dict,
                 "Not Required": "3",
                 "Not Applicable (Adult Participant)": "4",
             }
         )
         """Second guardian consent form complete?"""
 
-        curious_account_created_complete = _FieldDescriptor(
-            {"Incomplete": "0", "Unverified": "1", "Complete": "2"}
+        curious_account_created_account_created_response = FieldDescriptor(
+            {"I confirm that I have created a Curious account": "1"}
         )
+        """Please click below to confirm that you have created a Curious account"""
+
+        curious_account_created_complete = RedcapComplete
         """Form status: Complete?"""
 
-        permission_collab = _FieldDescriptor({"Yes": "0", "No": "1"})
+        permission_collab = FieldDescriptor({"Yes": "0", "No": "1"})
         """Permission to share your child's records with partnering scientific institution(s)."""  # noqa: E501

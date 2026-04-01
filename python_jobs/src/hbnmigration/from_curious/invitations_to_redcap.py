@@ -59,7 +59,6 @@ def check_activity_response(
                 )
                 formatted_data = format_for_redcap(decrypted_answer, respondent)
                 if formatted_data:
-                    breakpoint()
                     all_formatted_data.extend(formatted_data)
     return all_formatted_data
 
@@ -171,7 +170,6 @@ def format_for_redcap(
             "activity_submission_id": submit_id,
             "activity_flow_submission_id": submit_id,
         }
-
         rows.append(row)
 
     df = pl.DataFrame(rows).with_columns(
@@ -289,7 +287,6 @@ def format_for_redcap(
     results = formatter.produce(MindloggerData(df))
 
     for result in results:
-        # Fix the column names
         result.output = result.output.rename(
             lambda col: (
                 col.replace("curiousaccountcreated_", "curious_account_created_", 1)
@@ -305,7 +302,6 @@ def format_for_redcap(
         field_mapping = {
             "source_secret_id": "curious_account_created_source_secret_id",
             "invite_status": "curious_account_created_invite_status",
-            "complete": "curious_account_created_complete",
         }
 
         for short_key, full_key in field_mapping.items():
@@ -313,7 +309,46 @@ def format_for_redcap(
                 context_columns.append(
                     pl.lit(redcap_context[short_key]).alias(full_key)
                 )
-
+        if "curious_account_created_account_created_response" in result.output.columns:
+            curious_account_created_account_created_response = (
+                RedcapValues.PID744.curious_account_created_account_created_response
+            )
+            context_columns.append(
+                pl.when(
+                    pl.col("curious_account_created_account_created_response").cast(
+                        pl.Utf8
+                    )
+                    == curious_account_created_account_created_response[
+                        "I confirm that I have created a Curious account"
+                    ]
+                )
+                .then(
+                    pl.lit(
+                        RedcapValues.PID744.curious_account_created_complete["Complete"]
+                    )
+                )
+                .otherwise(
+                    pl.lit(
+                        RedcapValues.PID744.curious_account_created_complete[
+                            "Unverified"
+                        ]
+                    )
+                )
+                .alias("curious_account_created_complete")
+            )
+        # Column doesn't exist - check invite_status
+        elif redcap_context.get("invite_status") == "3":
+            context_columns.append(
+                pl.lit(
+                    RedcapValues.PID744.curious_account_created_complete["Unverified"]
+                ).alias("curious_account_created_complete")
+            )
+        else:
+            context_columns.append(
+                pl.lit(
+                    RedcapValues.PID744.curious_account_created_complete["Incomplete"]
+                ).alias("curious_account_created_complete")
+            )
         result.output = result.output.with_columns(context_columns)
 
     return results
@@ -344,8 +379,16 @@ def pull_data_from_curious(token: str) -> pl.DataFrame:
     return invitation_df
 
 
-def push_to_redcap(csv_data: str) -> None:
-    """Push data to RedCap."""
+def push_to_redcap(csv_data: str) -> int:
+    """
+    Push data to RedCap.
+
+    Returns
+    -------
+    int
+        number of records updated
+
+    """
     data = {
         "token": redcap_variables.Tokens.pid744
         if PROJECT_STATUS == "dev"
@@ -364,6 +407,7 @@ def push_to_redcap(csv_data: str) -> None:
     if r.status_code != requests.codes["okay"]:
         logger.exception("%s\n%s\nHTTP Status: %d", r.reason, r.text, r.status_code)
     r.raise_for_status()
+    return r.json()
 
 
 def update_already_completed(df: pl.DataFrame) -> pl.DataFrame:
@@ -398,13 +442,26 @@ def update_already_completed(df: pl.DataFrame) -> pl.DataFrame:
 def main() -> None:
     """Monitor Curious account invitations and send updates to REDCap."""
     auth = curious_authenticate()
+    invitation_df = pull_data_from_curious(auth.access)
+    if invitation_df.is_empty():
+        logger.info("No invitations to update.")
+        return
     invitation_df = check_activity_responses(
         auth.access,
-        pull_data_from_curious(auth.access),
+        invitation_df,
         curious_variables.applet_ids["Healthy Brain Network Questionnaires"],
         curious_variables.activity_ids["Curious Account Created"],
     ).unique(subset=["record_id"], keep="last")
-    push_to_redcap(invitation_df.write_csv())
+    n_records = push_to_redcap(invitation_df.write_csv())
+    logger.info(
+        "%d records updated in REDCap from Curious account creation.", n_records
+    )
+    if n_records != invitation_df.shape[0]:
+        msg = (
+            f"Expected {invitation_df.shape[0]} records to update but {n_records} did."
+        )
+        raise ValueError(msg)
+    return
 
 
 if __name__ == "__main__":

@@ -3,6 +3,7 @@
 from typing import Literal
 
 from .._config_variables import curious_variables
+from ..utility_functions import FieldDescriptor, ValueClass
 
 AccountType = Literal["full", "limited"]
 
@@ -25,3 +26,17 @@ def curious_authenticate() -> curious_variables.Tokens:
         msg = f"Could not authenticate to {endpoints.host}"
         raise ConnectionError(msg)
     return tokens
+
+
+class Values:
+    """Values for Curious fields."""
+
+    class HealthyBrainNetworkQuestionnaires(ValueClass):
+        """Values for Healthy Brain Network Questionnaires applet."""
+
+        class CuriousAccountCreated:
+            """Values for Curious Account Created activity."""
+
+            acount_created = FieldDescriptor(
+                {"I confirm that I have created a Curious account": "1"}
+            )

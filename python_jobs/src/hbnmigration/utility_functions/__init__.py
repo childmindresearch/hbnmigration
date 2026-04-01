@@ -31,7 +31,10 @@ from .datatypes import (
     CuriousEncryptedAnswer,
     CuriousId,
     Endpoints,
+    FieldDescriptor,
     Tokens,
+    ValueClass,
+    ValueField,
 )
 from .logging import initialize_logging
 from .secrets import ImportWithFallback
@@ -48,8 +51,11 @@ __all__ = [
     "CuriousEncryptedAnswer",
     "CuriousId",
     "Endpoints",
+    "FieldDescriptor",
     "ImportWithFallback",
     "Tokens",
+    "ValueClass",
+    "ValueField",
     "create_tempory_file",
     "execute_vars_file",
     "fetch_and_save_api_data",

@@ -14,6 +14,7 @@ dependencies = [
     "mindlogger-data-export",
     "msal>=1.35.1",
     "openpyxl>=3.1.5",
+    "pandas-stubs>=3.0.0.260204",
     "pandas>=2.1.0",
     "pyarrow>=14.0.0",
     "pydantic>=2.12.5",
@@ -67,7 +68,7 @@ known-first-party = ["mindlogger_data_export"]
 [tool.ruff.lint.per-file-ignores]
 "src/hbnmigration/from_redcap/config.py" = ["N801"]
 "conftest.py" = ["PLR0913"]
-"test_*.py" = ["PLR0913", "PLR2004"]
+"test_*.py" = ["PLC0415", "PLR0913", "PLR2004"]
 
 [tool.mypy]
 python_version = "3.12"
