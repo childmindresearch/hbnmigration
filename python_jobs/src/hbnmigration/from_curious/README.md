@@ -43,10 +43,11 @@ flowchart TD
     activityAnswers@{ shape: procs, label: "[POST «Curious» ('Curious Account Created' activity)]\n× respondent" }
     pushREDCap@{shape: rounded, label: "POST REDCap\n**PID 744**" };
 
-    start --> authenticate --> pull --> fetchREDCap --"filter Curious data by REDCap already completed"--> datacheck@{ shape: diamond, label: "any invitations?" } --"yes"--> activityAnswers --> decrypt( decrypt ) --> transfor( transform ) --> pushREDCap --> stop
+    start --> authenticate --> pull --> datacheck0@{ shape: diamond, label: "any invitations?" } --"yes"--> fetchREDCap --"filter Curious data by REDCap already completed"--> datacheck@{ shape: diamond, label: "any invitations?" } --"yes"--> activityAnswers --> decrypt( decrypt ) --> transfor( transform ) --> pushREDCap --> stop
 
+    datacheck0 --"no"--> stop@{ shape: dbl-circ, label: "Stop" };
     datacheck --"no"--> stop@{ shape: dbl-circ, label: "Stop" };
 
     class authenticate,pull,activityAnswers,fetchREDCap,pushREDCap apiCall;
-    linkStyle 0,1,2 stroke:#0067a0,color:#0067a0
+    linkStyle 0,1,2,3,4,5,6,7,8,9,10,11 stroke:#0067a0,color:#0067a0
 ```
