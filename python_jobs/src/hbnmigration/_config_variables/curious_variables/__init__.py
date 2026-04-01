@@ -1,6 +1,6 @@
 """Curious variables. Put secrets in `./curious_variables.py`."""
 
-from ...utility_functions import ImportWithFallback
+from ...utility_functions import CuriousId, ImportWithFallback
 
 AppletCredentials = ImportWithFallback.module(
     ".curious_variables",
@@ -20,24 +20,42 @@ Endpoints = ImportWithFallback.module(
 )
 """Curious endpoints."""
 
-headers: dict[str, str] = ImportWithFallback.literal(
-    ".curious_variables", "headers", {}
-)
-"""Curious headers."""
+try:
+    from .curious_variables import headers
+except (ImportError, ModuleNotFoundError):
 
-owner_ids: dict[str, str] = ImportWithFallback.literal(
+    def headers(token: str) -> dict[str, str]:
+        """Curious headers."""
+        return {}
+
+
+owner_ids: dict[str, CuriousId] = ImportWithFallback.literal(
     ".curious_variables", "owner_ids", {}
 )
 """Curious project owner IDs."""
 
-applet_ids: dict[str, str] = ImportWithFallback.literal(
+applet_ids: dict[str, CuriousId] = ImportWithFallback.literal(
     ".curious_variables", "applet_ids", {}
 )
 """Curious applet IDs."""
+
+activity_ids: dict[str, CuriousId] = ImportWithFallback.literal(
+    ".curious_variables", "activity_ids", {}
+)
+"""Curious activity IDs."""
 
 Tokens = ImportWithFallback.module(
     ".curious_variables", "Tokens", "...utility_functions", "Tokens"
 )
 """Curious tokens."""
 
-__all__ = ["Credentials", "Endpoints", "headers"]
+__all__ = [
+    "AppletCredentials",
+    "Credentials",
+    "Endpoints",
+    "Tokens",
+    "activity_ids",
+    "applet_ids",
+    "headers",
+    "owner_ids",
+]

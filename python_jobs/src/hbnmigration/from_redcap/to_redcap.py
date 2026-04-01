@@ -19,7 +19,7 @@ Endpoints = redcap_variables.Endpoints()
 logger = initialize_logging(__name__)
 
 
-def update_source(df: pd.DataFrame) -> int:
+def update_source(df: pd.DataFrame, record_ids: dict[int | str, int | str]) -> int:
     """
     Update `intake_ready` column in source project.
 
@@ -27,6 +27,9 @@ def update_source(df: pd.DataFrame) -> int:
     ----------
     df
         destination DataFrame
+
+    record_ids
+        mapping of record_ids between two REDCap projects
 
     Returns
     -------
@@ -43,11 +46,74 @@ def update_source(df: pd.DataFrame) -> int:
             ],
         }
     )
+    df_274["record"] = df_274["record"].replace({v: k for k, v in record_ids.items()})
     return redcap_api_push(
         df=df_274,
         token=redcap_variables.Tokens.pid247,
         url=Endpoints.base_url,
         headers=redcap_variables.headers,
+    )
+
+
+def update_complete_parent_second_guardian_consent(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Update `"parent_second_guardian_consent_complete"` based on `"guardian2_consent"`.
+
+    Only records whose `"guardian2_consent"` value is in `mapping` are affected.
+    All other records are left unchanged.
+    """
+    mapping = {
+        Values.PID247.guardian2_consent[
+            _247
+        ]: Values.PID744.complete_parent_second_guardian_consent[_744]
+        for _247, _744 in [
+            ("No", "Not Required"),
+            (
+                "Not Applicable (Adult Participant)",
+                "Not Applicable (Adult Participant)",
+            ),
+        ]
+    }
+    # compute desired target value per record
+    record_to_value = (
+        df.query("field_name == 'guardian2_consent'")
+        .set_index("record")["value"]
+        .map(mapping)
+        .dropna()
+    )
+    if record_to_value.empty:
+        return df
+    records_to_update = record_to_value.index
+
+    # update existing rows
+    mask = (df["field_name"] == "complete_parent_second_guardian_consent") & (
+        df["record"].isin(records_to_update)
+    )
+    df.loc[mask, "value"] = df.loc[mask, "record"].map(record_to_value)
+
+    # append missing rows
+    missing_records = records_to_update.difference(
+        df.loc[
+            df["field_name"] == "complete_parent_second_guardian_consent", "record"
+        ].tolist()
+    )
+    if len(missing_records):
+        df = pd.concat(
+            [
+                df,
+                pd.DataFrame(
+                    {
+                        "record": missing_records,
+                        "field_name": "complete_parent_second_guardian_consent",
+                        "value": record_to_value.loc[missing_records].values,
+                    }
+                ),
+            ],
+            ignore_index=True,
+        )
+    df = df.sort_values(["record", "field_name"], kind="stable").reset_index(drop=True)
+    return df.sort_values(["record", "field_name"], kind="stable").reset_index(
+        drop=True
     )
 
 
@@ -66,12 +132,21 @@ def main() -> None:
         if data247.empty:
             raise NoData
         # rename columns for PID744
+        data247 = update_complete_parent_second_guardian_consent(data247)
         data247["field_name"] = data247["field_name"].replace(
             Fields.rename.redcap247_to_redcap744
         )
         # format DataFrame for PID744
         df_744 = data247.loc[
             data247["field_name"].str.startswith(tuple(Fields.import_744))
+        ]
+        record_ids: dict[int | str, int | str] = {
+            row["record"]: row["value"]
+            for _, row in df_744[df_744["field_name"] == "mrn"].iterrows()
+        }
+        df_744["record"] = df_744["record"].replace(record_ids)
+        df_744.loc[df_744["field_name"] == "record_id", "value"] = df_744.loc[
+            df_744["field_name"] == "record_id", "record"
         ]
         assert isinstance(df_744, pd.DataFrame)
         df_744 = (
@@ -96,7 +171,7 @@ def main() -> None:
         )
         if not rows_imported_744:
             raise NoData
-        rows_updated_274 = update_source(df_744)
+        rows_updated_274 = update_source(df_744, record_ids)
         assert rows_imported_744 == rows_updated_274, (
             f"rows imported to PID 744 ({rows_imported_744}) "
             f"≠ rows updated in PID 274 ({rows_updated_274})."

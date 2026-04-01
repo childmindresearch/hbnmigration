@@ -1,37 +1,55 @@
 """Shared pytest configuration and fixtures."""
 
+from collections.abc import Generator
 from contextlib import contextmanager, ExitStack
 import json
 from pathlib import Path
 import tempfile
-from typing import Any, Dict, List, Optional, TypedDict
+from typing import Any, cast, TypedDict
 from unittest.mock import AsyncMock, Mock, patch
 
 import pandas as pd
+import polars as pl
 import pytest
 import requests
 from websockets.exceptions import InvalidStatus
 
 from hbnmigration.from_redcap.config import Values
-from hbnmigration.utility_functions.datatypes import CuriousAlert, CuriousEncryption
+from hbnmigration.utility_functions.datatypes import (
+    CuriousAlert,
+    CuriousDecryptedAnswer,
+    CuriousEncryption,
+)
 
 # ============================================================================
 # Constants
 # ============================================================================
+
 DEFAULT_ENCRYPTION: CuriousEncryption = {
     "base": "base_value",
     "prime": "prime_value",
     "accountId": "account_001",
     "publicKey": "public_key_value",
 }
+
 DEFAULT_REDCAP_BASE_URL = "https://redcap.test/api/"
+
+# Curious invitation test IDs
+SAMPLE_APPLET_ID = "abcd1234-ab12-cd34-ef56-abcdef123456"
+SAMPLE_ACTIVITY_ID = "actv1234-ab12-cd34-ef56-abcdef123456"
+SAMPLE_RESPONDENT_ID = "resp1234-ab12-cd34-ef56-abcdef123456"
+SAMPLE_SUBJECT_ID = "subj1234-ab12-cd34-ef56-abcdef123456"
+SAMPLE_SUBMIT_ID = "smit1234-ab12-cd34-ef56-abcdef123456"
+
+INVITATIONS_MOD = "hbnmigration.from_curious.invitations_to_redcap"
+
 # ============================================================================
 # File System Fixtures
 # ============================================================================
 
 
 @pytest.fixture
-def temp_csv_file():
+def temp_csv_file() -> Generator[Path, None, None]:
     """Create a temporary CSV file."""
     with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as tmp:
         tmp_path = tmp.name
@@ -40,7 +58,7 @@ def temp_csv_file():
 
 
 @pytest.fixture
-def temp_excel_file():
+def temp_excel_file() -> Generator[Path, None, None]:
     """Create a temporary Excel file."""
     with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
         tmp_path = tmp.name
@@ -49,7 +67,7 @@ def temp_excel_file():
 
 
 @pytest.fixture
-def temp_dir():
+def temp_dir() -> Generator[Path, None, None]:
     """Create a temporary directory."""
     with tempfile.TemporaryDirectory() as tmpdir:
         yield Path(tmpdir)
@@ -69,13 +87,13 @@ def _create_mock_response(status_code: int, text: str) -> Mock:
 
 
 @pytest.fixture
-def mock_redcap_response():
+def mock_redcap_response() -> Mock:
     """Mock successful REDCap API response."""
     return _create_mock_response(requests.codes["okay"], "1")
 
 
 @pytest.fixture
-def mock_ripple_response():
+def mock_ripple_response() -> Mock:
     """Mock successful Ripple API response."""
     return _create_mock_response(requests.codes["okay"], "Success")
 
@@ -86,19 +104,19 @@ def mock_ripple_response():
 
 
 def create_participant_df(
-    global_ids: Optional[List[str]] = None,
-    custom_ids: Optional[List[int]] = None,
-    first_names: Optional[List[str]] = None,
-    last_names: Optional[List[str]] = None,
-    consent_forms: Optional[List[str]] = None,
-    contact_types: Optional[List[str]] = None,
-    contact_info: Optional[List[str]] = None,
-    import_types: Optional[List[str]] = None,
-    **kwargs,
+    global_ids: list[str] | None = None,
+    custom_ids: list[int] | None = None,
+    first_names: list[str] | None = None,
+    last_names: list[str] | None = None,
+    consent_forms: list[str] | None = None,
+    contact_types: list[str] | None = None,
+    contact_info: list[str] | None = None,
+    import_types: list[str] | None = None,
+    **kwargs: Any,
 ) -> pd.DataFrame:
     """Create participant DataFrames with flexible defaults."""
     length = len(global_ids or custom_ids or first_names or [1])
-    data = {
+    data: dict[str, Any] = {
         "globalId": global_ids or [f"CUSTOM{i:03d}" for i in range(1, length + 1)],
         "customId": custom_ids or list(range(99999, 99999 + length)),
         "firstName": first_names or ["Custom"] * length,
@@ -114,12 +132,12 @@ def create_participant_df(
 
 
 def create_redcap_eav_df(
-    records: Optional[List[str]] = None,
-    field_names: Optional[List[str]] = None,
-    values: Optional[List[str]] = None,
-    repeat_instruments: Optional[List[str]] = None,
-    repeat_instances: Optional[List[Any]] = None,
-    event_names: Optional[List[str]] = None,
+    records: list[str] | None = None,
+    field_names: list[str] | None = None,
+    values: list[str] | None = None,
+    repeat_instruments: list[str] | None = None,
+    repeat_instances: list[Any] | None = None,
+    event_names: list[str] | None = None,
 ) -> pd.DataFrame:
     """Create REDCap EAV format DataFrames with flexible defaults."""
     if not any([records, field_names, values]):
@@ -133,7 +151,7 @@ def create_redcap_eav_df(
             }
         )
     length = len(records or field_names or values or [0])
-    data = {
+    data: dict[str, Any] = {
         "record": records or [""] * length,
         "field_name": field_names or [""] * length,
         "value": values or [""] * length,
@@ -146,17 +164,17 @@ def create_redcap_eav_df(
 
 
 def create_curious_participant_df(
-    secret_user_ids: Optional[List[str]] = None,
-    tags: Optional[List[str]] = None,
-    first_names: Optional[List[str]] = None,
-    last_names: Optional[List[str]] = None,
-    **kwargs,
+    secret_user_ids: list[str] | None = None,
+    tags: list[str] | None = None,
+    first_names: list[str] | None = None,
+    last_names: list[str] | None = None,
+    **kwargs: Any,
 ) -> pd.DataFrame:
     """Create Curious participant DataFrames with flexible defaults."""
     length = len(secret_user_ids or tags or first_names or [1])
     default_tags = tags or ["child"] * length
     account_types_list = ["full" if t == "parent" else "limited" for t in default_tags]
-    data = {
+    data: dict[str, Any] = {
         "secretUserId": secret_user_ids or [f"{i:05d}" for i in range(1, length + 1)],
         "tag": default_tags,
         "accountType": account_types_list,
@@ -176,10 +194,10 @@ def create_curious_participant_df(
 
 
 def create_alert_df(
-    records: Optional[list[str]] = None,
-    field_names: Optional[list[str]] = None,
-    values: Optional[list[str]] = None,
-    events: Optional[list[str]] = None,
+    records: list[str] | None = None,
+    field_names: list[str] | None = None,
+    values: list[str] | None = None,
+    events: list[str] | None = None,
 ) -> pd.DataFrame:
     """
     Create alert DataFrames for testing.
@@ -193,11 +211,8 @@ def create_alert_df(
         values=values,
         event_names=events,
     )
-
-    # Ensure redcap_event_name column exists (not just when events provided)
     if "redcap_event_name" not in result.columns:
         result["redcap_event_name"] = pd.Series([], dtype=str) if result.empty else ""
-
     return result
 
 
@@ -209,7 +224,7 @@ def create_curious_alert(
     respondent_id: str,
     subject_id: str,
     account_id: str = "account_001",
-    **kwargs,
+    **kwargs: Any,
 ) -> CuriousAlert:
     """Create CuriousAlert test data."""
     encryption = DEFAULT_ENCRYPTION.copy()
@@ -247,12 +262,259 @@ def create_alert_metadata(field_names: list[str], choices: list[str]) -> pd.Data
 
 
 # ============================================================================
+# Curious Invitation Factories
+# ============================================================================
+
+
+def make_api_respondent(
+    secret_id: str,
+    subject_id: str,
+    status: str = "invited",
+    last_seen: str | None = None,
+    applet_id: str = SAMPLE_APPLET_ID,
+) -> dict[str, Any]:
+    """
+    Build a respondent dict matching the Curious invitation API shape.
+
+    Parameters
+    ----------
+    secret_id
+        The ``respondentSecretId`` value.
+    subject_id
+        The ``subjectId`` value.
+    status
+        Invitation status string.
+    last_seen
+        ISO datetime or ``None``.
+    applet_id
+        Applet ID for the detail record.
+
+    Returns
+    -------
+    dict[str, Any]
+
+    """
+    return {
+        "status": status,
+        "lastSeen": last_seen,
+        "details": [
+            {
+                "appletId": applet_id,
+                "respondentSecretId": secret_id,
+                "subjectId": subject_id,
+            }
+        ],
+    }
+
+
+def make_ml_data(**overrides: Any) -> CuriousDecryptedAnswer:
+    """
+    Build a minimal CuriousDecryptedAnswer with overrides.
+
+    Parameters
+    ----------
+    **overrides
+        Keys to override in the base dict.
+
+    Returns
+    -------
+    CuriousDecryptedAnswer
+
+    """
+    base: dict[str, Any] = {
+        "activityId": SAMPLE_ACTIVITY_ID,
+        "activityHistoryId": "hist1234-ab12-cd34-ef56-abcdef123456",
+        "answerId": "answ1234-ab12-cd34-ef56-abcdef123456",
+        "createdAt": "2024-06-01T12:00:00.000",
+        "endDatetime": "2024-06-01T12:05:00.000",
+        "flowHistoryId": None,
+        "id": "id001234-ab12-cd34-ef56-abcdef123456",
+        "identifier": None,
+        "itemIds": [],
+        "items": [],
+        "migratedData": None,
+        "reviewCount": {},
+        "sourceSubject": {},
+        "startDatetime": "2024-06-01T12:00:00.000",
+        "submitId": SAMPLE_SUBMIT_ID,
+        "subscaleSetting": None,
+        "version": "1.0.0",
+        "userPublicKey": "fake_public_key",
+        "answer": [],
+        "events": [],
+        "respondentSecretId": "00001_P",
+        "sourceSecretId": "00001_P",
+    }
+    base.update(overrides)
+    return cast(CuriousDecryptedAnswer, base)
+
+
+@contextmanager
+def patch_invitations_module(
+    **overrides: str,
+) -> Generator[dict[str, Mock], None, None]:
+    """
+    Patch common dependencies in the invitations_to_redcap module.
+
+    Parameters
+    ----------
+    **overrides
+        Additional or replacement patch paths keyed by mock name.
+
+    Yields
+    ------
+    dict[str, Mock]
+        Dictionary of mock objects keyed by name.
+
+    """
+    default_patches = {
+        "curious_variables": f"{INVITATIONS_MOD}.curious_variables",
+        "redcap_variables": f"{INVITATIONS_MOD}.redcap_variables",
+        "requests_get": f"{INVITATIONS_MOD}.requests.get",
+        "requests_post": f"{INVITATIONS_MOD}.requests.post",
+        "fetch_api_data": f"{INVITATIONS_MOD}.fetch_api_data",
+        "get_applet_encryption": f"{INVITATIONS_MOD}.get_applet_encryption",
+        "decrypt_single": f"{INVITATIONS_MOD}.decrypt_single",
+        "endpoints": f"{INVITATIONS_MOD}.Endpoints",
+    }
+    default_patches.update(overrides)
+    with ExitStack() as stack:
+        mocks = {
+            name: stack.enter_context(patch(path))
+            for name, path in default_patches.items()
+        }
+        cv = mocks["curious_variables"]
+        cv.headers.return_value = {"Content-Type": "application/json"}
+        cv.applet_ids = {"Healthy Brain Network Questionnaires": SAMPLE_APPLET_ID}
+        cv.activity_ids = {"Curious Account Created": SAMPLE_ACTIVITY_ID}
+        cv.owner_ids = {
+            "Healthy Brain Network (HBN)": "owner123-ab12-cd34-ef56-abcdef123456"
+        }
+        cv.Credentials.hbn_mindlogger = {"username": "u", "password": "p"}
+        cv.AppletCredentials.hbn_mindlogger = {
+            "Healthy Brain Network Questionnaires": {"applet_password": "secret"}
+        }
+        ep = mocks["endpoints"]
+        ep.Curious.invitation_statuses.return_value = (
+            "https://curious.test/api/invitations"
+        )
+        ep.Curious.applet.return_value = "https://curious.test/api/applet"
+        ep.Curious.applet_activity_answers_list.return_value = (
+            "https://curious.test/api/answers"
+        )
+        ep.Redcap.base_url = DEFAULT_REDCAP_BASE_URL
+        rv = mocks["redcap_variables"]
+        rv.headers = {"Content-Type": "application/x-www-form-urlencoded"}
+        rv.Tokens.pid744 = "token_744"
+        rv.Endpoints.return_value.base_url = DEFAULT_REDCAP_BASE_URL
+        yield mocks
+
+
+# ============================================================================
+# Curious Invitation Fixtures
+# ============================================================================
+
+
+@pytest.fixture
+def sample_respondent_detail() -> dict[str, str]:
+    """Return a respondent detail dict as returned by the Curious API."""
+    return {
+        "appletId": SAMPLE_APPLET_ID,
+        "respondentSecretId": "00001_P",
+        "subjectId": SAMPLE_SUBJECT_ID,
+    }
+
+
+@pytest.fixture
+def sample_respondent(
+    sample_respondent_detail: dict[str, str],
+) -> dict[str, Any]:
+    """Return a respondent dict from the Curious invitation status API."""
+    return {
+        "status": "invited",
+        "lastSeen": None,
+        "details": [sample_respondent_detail],
+    }
+
+
+@pytest.fixture
+def sample_redcap_context() -> dict[str, Any]:
+    """Return a REDCap context dict for format_for_redcap."""
+    return {
+        "record_id": "00001",
+        "source_secret_id": "00001_P",
+        "invite_status": 3,
+        "redcap_event_name": "curious_parent_arm_1",
+        "complete": "0",
+        "respondent_id": SAMPLE_SUBJECT_ID,
+    }
+
+
+@pytest.fixture
+def sample_decrypted_answer() -> CuriousDecryptedAnswer:
+    """
+    Return a minimal CuriousDecryptedAnswer for testing.
+
+    Note: datetimes must NOT have trailing 'Z' — the production code uses
+    strptime with format ``%Y-%m-%dT%H:%M:%S%.f`` which does not parse 'Z'.
+    """
+    return make_ml_data(
+        itemIds=["item1234-ab12-cd34-ef56-abcdef123456"],
+        items=[
+            {
+                "id": "item1234-ab12-cd34-ef56-abcdef123456",
+                "name": "account_created",
+                "question": {
+                    "en": (
+                        "Please click below to confirm that you have "
+                        "created a Curious account"
+                    )
+                },
+                "responseType": "singleSelect",
+                "responseValues": {
+                    "options": [
+                        {
+                            "text": "I confirm that I have created a Curious account",
+                            "value": 0,
+                            "score": 1,
+                        },
+                        {"text": "No", "value": 1, "score": 0},
+                    ]
+                },
+            }
+        ],
+        answer=[{"value": 0}],
+    )
+
+
+@pytest.fixture
+def sample_invitation_df() -> pl.DataFrame:
+    """Return a Polars DataFrame representing invitation records."""
+    return pl.DataFrame(
+        {
+            "record_id": ["00001", "00002"],
+            "source_secret_id": ["00001_P", "00002_P"],
+            "invite_status": [3, 2],
+            "redcap_event_name": [
+                "curious_parent_arm_1",
+                "curious_parent_arm_1",
+            ],
+            "complete": ["0", "0"],
+            "respondent_id": [
+                SAMPLE_SUBJECT_ID,
+                "subj5678-ab12-cd34-ef56-abcdef123456",
+            ],
+        }
+    )
+
+
+# ============================================================================
 # Participant Data Fixtures
 # ============================================================================
 
 
 @pytest.fixture
-def participant_with_email():
+def participant_with_email() -> pd.DataFrame:
     """Return generic participant with email contact."""
     return create_participant_df(
         global_ids=["TEST001"],
@@ -264,7 +526,7 @@ def participant_with_email():
 
 
 @pytest.fixture
-def participant_without_email():
+def participant_without_email() -> pd.DataFrame:
     """Return generic participant without email contact."""
     return create_participant_df(
         global_ids=["TEST002"],
@@ -276,7 +538,7 @@ def participant_without_email():
 
 
 @pytest.fixture
-def send_to_redcap_participant():
+def send_to_redcap_participant() -> pd.DataFrame:
     """Return participant with 'Send to RedCap' consent status."""
     return create_participant_df(
         global_ids=["TEST003"],
@@ -287,7 +549,7 @@ def send_to_redcap_participant():
 
 
 @pytest.fixture
-def swamp_thing_participant():
+def swamp_thing_participant() -> pd.DataFrame:
     """Return Dr. Alec Holland's data."""
     return create_participant_df(
         global_ids=["ST001"],
@@ -300,20 +562,24 @@ def swamp_thing_participant():
 
 
 @pytest.fixture
-def parliament_of_trees_participants():
+def parliament_of_trees_participants() -> pd.DataFrame:
     """Provide multiple Parliament of Trees members."""
     return create_participant_df(
         global_ids=["ST001", "AA001", "TE001"],
         custom_ids=[12345, 67890, 11111],
         first_names=["Alec", "Abby", "Tefé"],
         last_names=["Holland", "Arcane", "Holland"],
-        contact_info=["alec@swamp.com", "abby@parliament.org", "tefe@green.org"],
+        contact_info=[
+            "alec@swamp.com",
+            "abby@parliament.org",
+            "tefe@green.org",
+        ],
         import_types=["HBN - Main", "HBN - Main", "HBN - Waitlist"],
     )
 
 
 @pytest.fixture
-def sample_ripple_data():
+def sample_ripple_data() -> pd.DataFrame:
     """Return Ripple data with multiple participants."""
     return create_participant_df(
         global_ids=["ST001", "AA001", "TE001", "WOO001"],
@@ -326,12 +592,17 @@ def sample_ripple_data():
             "tefe@green.org",
             "woodrue@floronic.com",
         ],
-        import_types=["HBN - Main", "HBN - Waitlist", "HBN - Main", "HBN - Waitlist"],
+        import_types=[
+            "HBN - Main",
+            "HBN - Waitlist",
+            "HBN - Main",
+            "HBN - Waitlist",
+        ],
     )
 
 
 @pytest.fixture
-def anton_arcane_corrupted_data():
+def anton_arcane_corrupted_data() -> pd.DataFrame:
     """Provide corrupted / rejected participant data."""
     return create_participant_df(
         global_ids=["ANT001"],
@@ -346,13 +617,13 @@ def anton_arcane_corrupted_data():
 
 
 @pytest.fixture
-def mock_redcap_existing_subjects():
+def mock_redcap_existing_subjects() -> pd.DataFrame:
     """Mock existing REDCap subjects."""
     return pd.DataFrame({"mrn": [12345, 67890], "record_id": [1, 2]})
 
 
 @pytest.fixture
-def incoming_subjects_mixed():
+def incoming_subjects_mixed() -> pd.DataFrame:
     """Return subjects with mix of new and existing."""
     return pd.DataFrame(
         {
@@ -368,7 +639,7 @@ def incoming_subjects_mixed():
 
 
 @pytest.fixture
-def bella_garten_participant():
+def bella_garten_participant() -> pd.DataFrame:
     """Return data for the Gardener."""
     return create_participant_df(
         global_ids=["BG001"],
@@ -386,11 +657,16 @@ def bella_garten_participant():
 
 
 @pytest.fixture
-def sample_redcap_data():
+def sample_redcap_data() -> pd.DataFrame:
     """Sample REDCap data in EAV format from PID 247."""
     return create_redcap_eav_df(
         records=["001", "001", "001", "002", "002", "002"],
-        field_names=["intake_ready", "participant_name", "permission_collab"] * 2,
+        field_names=[
+            "intake_ready",
+            "participant_name",
+            "permission_collab",
+        ]
+        * 2,
         values=[
             Values.PID247.intake_ready["Ready to Send to Intake Redcap"],
             "Alec Holland",
@@ -405,13 +681,13 @@ def sample_redcap_data():
 
 
 @pytest.fixture
-def empty_redcap_data():
+def empty_redcap_data() -> pd.DataFrame:
     """Empty DataFrame representing no data from REDCap."""
     return create_redcap_eav_df()
 
 
 @pytest.fixture
-def expected_transformed_data():
+def expected_transformed_data() -> pd.DataFrame:
     """Return expected data after transformation for PID 744."""
     return pd.DataFrame(
         {
@@ -433,7 +709,7 @@ def expected_transformed_data():
 
 
 @pytest.fixture
-def sample_redcap_curious_data():
+def sample_redcap_curious_data() -> pd.DataFrame:
     """Sample REDCap data ready for Curious transfer."""
     return create_redcap_eav_df(
         records=["001"] * 5,
@@ -449,7 +725,7 @@ def sample_redcap_curious_data():
 
 
 @pytest.fixture
-def parliament_curious_redcap_data():
+def parliament_curious_redcap_data() -> pd.DataFrame:
     """Parliament of Trees REDCap data for Curious transfer."""
     return create_redcap_eav_df(
         records=["ST001", "ST001", "AA001", "AA001"],
@@ -459,7 +735,7 @@ def parliament_curious_redcap_data():
 
 
 @pytest.fixture
-def formatted_curious_data():
+def formatted_curious_data() -> pd.DataFrame:
     """Sample formatted data ready for Curious API."""
     return pd.DataFrame(
         {
@@ -476,7 +752,7 @@ def formatted_curious_data():
 
 
 @pytest.fixture
-def multi_record_curious_data():
+def multi_record_curious_data() -> pd.DataFrame:
     """Multiple records formatted for Curious."""
     return pd.DataFrame(
         {
@@ -498,11 +774,11 @@ def multi_record_curious_data():
 
 
 def _create_mock_redcap_variables(
-    pid247="token_247",
-    pid625="token_625",
-    pid744="token_744",
-    pid757="token_757",
-    base_url=DEFAULT_REDCAP_BASE_URL,
+    pid247: str = "token_247",
+    pid625: str = "token_625",
+    pid744: str = "token_744",
+    pid757: str = "token_757",
+    base_url: str = DEFAULT_REDCAP_BASE_URL,
 ) -> Mock:
     """Create a standardized mock redcap_variables object."""
     mock_vars = Mock()
@@ -515,10 +791,10 @@ def _create_mock_redcap_variables(
 
 
 @pytest.fixture
-def mock_curious_variables():
+def mock_curious_variables() -> Mock:
     """Mock curious_variables configuration."""
     mock_vars = Mock()
-    mock_vars.headers = {"Content-Type": "application/json"}
+    mock_vars.headers.return_value = {"Content-Type": "application/json"}
     mock_vars.applet_ids = {"Healthy Brain Network Questionnaires": "test_applet_id"}
     mock_creds = Mock()
     mock_creds.hbn_mindlogger = Mock(username="test_user", password="test_pass")
@@ -535,13 +811,13 @@ def mock_curious_variables():
 
 
 @pytest.fixture
-def mock_redcap_variables_curious():
+def mock_redcap_variables_curious() -> Mock:
     """Mock redcap_variables for Curious transfer."""
     return _create_mock_redcap_variables()
 
 
 @pytest.fixture
-def mock_ripple_variables():
+def mock_ripple_variables() -> Mock:
     """Mock ripple_variables configuration."""
     mock_vars = Mock()
     mock_vars.study_ids = {
@@ -554,20 +830,20 @@ def mock_ripple_variables():
 
 
 @pytest.fixture
-def mock_redcap_variables():
+def mock_redcap_variables() -> Mock:
     """Mock redcap_variables configuration."""
     return _create_mock_redcap_variables()
 
 
 @pytest.fixture
-def setup_redcap_mocks(mock_redcap_variables, temp_csv_file):
+def setup_redcap_mocks(mock_redcap_variables: Mock, temp_csv_file: Path) -> Mock:
     """Set up common redcap variable mocks with temp file."""
     mock_redcap_variables.redcap_import_file = temp_csv_file
     return mock_redcap_variables
 
 
 @pytest.fixture
-def mock_endpoints():
+def mock_endpoints() -> Mock:
     """Mock Endpoints configuration."""
     mock = Mock()
     mock.Ripple.import_data.return_value = "https://ripple.swamp.org/import"
@@ -577,13 +853,17 @@ def mock_endpoints():
 
 
 @pytest.fixture
-def mock_all_ripple_deps(mock_ripple_variables, mock_endpoints):
+def mock_all_ripple_deps(
+    mock_ripple_variables: Mock, mock_endpoints: Mock
+) -> dict[str, Mock]:
     """Set up all common Ripple dependencies."""
     return {"endpoints": mock_endpoints, "variables": mock_ripple_variables}
 
 
 @pytest.fixture
-def mock_main_workflow_deps(mock_redcap_variables, temp_excel_file):
+def mock_main_workflow_deps(
+    mock_redcap_variables: Mock, temp_excel_file: Path
+) -> dict[str, Any]:
     """Set up dependencies for main workflow tests."""
     return {"vars": mock_redcap_variables, "excel_file": temp_excel_file}
 
@@ -594,7 +874,7 @@ def mock_main_workflow_deps(mock_redcap_variables, temp_excel_file):
 
 
 @pytest.fixture
-def excel_file_with_data(temp_excel_file):
+def excel_file_with_data(temp_excel_file: Path) -> Path:
     """Create Excel file with test data."""
     pd.DataFrame(
         {
@@ -611,7 +891,7 @@ def excel_file_with_data(temp_excel_file):
 
 
 @pytest.fixture
-def mock_importable_module():
+def mock_importable_module() -> Mock:
     """Create a mock module with test attributes."""
     mock_mod = Mock()
     mock_mod.TestClass = Mock
@@ -644,7 +924,7 @@ def swamp_thing_fallback_data() -> FallbackDataDict:
 
 
 @pytest.fixture
-def green_realm_config():
+def green_realm_config() -> dict[str, Any]:
     """Mock configuration data for API testing."""
     return {
         "api_key": "TEST_KEY",
@@ -655,7 +935,7 @@ def green_realm_config():
 
 
 @pytest.fixture
-def mock_parliament_object():
+def mock_parliament_object() -> Mock:
     """Mock Parliament of Trees object."""
     mock_parliament = Mock()
     mock_parliament.members = ["Alec Holland", "Ghost Orchid", "Yggdrasil"]
@@ -670,7 +950,7 @@ def mock_parliament_object():
 
 
 @pytest.fixture
-def patched_main_workflow():
+def patched_main_workflow() -> Generator[dict[str, Mock], None, None]:
     """Provide context manager for patching main workflow dependencies."""
     patches = {
         "cleanup": "hbnmigration.from_ripple.to_redcap.cleanup",
@@ -692,8 +972,10 @@ def patched_main_workflow():
 
 @contextmanager
 def patch_redcap_transfer_module(
-    fetch_return=None, push_return=None, update_return=None
-):
+    fetch_return: Any = None,
+    push_return: Any = None,
+    update_return: Any = None,
+) -> Generator[dict[str, Mock], None, None]:
     """Context manager for patching REDCap transfer module dependencies."""
     with ExitStack() as stack:
         mocks = {
@@ -728,8 +1010,10 @@ def patch_redcap_transfer_module(
 
 @contextmanager
 def patch_redcap_fetch_dependencies(
-    fetch_api_return=None, endpoints_config=None, redcap_vars_config=None
-):
+    fetch_api_return: Any = None,
+    endpoints_config: Any = None,
+    redcap_vars_config: Any = None,
+) -> Generator[dict[str, Mock], None, None]:
     """Context manager for patching fetch_data dependencies."""
     with ExitStack() as stack:
         mocks = {
@@ -754,8 +1038,11 @@ def patch_redcap_fetch_dependencies(
 
 @contextmanager
 def patch_curious_transfer_module(
-    fetch_return=None, format_return=None, send_return=None, update_return=None
-):
+    fetch_return: Any = None,
+    format_return: Any = None,
+    send_return: Any = None,
+    update_return: Any = None,
+) -> Generator[dict[str, Mock], None, None]:
     """Context manager for patching Curious transfer module dependencies."""
     with ExitStack() as stack:
         mocks = {
@@ -783,6 +1070,7 @@ def patch_curious_transfer_module(
         mocks["curious_vars"].applet_ids = {
             "Healthy Brain Network Questionnaires": "test_applet_id"
         }
+        mocks["curious_vars"].headers.return_value = {}
         mocks["redcap_vars"].Tokens.pid247 = "token_247"
         mocks["redcap_vars"].headers = {}
         mocks["redcap_vars"].Endpoints.return_value.base_url = DEFAULT_REDCAP_BASE_URL
@@ -799,14 +1087,23 @@ def patch_curious_transfer_module(
 
 @contextmanager
 def patch_curious_api_dependencies(
-    new_account_return=None, new_account_side_effect=None
-):
+    new_account_return: Any = None,
+    new_account_side_effect: Any = None,
+) -> Generator[dict[str, Mock], None, None]:
     """Context manager for patching Curious API calls."""
     with ExitStack() as stack:
         mocks = {
             "new_account": stack.enter_context(
                 patch("hbnmigration.from_redcap.to_curious.new_curious_account")
-            )
+            ),
+            "curious_vars": stack.enter_context(
+                patch("hbnmigration.from_redcap.to_curious.curious_variables")
+            ),
+        }
+        token = "test_access_token"
+        mocks["curious_vars"].headers.return_value = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {token}",
         }
         if new_account_return is not None:
             mocks["new_account"].return_value = new_account_return
@@ -991,7 +1288,11 @@ def kevin_metadata() -> pd.DataFrame:
     """Kevin's alert metadata with urgency levels."""
     return create_alert_metadata(
         ["mrn", "alerts_parent_baseline_5", "parent_baseline_alerts"],
-        ["", "0, Normal | 1, Concerning | 2, Urgent", "0, No | 1, Yes"],
+        [
+            "",
+            "0, Normal | 1, Concerning | 2, Urgent",
+            "0, No | 1, Yes",
+        ],
     )
 
 
@@ -1015,7 +1316,7 @@ def sample_curious_alert_response() -> dict[str, Any]:
 
 
 @pytest.fixture
-def mock_alerts_dependencies():
+def mock_alerts_dependencies() -> Generator[dict[str, Mock], None, None]:
     """Mock all external dependencies for alerts processing."""
     with (
         patch(
@@ -1035,11 +1336,9 @@ def mock_alerts_dependencies():
             "hbnmigration.from_curious.alerts_to_redcap._create_choice_lookup"
         ) as mock_choice_lookup,
     ):
-        # Configure mocks
         mock_vars.Tokens.pid625 = "token_625"
         mock_vars.headers = {}
         mock_vars.Endpoints.return_value.base_url = DEFAULT_REDCAP_BASE_URL
-        # Set up default returns for helpers
         mock_choice_lookup.return_value = {}
         yield {
             "fetch_api": mock_fetch_api,
@@ -1078,13 +1377,11 @@ def create_mock_invalid_status(
 
 def setup_standard_alert_mocks(
     mock_alerts_dependencies: dict[str, Mock],
-    metadata: Optional[pd.DataFrame] = None,
-    existing_data: Optional[pd.DataFrame] = None,
+    metadata: pd.DataFrame | None = None,
+    existing_data: pd.DataFrame | None = None,
 ) -> None:
     """Set up standard mock returns for alert processing tests."""
     mocks = mock_alerts_dependencies
-
-    # Use 'is not None' instead of truthy check for DataFrames
     mocks["fetch_metadata"].return_value = (
         metadata
         if metadata is not None
@@ -1106,7 +1403,7 @@ def setup_standard_alert_mocks(
 
 
 @pytest.fixture
-def multi_instrument_alert_df():
+def multi_instrument_alert_df() -> pd.DataFrame:
     """Create alert DataFrame with multiple instruments for testing."""
     return create_alert_df(
         ["12345", "12345", "67890"],
@@ -1126,7 +1423,9 @@ def multi_instrument_alert_df():
 
 
 @contextmanager
-def setup_reconnect_mocks(listener_side_effect=None):
+def setup_reconnect_mocks(
+    listener_side_effect: Any = None,
+) -> Generator[dict[str, Mock], None, None]:
     """Set up mocks for main_with_reconnect tests."""
     with ExitStack() as stack:
         mocks = {
@@ -1137,31 +1436,29 @@ def setup_reconnect_mocks(listener_side_effect=None):
                 patch(
                     "hbnmigration.from_curious.alerts_to_redcap.websocket_listener",
                     new_callable=AsyncMock,
-                )  # Use AsyncMock
+                )
             ),
             "sleep": stack.enter_context(
                 patch(
                     "hbnmigration.from_curious.alerts_to_redcap.asyncio.sleep",
                     new_callable=AsyncMock,
-                )  # Also make sleep async
+                )
             ),
         }
         mock_websocket = AsyncMock()
         mocks["ws"].return_value.__aenter__.return_value = mock_websocket
-
         if listener_side_effect is not None:
             mocks["listener"].side_effect = listener_side_effect
-
         yield mocks
 
 
 @contextmanager
 def setup_main_test_mocks(
-    mock_alerts_dependencies,
-    sample_alert=None,
-    parse_return=None,
-    metadata_return=None,
-):
+    mock_alerts_dependencies: dict[str, Mock],
+    sample_alert: dict[str, Any] | None = None,
+    parse_return: Any = None,
+    metadata_return: pd.DataFrame | None = None,
+) -> Generator[dict[str, Mock], None, None]:
     """Context manager for common async main test setup."""
     setup_standard_alert_mocks(
         mock_alerts_dependencies,
@@ -1172,13 +1469,10 @@ def setup_main_test_mocks(
             ["", "0, No | 1, Yes"],
         ),
     )
-
     with ExitStack() as stack:
         mocks = {
             "auth": stack.enter_context(
-                patch(
-                    "hbnmigration.from_curious.alerts_to_redcap._curious_authenticate"
-                )
+                patch("hbnmigration.from_curious.alerts_to_redcap.curious_authenticate")
             ),
             "ws": stack.enter_context(
                 patch("hbnmigration.from_curious.alerts_to_redcap.connect_to_websocket")
@@ -1199,12 +1493,12 @@ def setup_main_test_mocks(
 
 @contextmanager
 def setup_sync_main_mocks(
-    mock_alerts_dependencies,
-    alerts_list,
-    parse_returns,
-    metadata_return=None,
-    status_code=requests.codes["okay"],
-):
+    mock_alerts_dependencies: dict[str, Mock],
+    alerts_list: list[Any],
+    parse_returns: Any,
+    metadata_return: pd.DataFrame | None = None,
+    status_code: int = requests.codes["okay"],
+) -> Generator[dict[str, Mock], None, None]:
     """Set up synchronous main test mocks."""
     setup_standard_alert_mocks(
         mock_alerts_dependencies,
@@ -1215,19 +1509,19 @@ def setup_sync_main_mocks(
             ["", "0, No | 1, Yes"],
         ),
     )
-
     with ExitStack() as stack:
         mocks = {
             "auth": stack.enter_context(
-                patch(
-                    "hbnmigration.from_curious.alerts_to_redcap._curious_authenticate"
-                )
+                patch("hbnmigration.from_curious.alerts_to_redcap.curious_authenticate")
             ),
             "get": stack.enter_context(
                 patch("hbnmigration.from_curious.alerts_to_redcap.requests.get")
             ),
             "parse": stack.enter_context(
                 patch("hbnmigration.from_curious.alerts_to_redcap.parse_alert")
+            ),
+            "curious_vars": stack.enter_context(
+                patch("hbnmigration.from_curious.alerts_to_redcap.curious_variables")
             ),
         }
         mocks["auth"].return_value = create_mock_tokens_ws()
@@ -1238,11 +1532,14 @@ def setup_sync_main_mocks(
         mocks["get"].return_value = mock_response
         if parse_returns is not None:
             mocks["parse"].side_effect = parse_returns
+        mocks["curious_vars"].headers.return_value = {}
         yield mocks
 
 
 @contextmanager
-def setup_cli_mocks(**patches):
+def setup_cli_mocks(
+    **patches: Any,
+) -> Generator[dict[str, Mock], None, None]:
     """Set up CLI test mocks with specified patches."""
     with ExitStack() as stack:
         yield {
@@ -1256,7 +1553,10 @@ def setup_cli_mocks(**patches):
                 patch("hbnmigration.from_curious.alerts_to_redcap.main")
             ),
             "argv": stack.enter_context(
-                patch("sys.argv", patches.get("argv", ["alerts_to_redcap.py"]))
+                patch(
+                    "sys.argv",
+                    patches.get("argv", ["alerts_to_redcap.py"]),
+                )
             ),
         }
 
@@ -1282,18 +1582,20 @@ def setup_curious_integration_mocks(
         "https://curious.test/",
     )
     curious_vars_mock.Tokens.return_value = curious_tokens
-    curious_vars_mock.headers = {}
+    curious_vars_mock.headers.return_value = {}
 
 
-def create_curious_api_failure(message: str = "API Error"):
+def create_curious_api_failure(
+    message: str = "API Error",
+) -> requests.exceptions.RequestException:
     """Create a RequestException for testing."""
     return requests.exceptions.RequestException(message)
 
 
 @contextmanager
 def create_mock_module_in_sys(
-    module_path: str, attributes: Optional[Dict[str, Any]] = None
-):
+    module_path: str, attributes: dict[str, Any] | None = None
+) -> Generator[Mock, None, None]:
     """Return context manager to temporarily add mock module to sys.modules."""
     mock_mod = Mock()
     if attributes:
@@ -1303,7 +1605,11 @@ def create_mock_module_in_sys(
         yield mock_mod
 
 
+# ============================================================================
 # Assertion helpers
+# ============================================================================
+
+
 def assert_valid_redcap_columns(result_df: pd.DataFrame) -> None:
     """Assert DataFrame has valid REDCap columns."""
     assert "record_id" in result_df.columns and "mrn" in result_df.columns
@@ -1385,12 +1691,11 @@ def get_field_values(df: pd.DataFrame, field_name: str) -> pd.Series:
     return df[df["field_name"] == field_name]["value"]
 
 
-def get_unique_field_values(df: pd.DataFrame, field_name: str) -> list:
+def get_unique_field_values(df: pd.DataFrame, field_name: str) -> list[Any]:
     """Get unique values for a specific field from EAV DataFrame."""
     return sorted(df[df["field_name"] == field_name]["value"].unique())
 
 
-# Curious assertions
 def assert_valid_curious_format(df: pd.DataFrame) -> None:
     """Assert DataFrame has valid Curious format."""
     for col in ["secretUserId", "accountType"]:
@@ -1453,10 +1758,10 @@ def count_curious_accounts(df: pd.DataFrame) -> dict[str, int]:
     }
 
 
-def assert_no_none_in_records(records: list[dict]) -> None:
+def assert_no_none_in_records(records: list[dict[str, Any]]) -> None:
     """Assert that no None values exist in record dictionaries."""
     for record in records:
-        for key, value in record.items():
+        for _key, value in record.items():
             assert value is not None
 
 
@@ -1466,7 +1771,6 @@ def assert_enrollment_complete_updated(df: pd.DataFrame, expected_value: str) ->
     assert len(enrollment_rows) > 0 and all(enrollment_rows["value"] == expected_value)
 
 
-# Alert assertions
 def assert_alert_summary_toggled(df: pd.DataFrame, instrument: str) -> None:
     """Assert that alert summary flag is properly toggled."""
     summary_field = f"{instrument}_alerts"
@@ -1475,7 +1779,10 @@ def assert_alert_summary_toggled(df: pd.DataFrame, instrument: str) -> None:
 
 
 def assert_response_mapped_to_index(
-    df: pd.DataFrame, field: str, response: str, expected_index: int
+    df: pd.DataFrame,
+    field: str,
+    response: str,
+    expected_index: int,
 ) -> None:
     """Assert that response value was mapped to correct index."""
     rows = df[df["field_name"] == field]

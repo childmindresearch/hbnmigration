@@ -108,11 +108,7 @@ def send_to_curious(
 ) -> list[str]:
     """Send new participants to Curious."""
     failures: list[str] = []
-    headers = {
-        "Authorization": f"Bearer {tokens.access}",
-        # "User-Agent": "Mozilla/5.0 (API)",
-        **curious_variables.headers,
-    }
+    headers = curious_variables.headers(tokens.access)
 
     # Loop through each REDCap transformed record and sent it to MindLogger
     for record in [

@@ -15,8 +15,7 @@ from typing import Any, Literal, Optional, overload
 from IPython.display import display
 import numpy as np
 import pandas as pd
-from pyspark.sql import DataFrame as SparkDataFrame
-from pyspark.sql import SparkSession
+from pyspark.sql import DataFrame as SparkDataFrame, SparkSession
 import pytz
 import requests
 
@@ -152,9 +151,36 @@ def _fetch_api_data(
         return pd.DataFrame()
 
 
-def fetch_api_data(url: str, headers: dict, data: dict | str) -> pd.DataFrame:
-    """Fetch REST API response data and load it into a Pandas Dataframe."""
-    return _fetch_api_data(url, headers, data, 0)
+@overload
+def fetch_api_data(
+    url: str,
+    headers: dict,
+    data: dict | str,
+    return_type: type[list],
+    column: str = "record",
+) -> list: ...
+@overload
+def fetch_api_data(
+    url: str,
+    headers: dict,
+    data: dict | str,
+    return_type: type[pd.DataFrame] = pd.DataFrame,
+    column=None,
+) -> pd.DataFrame: ...
+def fetch_api_data(
+    url: str,
+    headers: dict,
+    data: dict | str,
+    return_type: type[list | pd.DataFrame] = pd.DataFrame,
+    column: Optional[str] = None,
+) -> pd.DataFrame | list:
+    """Fetch REST API response data and load it into a Pandas Dataframe or list."""
+    df = _fetch_api_data(url, headers, data, 0)
+    if return_type is pd.DataFrame:
+        return df
+    if return_type is list:
+        return df.get(column, pd.Series()).to_list()
+    raise NotImplementedError
 
 
 def fetch_api_data1(
@@ -365,7 +391,13 @@ def print_module_variables(  # noqa: RUF100,T201
     print("\n")  # noqa: T201
 
 
-def redcap_api_push(df: pd.DataFrame, token: str, url: str, headers: dict) -> int:
+def redcap_api_push(
+    df: pd.DataFrame,
+    token: str,
+    url: str,
+    headers: dict,
+    force_auto_number: bool = False,
+) -> int:
     """Push data to REDCap API."""
     csv_buffer = StringIO()
     df.to_csv(csv_buffer, index=False)
@@ -379,6 +411,7 @@ def redcap_api_push(df: pd.DataFrame, token: str, url: str, headers: dict) -> in
         "type": "eav",
         "csvDelimiter": "",
         "returnFormat": "csv",
+        "forceAutoNumber": str(force_auto_number).lower(),
         "data": csv_content,
     }
 
