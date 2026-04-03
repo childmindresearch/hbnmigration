@@ -3,6 +3,7 @@
 import logging
 import os
 from pathlib import Path
+import sys
 from tempfile import TemporaryDirectory
 from typing import Literal
 
@@ -62,7 +63,11 @@ def format_for_redcap(
     formatter = RedcapImportFormat(project=event_names)
 
     # Process data
-    ml_data = MindloggerData.create(curious_data_dir)
+    try:
+        ml_data = MindloggerData.create(curious_data_dir)
+    except pl.exceptions.NoDataError:
+        logger.info("No Curious data to export.")
+        sys.exit(0)
     outputs = formatter.produce(ml_data)
 
     logger.info(
