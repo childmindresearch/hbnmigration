@@ -9,6 +9,7 @@ Group=${user_group}
 WorkingDirectory=${project_root}
 ExecStart=${venv_path}/.venv/bin/curious-data-to-redcap
 Environment="WORKSPACE=${workspace}"
+Environment="HBNMIGRATION_PROJECT_ROOT=${project_root}"
 
 # Logging
 BindPaths=/data/logs/hbnmigration:/home/hbnmigration/hbnmigration/.hbnmigration_logs

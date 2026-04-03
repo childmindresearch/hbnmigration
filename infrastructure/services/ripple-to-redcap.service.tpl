@@ -9,6 +9,7 @@ Group=${user_group}
 WorkingDirectory=${project_root}
 ExecStart=${venv_path}/bin/ripple-to-redcap
 Environment="WORKSPACE=${workspace}"
+Environment="HBNMIGRATION_PROJECT_ROOT=${project_root}"
 
 # Logging
 StandardOutput=append:${log_directory}/ripple-to-redcap.log
