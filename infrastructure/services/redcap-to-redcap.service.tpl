@@ -12,6 +12,7 @@ Environment="WORKSPACE=${workspace}"
 Environment="HBNMIGRATION_PROJECT_ROOT=${project_root}"
 
 # Logging
+BindPaths=/data/logs/hbnmigration:/home/hbnmigration/hbnmigration/.hbnmigration_logs
 StandardOutput=append:${log_directory}/redcap-to-redcap.log
 StandardError=append:${log_directory}/redcap-to-redcap-error.log
 SyslogIdentifier=redcap-to-redcap-${workspace}
@@ -20,7 +21,6 @@ SyslogIdentifier=redcap-to-redcap-${workspace}
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
-ProtectHome=true
 ReadWritePaths=${project_root}
 ReadWritePaths=${log_directory}
 

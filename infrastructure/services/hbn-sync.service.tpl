@@ -7,6 +7,7 @@ Wants=ripple-to-redcap.service redcap-to-redcap.service redcap-to-curious.servic
 Type=oneshot
 # This service just triggers the other services
 ExecStart=/bin/true
+BindPaths=/data/logs/hbnmigration:/home/hbnmigration/hbnmigration/.hbnmigration_logs
 
 # The real work happens via dependencies
 ExecStartPost=/usr/bin/systemctl start ripple-to-redcap.service
