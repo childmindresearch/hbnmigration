@@ -7,7 +7,7 @@ Type=oneshot
 User=${user_group}
 Group=${user_group}
 WorkingDirectory=${project_root}
-ExecStart=${venv_path}/.venv/bin/curious-data-to-redcap
+ExecStart=${venv_path}/bin/curious-data-to-redcap
 Environment="WORKSPACE=${workspace}"
 Environment="HBNMIGRATION_PROJECT_ROOT=${project_root}"
 

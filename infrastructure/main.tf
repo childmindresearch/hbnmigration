@@ -27,11 +27,13 @@ locals {
   service_prefix = terraform.workspace == "default" ? "" : "${terraform.workspace}-"
 
   services = {
-    ripple_sync              = "${local.service_prefix}ripple-to-redcap"
-    redcap_sync              = "${local.service_prefix}redcap-to-redcap"
-    redcap_to_curious        = "${local.service_prefix}redcap-to-curious"
-    curious_alerts_websocket = "${local.service_prefix}curious-alerts-websocket"
-    hbn_sync_timer           = "${local.service_prefix}hbn-sync.timer"
+    ripple_sync                = "${local.service_prefix}ripple-to-redcap"
+    redcap_sync                = "${local.service_prefix}redcap-to-redcap"
+    redcap_to_curious          = "${local.service_prefix}redcap-to-curious"
+    curious_alerts_websocket   = "${local.service_prefix}curious-alerts-websocket"
+    curious_accounts_to_redcap = "${local.service_prefix}curious-accounts-to-redcap"
+    curious_data_to_redcap     = "${local.service_prefix}curious-data-to-redcap"
+    hbn_sync_timer             = "${local.service_prefix}hbn-sync.timer"
   }
 }
 
@@ -137,6 +139,45 @@ resource "local_file" "curious_alerts_websocket_service" {
   depends_on = [null_resource.ensure_user_group]
 }
 
+resource "local_file" "curious_accounts_to_redcap_service" {
+  content = templatefile("${path.module}/services/curious-accouts-to-redcap.service.tpl", {
+    user_group    = var.user_group
+    project_root  = local.workspace_dir
+    venv_path     = local.venv_full_path
+    log_directory = local.log_full_path
+    workspace     = terraform.workspace
+  })
+  filename   = "${path.module}/.generated/${local.services.curious_accounts_to_redcap}.service"
+  depends_on = [null_resource.ensure_user_group]
+}
+
+resource "local_file" "curious_data_to_redcap_service" {
+  content = templatefile("${path.module}/services/curious-data-to-redcap.service.tpl", {
+    user_group    = var.user_group
+    project_root  = local.workspace_dir
+    venv_path     = local.venv_full_path
+    log_directory = local.log_full_path
+    workspace     = terraform.workspace
+  })
+  filename   = "${path.module}/.generated/${local.services.curious_data_to_redcap}.service"
+  depends_on = [null_resource.ensure_user_group]
+}
+
+resource "local_file" "hbn_sync_service" {
+  content = templatefile("${path.module}/services/hbn-sync.service.tpl", {
+    services = [
+      local.services.ripple_sync,
+      local.services.redcap_sync,
+      local.services.redcap_to_curious,
+      local.services.curious_accounts_to_redcap,
+      local.services.curious_alerts_websocket,
+      local.services.curious_data_to_redcap
+    ]
+  })
+  filename   = "${path.module}/.generated/hbn-sync.service"
+  depends_on = [null_resource.ensure_user_group]
+}
+
 resource "local_file" "hbn_sync_timer" {
   content = templatefile("${path.module}/services/hbn-sync.timer.tpl", {
     sync_interval_minutes = var.sync_interval_minutes
@@ -178,6 +219,9 @@ resource "null_resource" "deploy_services" {
       local_file.redcap_sync_service.content,
       local_file.redcap_to_curious_service.content,
       local_file.curious_alerts_websocket_service.content,
+      local_file.curious_accounts_to_redcap_service.content,
+      local_file.curious_data_to_redcap_service.content,
+      local_file.hbn_sync_service.content,
       local_file.hbn_sync_timer.content,
     ]))
   }
@@ -195,6 +239,9 @@ resource "null_resource" "deploy_services" {
     local_file.redcap_sync_service,
     local_file.redcap_to_curious_service,
     local_file.curious_alerts_websocket_service,
+    local_file.curious_accounts_to_redcap_service,
+    local_file.curious_data_to_redcap_service,
+    local_file.hbn_sync_service,
     local_file.hbn_sync_timer,
   ]
 }
