@@ -32,7 +32,6 @@ locals {
     redcap_to_curious        = "${local.service_prefix}redcap-to-curious"
     curious_alerts_websocket = "${local.service_prefix}curious-alerts-websocket"
     hbn_sync_timer           = "${local.service_prefix}hbn-sync.timer"
-    hbn_sync_target          = "${local.service_prefix}hbn-sync.target"
   }
 }
 
@@ -148,19 +147,6 @@ resource "local_file" "hbn_sync_timer" {
   depends_on = [null_resource.ensure_user_group]
 }
 
-resource "local_file" "hbn_sync_target" {
-  content = templatefile("${path.module}/services/hbn-sync.target.tpl", {
-    workspace = terraform.workspace
-    services = [
-      local.services.ripple_sync,
-      local.services.redcap_sync,
-      local.services.redcap_to_curious
-    ]
-  })
-  filename   = "${path.module}/.generated/${local.services.hbn_sync_target}"
-  depends_on = [null_resource.ensure_user_group]
-}
-
 # Create workspace-specific directories
 resource "null_resource" "create_workspace_dirs" {
   triggers = {
@@ -193,14 +179,12 @@ resource "null_resource" "deploy_services" {
       local_file.redcap_to_curious_service.content,
       local_file.curious_alerts_websocket_service.content,
       local_file.hbn_sync_timer.content,
-      local_file.hbn_sync_target.content,
     ]))
   }
   provisioner "local-exec" {
     command = <<-EOT
       sudo cp ${path.module}/.generated/*.service /etc/systemd/system/
       sudo cp ${path.module}/.generated/*.timer /etc/systemd/system/
-      sudo cp ${path.module}/.generated/*.target /etc/systemd/system/
       sudo systemctl daemon-reload
       echo "✓ Services deployed for workspace: ${terraform.workspace}"
     EOT
@@ -212,7 +196,6 @@ resource "null_resource" "deploy_services" {
     local_file.redcap_to_curious_service,
     local_file.curious_alerts_websocket_service,
     local_file.hbn_sync_timer,
-    local_file.hbn_sync_target,
   ]
 }
 
