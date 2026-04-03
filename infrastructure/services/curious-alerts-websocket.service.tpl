@@ -10,6 +10,7 @@ WorkingDirectory=${project_root}
 ExecStart=${venv_path}/bin/curious-alerts-to-redcap --asynchronous
 Environment="WORKSPACE=${workspace}"
 Environment="HBNMIGRATION_PROJECT_ROOT=${project_root}"
+Environment="HBNMIGRATION_LOG_PATH=${log_directory}"
 Restart=always
 RestartSec=10
 

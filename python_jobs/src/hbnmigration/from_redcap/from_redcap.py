@@ -1,6 +1,6 @@
 """Common functionality when fetching data from REDCap."""
 
-from typing import Optional
+from typing import Literal, Optional
 
 import pandas as pd
 
@@ -14,7 +14,12 @@ Endpoints = redcap_variables.Endpoints()
 
 
 def fetch_data(
-    token: str, export_fields: str, filter_logic: Optional[str] = None
+    token: str,
+    export_fields: str,
+    filter_logic: Optional[str] = None,
+    *,
+    all_or_any: Literal["all", "any"] = "all",
+    flat: bool = False,
 ) -> pd.DataFrame:
     """
     Fetch data from REDCap API.
@@ -30,13 +35,19 @@ def fetch_data(
     filter_logic
         REDCap-API-syntax `filterLogic`
 
+    all_or_any
+        match __all__ or __any__ `export_fields`
+
+    flat
+        return "flat" type instead of "eav" type?
+
     """
     redcap_participant_data = {
         "token": token,
         "content": "record",
         "action": "export",
         "format": "csv",
-        "type": "eav",
+        "type": "flat" if flat else "eav",
         "csvDelimiter": "",
         "fields": export_fields,
         "rawOrLabel": "raw",
@@ -46,12 +57,39 @@ def fetch_data(
         "exportDataAccessGroups": "false",
         "returnFormat": "csv",
     }
+    orig_filter_logic = filter_logic
+    if all_or_any == "any":
+        filter_conditions = " OR ".join(
+            [f"[{field}] != ''" for field in export_fields.split(",")]
+        )
+        filter_logic = (
+            f"({filter_logic}) AND ({filter_conditions})"
+            if filter_logic
+            else filter_conditions
+        )
     if filter_logic:
         redcap_participant_data["filterLogic"] = filter_logic
 
     df_redcap_participant_consent_data = fetch_api_data(
-        Endpoints.base_url, redcap_variables.headers, redcap_participant_data
+        Endpoints.base_url,
+        redcap_variables.headers,
+        redcap_participant_data,
+        capture_invalid_fields=True,
     )
+    if isinstance(df_redcap_participant_consent_data, list):
+        export_list = [
+            field
+            for field in export_fields.split(",")
+            if field not in df_redcap_participant_consent_data
+        ]
+
+        return fetch_data(
+            token,
+            export_fields=",".join(export_list),
+            filter_logic=orig_filter_logic,
+            all_or_any=all_or_any,
+            flat=flat,
+        )
     if df_redcap_participant_consent_data.empty:
         raise NoData
 

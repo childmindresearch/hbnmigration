@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `mrn_error_log.tsv`
 - Python scripts / jobs
   - Curious data to REDCap
     - `{activity_name}_start_date` to Curious instruments in REDCap

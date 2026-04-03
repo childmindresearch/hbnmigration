@@ -1,6 +1,8 @@
 """Set up logging."""
 # TODO: Set up Iceberg
 
+import csv
+from datetime import datetime
 import logging
 from logging.handlers import RotatingFileHandler
 import os
@@ -11,6 +13,23 @@ from typing import Optional
 
 _initialized = False
 """Is logging initialized?"""
+
+
+def log_root_path() -> Path:
+    """Get root path for logging."""
+    return Path(
+        os.environ.get(
+            "HBNMIGRATION_LOG_PATH",
+            (
+                Path("/home" if platform.system() == "Linux" else "/Users")
+                / os.environ.get(
+                    "USER_GROUP",
+                    "/".join([os.environ.get("USER", ""), "hbnmigration"]).lstrip("/"),
+                )
+                / ".hbnmigration_logs"
+            ),
+        )
+    )
 
 
 class MaxLevelFilter(logging.Filter):
@@ -63,14 +82,7 @@ def initialize_logging(
 
     max_bytes = int(max_gb * 1e9)
 
-    log_dir = (
-        Path("/home" if platform.system() == "Linux" else "/Users")
-        / os.environ.get(
-            "USER_GROUP",
-            "/".join([os.environ.get("USER", ""), "hbnmigration"]).lstrip("/"),
-        )
-        / ".hbnmigration_logs"
-    )
+    log_dir = log_root_path()
     if not log_dir.exists():
         log_dir.mkdir(mode=0o770, parents=True, exist_ok=True)
     info_log = log_dir / "info.log"
@@ -119,3 +131,76 @@ def initialize_logging(
     _initialized = True
 
     return logging.getLogger(name)
+
+
+def setup_tsv_logger(name="tsv_logger", filename="error_log.tsv", level=logging.ERROR):
+    """Configure a logger with TSV output."""
+    logger = logging.getLogger(name)
+    logger.setLevel(level)
+
+    # Add TSV handler
+    tsv_handler = TSVHandler(str(log_root_path() / filename))
+    logger.addHandler(tsv_handler)
+
+    # Optionally add console handler too
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(
+        logging.Formatter("%(levelname)s - MRN %(mrn)s: %(message)s")
+    )
+    logger.addHandler(console_handler)
+
+    return logger
+
+
+class TSVHandler(logging.Handler):
+    """Logging handler that writes to TSV format."""
+
+    def __init__(self, filename="error_log.tsv") -> None:
+        """Initialize TSV logging handler."""
+        super().__init__()
+        self.filename = Path(filename)
+        self._ensure_headers()
+
+    def _ensure_headers(self):
+        """Create file with headers if it doesn't exist."""
+        if not self.filename.exists():
+            with open(self.filename, "w", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f, delimiter="\t")
+                writer.writerow(["datetime", "mrn", "error", "attempt"])
+
+    def emit(self, record):
+        """Write log record to TSV file."""
+        try:
+            # Extract custom fields from the log record
+            mrn = getattr(record, "mrn", "N/A")
+            attempt = getattr(record, "attempt", 1)
+
+            with open(self.filename, "a", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f, delimiter="\t")
+                writer.writerow(
+                    [
+                        datetime.fromtimestamp(record.created).isoformat(),
+                        mrn,
+                        record.getMessage(),
+                        attempt,
+                    ]
+                )
+        except Exception:
+            self.handleError(record)
+
+
+class TSVLoggedError(Exception):
+    """Exception that logs to TSV."""
+
+    logger = setup_tsv_logger("mrn_error_log", "mrn_error_log.tsv")
+
+    def __init__(self, mrn: int | str, error_message: Optional[str], attempt: str):
+        """Initialize TSV logging exception."""
+        self.mrn = mrn
+        self.error_message = error_message or ""
+        self.attempt = attempt
+
+        # Log using logging library
+        self.logger.error(error_message, extra={"mrn": mrn, "attempt": attempt})
+
+        super().__init__(f"MRN {mrn}: {error_message} (Attempt {attempt})")

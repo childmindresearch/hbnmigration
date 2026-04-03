@@ -94,18 +94,28 @@ def _fetch_api_data(
     data: dict | str,
     _index: Literal[0, 1, 3],
     spark: None = None,
-) -> pd.DataFrame: ...
+    *,
+    capture_invalid_fields: bool = False,
+) -> pd.DataFrame | list[str]: ...
 @overload
 def _fetch_api_data(
-    url: str, headers: dict, data: dict | str, _index: Literal[2], spark: SparkSession
-) -> SparkDataFrame: ...
-def _fetch_api_data(
+    url: str,
+    headers: dict,
+    data: dict | str,
+    _index: Literal[2],
+    spark: SparkSession,
+    *,
+    capture_invalid_fields: bool = False,
+) -> SparkDataFrame | list[str]: ...
+def _fetch_api_data(  # noqa: PLR0911
     url: str,
     headers: dict,
     data: dict | str,
     _index: Literal[0, 1, 2, 3],
     spark: Optional[SparkSession] = None,
-) -> pd.DataFrame | SparkDataFrame:
+    *,
+    capture_invalid_fields: bool = False,
+) -> pd.DataFrame | SparkDataFrame | list[str]:
     """Handle various `fetch_api_data` functions."""
     try:
         response = requests.post(url, headers=headers, data=data)
@@ -143,6 +153,15 @@ def _fetch_api_data(
         logger.info(
             "Failed to fetch data: %d - %s", response.status_code, response.text
         )
+        invalid_fields_message = (
+            'The following values in the parameter "fields" are not valid: '
+        )
+        if capture_invalid_fields and invalid_fields_message in response.text:
+            return [
+                _[1:-1]
+                for _ in response.text.split(invalid_fields_message, 1)[1].split(",")
+                if _
+            ]
         # Return an empty dataframe when the status code is not 200
         return pd.DataFrame()
     except Exception as e:
@@ -158,53 +177,126 @@ def fetch_api_data(
     data: dict | str,
     return_type: type[list],
     column: str = "record",
-) -> list: ...
+    *,
+    capture_invalid_fields: bool = False,
+) -> list[str]: ...
+
+
 @overload
 def fetch_api_data(
     url: str,
     headers: dict,
     data: dict | str,
-    return_type: type[pd.DataFrame] = pd.DataFrame,
-    column=None,
-) -> pd.DataFrame: ...
+    return_type: type[pd.DataFrame] = ...,
+    column: str | None = None,
+    *,
+    capture_invalid_fields: Literal[True],
+) -> pd.DataFrame | list[str]: ...
+
+
+@overload
 def fetch_api_data(
     url: str,
     headers: dict,
     data: dict | str,
+    return_type: type[pd.DataFrame] = ...,
+    column: str | None = None,
+    *,
+    capture_invalid_fields: Literal[False] = False,
+) -> pd.DataFrame: ...
+
+
+def fetch_api_data(  # noqa: PLR0913
+    url: str,
+    headers: dict,
+    data: dict | str,
     return_type: type[list | pd.DataFrame] = pd.DataFrame,
-    column: Optional[str] = None,
-) -> pd.DataFrame | list:
+    column: str | None = None,
+    *,
+    capture_invalid_fields: bool = False,
+) -> pd.DataFrame | list[str]:
     """Fetch REST API response data and load it into a Pandas Dataframe or list."""
-    df = _fetch_api_data(url, headers, data, 0)
-    if return_type is pd.DataFrame:
+    df = _fetch_api_data(
+        url, headers, data, 0, capture_invalid_fields=capture_invalid_fields
+    )
+    if isinstance(df, list) or return_type is pd.DataFrame:
         return df
     if return_type is list:
         return df.get(column, pd.Series()).to_list()
     raise NotImplementedError
 
 
+@overload
 def fetch_api_data1(
-    url: str, headers: dict, data: dict | str
-) -> Optional[pd.DataFrame]:
+    url: str, headers: dict, data: dict | str, *, capture_invalid_fields: Literal[True]
+) -> Optional[pd.DataFrame | list[str]]: ...
+@overload
+def fetch_api_data1(
+    url: str, headers: dict, data: dict | str, *, capture_invalid_fields: Literal[False]
+) -> Optional[pd.DataFrame]: ...
+def fetch_api_data1(
+    url: str, headers: dict, data: dict | str, *, capture_invalid_fields: bool = False
+) -> Optional[pd.DataFrame | list[str]]:
     """Fetch REST API response data and load into it a Pandas Dataframe."""
-    df = _fetch_api_data(url, headers, data, 1)
-    return None if df.empty else df
+    df = _fetch_api_data(
+        url, headers, data, 1, capture_invalid_fields=capture_invalid_fields
+    )
+    if capture_invalid_fields and isinstance(df, list):
+        return df
+    return None if (isinstance(df, pd.DataFrame) and df.empty) else df
 
 
-def fetch_api_data3(url: str, headers: dict, data: dict | str) -> pd.DataFrame:
+@overload
+def fetch_api_data3(
+    url: str, headers: dict, data: dict | str, *, capture_invalid_fields: Literal[True]
+) -> pd.DataFrame | list[str]: ...
+@overload
+def fetch_api_data3(
+    url: str, headers: dict, data: dict | str, *, capture_invalid_fields: Literal[False]
+) -> pd.DataFrame: ...
+def fetch_api_data3(
+    url: str, headers: dict, data: dict | str, *, capture_invalid_fields: bool = False
+) -> pd.DataFrame | list[str]:
     """
     Fetch REST API response data and load it into a Pandas Dataframe.
 
     Preserves leading zeros in the 'customId' column.
     """
-    return _fetch_api_data(url, headers, data, 3)
+    return _fetch_api_data(
+        url, headers, data, 3, capture_invalid_fields=capture_invalid_fields
+    )
 
 
+@overload
 def fetch_api_data2(
-    url: str, headers: dict, data: dict | str, spark: SparkSession
-) -> SparkDataFrame:
+    url: str,
+    headers: dict,
+    data: dict | str,
+    spark: SparkSession,
+    *,
+    capture_invalid_fields: Literal[True],
+) -> SparkDataFrame | list[str]: ...
+@overload
+def fetch_api_data2(
+    url: str,
+    headers: dict,
+    data: dict | str,
+    spark: SparkSession,
+    *,
+    capture_invalid_fields: Literal[False],
+) -> SparkDataFrame: ...
+def fetch_api_data2(
+    url: str,
+    headers: dict,
+    data: dict | str,
+    spark: SparkSession,
+    *,
+    capture_invalid_fields: bool = False,
+) -> SparkDataFrame | list[str]:
     """Fetch REST API response data and load it into a PySpark Dataframe."""
-    return _fetch_api_data(url, headers, data, 2, spark)
+    return _fetch_api_data(
+        url, headers, data, 2, spark, capture_invalid_fields=capture_invalid_fields
+    )
 
 
 def peek_into_dataframe(df: pd.DataFrame) -> None:
@@ -523,3 +615,15 @@ def create_tempory_file(extension: str = "csv") -> Path:
     filepath = Path(file.name)
     file.close()
     return filepath
+
+
+def flat_to_eav(df_flat: pd.DataFrame) -> pd.DataFrame:
+    """Convert flat DataFrame to EAV."""
+    # Transform to EAV (Entity-Attribute-Value)
+    df_eav = df_flat.melt(
+        id_vars=["mrn"],  # The identifier column(s)
+        var_name="field_name",  # Column name for field names
+        value_name="value",  # Column name for values
+    ).dropna(subset=["value"])
+
+    return df_eav.sort_values(["mrn", "field_name"]).reset_index(drop=True)

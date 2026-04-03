@@ -1,18 +1,7 @@
 # Copy to terraform.tfvars and fill in your values
 
-project_root           = "~/hbnmigration"
-
-# User and group for running services
-# Format: "user" or "user:group"
-# If the user doesn't exist, it will be created as a system user
-user_group = "hbn"
-# user_group = "hbn:hbngroup"  # Specify different group
-
-# Paths can be relative to project_root or absolute
-# Path to Python virtual environment
-venv_path              = "python_jobs/.venv"
-# Log directory
-log_directory          = "/var/log/hbnmigration"
-
-# Sync interval (in minutes) for non-websocket APIs
-sync_interval_minutes  = 5
+log_directory                = "/logs"
+project_root                 = "/home/hbnmigration"
+sync_interval_minutes        = 1
+user_group                   = "hbnmigration"
+venv_path                    = "python_jobs/.venv"

@@ -10,6 +10,7 @@ WorkingDirectory=${project_root}
 ExecStart=${venv_path}/bin/ripple-to-redcap
 Environment="WORKSPACE=${workspace}"
 Environment="HBNMIGRATION_PROJECT_ROOT=${project_root}"
+Environment="HBNMIGRATION_LOG_PATH=${log_directory}"
 
 # Logging
 BindPaths=/data/logs/hbnmigration:/home/hbnmigration/hbnmigration/.hbnmigration_logs

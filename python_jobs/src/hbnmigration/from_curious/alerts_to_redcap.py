@@ -122,15 +122,17 @@ def parse_alert(alert: CuriousAlert) -> pd.DataFrame:
 
     Note: 'record', 'value', and 'redcap_event_name' columns need further processing.
     """
+    columns = ["record", "field_name", "value", "redcap_event_name"]
     answer, item = _parse_alert_message(alert["message"])
+    if "secretId" not in alert:
+        logger.info('Response: \n"""\n%s\n"""\ndoes not include "secretId"', alert)
+        return pd.DataFrame(columns=columns)
     fields: list[tuple[str, Any]] = [("mrn", alert["secretId"]), (item, answer)]
     data: list[tuple[str, str, Any, Optional[str]]] = [
         (alert["secretId"], field_name, field_value, None)
         for field_name, field_value in fields
     ]
-    return pd.DataFrame(
-        data, columns=["record", "field_name", "value", "redcap_event_name"]
-    )
+    return pd.DataFrame(data, columns=columns)
 
 
 # ============================================================================
@@ -239,7 +241,7 @@ def process_alerts_for_redcap(
             alert_fields, alerts_instrument["field_name"].unique()
         )
     # Fetch existing REDCap data
-    redcap_fields = fetch_data(PID_625, str(FieldList(alert_fields)))
+    redcap_fields = fetch_data(PID_625, str(FieldList(alert_fields)), all_or_any="any")
     # Map MRNs to records
     result, mrn_lookup, record_events = _map_mrns_to_records(
         redcap_alerts, redcap_fields
@@ -269,6 +271,7 @@ def push_alerts_to_redcap(result: pd.DataFrame) -> None:
             "%d rows successfully updated for alerts in PID 625.", result.shape[0]
         )
     except Exception:
+        breakpoint()
         logger.exception("Pushing alerts from Curious to REDCap failed.")
         raise
 
@@ -296,7 +299,10 @@ def _process_single_alert(
         return None
     # Parse and process
     redcap_alert = parse_alert(alert)
-    result = process_alerts_for_redcap(redcap_alert, partial_redcap_landing)
+    if redcap_alert.empty:
+        result = redcap_alert
+    else:
+        result = process_alerts_for_redcap(redcap_alert, partial_redcap_landing)
     if result.empty:
         logger.warning("No valid data to push for alert ID: %s", alert.get("id"))
         return None
