@@ -2,8 +2,9 @@
 
 import json
 import logging
+from pathlib import Path
 import subprocess
-from typing import Optional
+from typing import Literal, Optional
 
 from .logging import initialize_logging
 
@@ -12,11 +13,33 @@ logger = logging.getLogger(__name__)
 
 
 def tsx(
-    script: str, *args, _input: Optional[str] = None
+    script: str | Path,
+    script_args: Optional[list[str]] = None,
+    parse_output: Literal[False, "json"] = "json",
+    *,
+    _input: Optional[str] = None,
 ) -> list | dict | str | int | float:
-    """Run tsx."""
+    """
+    Run tsx.
+
+    Parameters
+    ----------
+    script
+        path to TypeScript script to run
+    script_args
+        list of commandline arguments for script
+    parse_output
+        `'json'` to parse JSON output; `False` to return raw STDOUT
+    _input
+        STDIN for commandline input
+
+    """
+    if not script_args:
+        script_args = []
+    arg_list = ["npx", "tsx", str(script), *script_args]
+    logger.info("Calling %s", f"`{' '.join(arg_list)}`")
     result = subprocess.run(
-        ["npx", "tsx", script, *args],
+        arg_list,
         capture_output=True,
         input=_input,
         text=True,
@@ -45,9 +68,11 @@ def tsx(
         msg = "TypeScript script returned no output"
         raise ValueError(msg)
 
-    # Try to parse JSON
-    try:
-        return json.loads(result.stdout)
-    except json.JSONDecodeError:
-        logger.exception("Output was: %s", {result.stdout[:1000]})
-        raise
+    if parse_output == "json":
+        # Try to parse JSON
+        try:
+            return json.loads(result.stdout)
+        except json.JSONDecodeError:
+            logger.exception("Output was: %s", {result.stdout[:1000]})
+            raise
+    return result.stdout

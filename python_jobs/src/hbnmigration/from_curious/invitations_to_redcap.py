@@ -1,7 +1,6 @@
 """Monitor Curious account invitations and send updates to REDCap."""
 
 import logging
-from typing import Literal
 
 import polars as pl
 import requests
@@ -16,6 +15,7 @@ from ..utility_functions import (
     CuriousId,
     fetch_api_data,
     initialize_logging,
+    ProjectStatus,
     yesterday_or_more_recent,
 )
 from .config import curious_authenticate, invitation_statuses
@@ -23,7 +23,7 @@ from .decryption import decrypt_single, get_applet_encryption
 
 initialize_logging()
 logger = logging.getLogger(__name__)
-PROJECT_STATUS: Literal["dev", "prod"] = "dev"
+PROJECT_STATUS: ProjectStatus = "dev"
 
 
 class Endpoints:

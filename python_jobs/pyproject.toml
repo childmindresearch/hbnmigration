@@ -43,6 +43,7 @@ dev = [
 
 [project.scripts]
 curious-alerts-to-redcap = "hbnmigration.from_curious.alerts_to_redcap:cli"
+curious-data-to-redcap = "hbnmigration.from_curious.data_to_redcap:main"
 curious-invitations-to-redcap = "hbnmigration.from_curious.invitations_to_redcap:main"
 redcap-to-curious = "hbnmigration.from_redcap.to_curious:main"
 redcap-to-redcap = "hbnmigration.from_redcap.to_redcap:main"

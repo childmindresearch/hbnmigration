@@ -497,7 +497,13 @@ def get_redcap_event_names(
         return {}
 
 
-_yesterday_date = date.today() - timedelta(days=1)
+_today = date.today()
+"""Date representation of today."""
+
+today = str(_today)
+"""`YYYY-MM-DD` string date format of today."""
+
+_yesterday_date = _today - timedelta(days=1)
 """Date representation of yesterday."""
 
 yesterday = str(_yesterday_date)
