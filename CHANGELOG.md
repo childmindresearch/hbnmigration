@@ -14,6 +14,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Curious data to REDCap
     - `{activity_name}_start_date` to Curious instruments in REDCap
 
+### Fixed
+
+- bug in pushing Curous alerts to REDCap
+
 ## 1.4.1
 
 ### Added

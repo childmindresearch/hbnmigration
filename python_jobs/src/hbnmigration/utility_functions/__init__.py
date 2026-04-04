@@ -42,7 +42,7 @@ from .datatypes import (
     ValueClass,
     ValueField,
 )
-from .logging import initialize_logging
+from .logging import initialize_logging, setup_tsv_logger, TSVLoggedError
 from .secrets import ImportWithFallback
 from .typescript import tsx
 
@@ -63,6 +63,7 @@ __all__ = [
     "InstrumentRowCount",
     "ProjectStatus",
     "Results",
+    "TSVLoggedError",
     "Tokens",
     "ValueClass",
     "ValueField",
@@ -84,6 +85,7 @@ __all__ = [
     "print_module_variables",
     "read_vars_file_as_module",
     "redcap_api_push",
+    "setup_tsv_logger",
     "today",
     "tsx",
     "yesterday",

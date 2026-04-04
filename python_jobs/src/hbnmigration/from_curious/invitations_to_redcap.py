@@ -172,7 +172,10 @@ def format_for_redcap(
         }
         rows.append(row)
 
+    # Step 1: Keep copies of original string datetimes before converting
     df = pl.DataFrame(rows).with_columns(
+        pl.col("activity_start_time").alias("activity_start_time_str"),
+        pl.col("activity_end_time").alias("activity_end_time_str"),
         pl.from_epoch(
             pl.col("activity_start_time")
             .str.strptime(pl.Datetime("ms"), "%Y-%m-%dT%H:%M:%S%.f")
@@ -205,10 +208,6 @@ def format_for_redcap(
             pl.col("activity_submission_id").alias("id"),
             pl.lit(None).cast(pl.String).alias("review_id"),
         ).alias("activity_submission"),
-        pl.struct(
-            pl.col("activity_start_time").alias("start_time"),
-            pl.col("activity_end_time").alias("end_time"),
-        ).alias("activity_time"),
         pl.struct(
             pl.lit(None).cast(pl.String).alias("id"),
             pl.lit(None).cast(pl.String).alias("history_id"),
@@ -258,6 +257,19 @@ def format_for_redcap(
         ).alias("account_user"),
     )
 
+    # Step 2: Create activity_time struct with datetime columns
+    # The formatter expects actual datetime columns.
+    df = df.with_columns(
+        pl.struct(
+            pl.col("activity_start_time_str")
+            .str.strptime(pl.Datetime("ms"), "%Y-%m-%dT%H:%M:%S%.f")
+            .alias("start_time"),
+            pl.col("activity_end_time_str")
+            .str.strptime(pl.Datetime("ms"), "%Y-%m-%dT%H:%M:%S%.f")
+            .alias("end_time"),
+        ).alias("activity_time"),
+    )
+
     # Only drop columns that exist
     columns_to_drop = [
         col
@@ -276,6 +288,10 @@ def format_for_redcap(
             "activity_flow_submission_id",
             "activity_start_time",
             "activity_end_time",
+            "activity_start_time_str",
+            "activity_end_time_str",
+            "activity_time_start_time",
+            "activity_time_end_time",
         ]
         if col in df.columns
     ]

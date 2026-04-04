@@ -43,6 +43,7 @@ SAMPLE_SUBMIT_ID = "smit1234-ab12-cd34-ef56-abcdef123456"
 
 INVITATIONS_MOD = "hbnmigration.from_curious.invitations_to_redcap"
 
+
 # ============================================================================
 # File System Fixtures
 # ============================================================================

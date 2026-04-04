@@ -5,7 +5,6 @@ from datetime import date, datetime, timedelta
 import importlib.util
 from io import StringIO
 import json
-import logging
 import os
 from pathlib import Path
 from tempfile import NamedTemporaryFile
@@ -19,7 +18,9 @@ from pyspark.sql import DataFrame as SparkDataFrame, SparkSession
 import pytz
 import requests
 
-logger = logging.getLogger(__name__)
+from .logging import initialize_logging, setup_tsv_logger, TSVLoggedError
+
+logger = initialize_logging()
 
 
 def execute_vars_file(vars_file_path: str) -> None:
@@ -511,7 +512,15 @@ def redcap_api_push(
 
     if response.status_code == requests.codes["okay"]:
         return int(response.text)
-    response.raise_for_status()
+    try:
+        response.raise_for_status()
+    except requests.exceptions.HTTPError as http_error:
+        logger.exception(response.text)
+        raise TSVLoggedError(
+            ",".join(df.get("mrn", default=pd.Series(dtype="int64"))),
+            response.text,
+            "redcap_api_push",
+        ) from http_error
     return 0
 
 
@@ -579,6 +588,10 @@ def get_redcap_event_names(
             return {}
         logger.info(
             "Failed to fetch data: %d - %s", response.status_code, response.text
+        )
+        tsv_logger = setup_tsv_logger("mrn_error_log", "mrn_error_log.tsv")
+        tsv_logger.error(
+            response.text, extra={"mrn": "", "attempt": "get_redcap_event_names"}
         )
         return {}
     except KeyError as e:

@@ -34,7 +34,7 @@ REDCAP_ENDPOINTS = redcap_variables.Endpoints()
 # ============================================================================
 # Constants
 # ============================================================================
-ALERTS_INSTRUMENT_FORM = "ra_alerts_instrument"
+ALERTS_INSTRUMENT_FORM = "ra_alerts_child,ra_alerts_parent"
 ALERT_FIELD_PATTERN = r"alerts_([^_]+(?:_[^_]+)?)_\d+"
 PID_625 = redcap_variables.Tokens.pid625
 
@@ -155,13 +155,14 @@ def _fetch_alerts_metadata() -> pd.DataFrame:
 
 def _create_choice_lookup(
     alerts_instrument: pd.DataFrame,
-) -> dict[tuple[str, str], int]:
+) -> dict[tuple[str, str], int | str]:
     """Create lookup dictionary for mapping response values to REDCap indices."""
     choice_lookup_tuples = [
         lookup_tuple
         for lookup_tuple in [
-            response_index_reverse_lookup(row)
+            item
             for _, row in alerts_instrument.iterrows()
+            for item in response_index_reverse_lookup(row)
         ]
         if lookup_tuple
     ]
@@ -171,7 +172,7 @@ def _create_choice_lookup(
 def _map_mrns_to_records(
     redcap_alerts: pd.DataFrame,
     redcap_fields: pd.DataFrame,
-) -> tuple[pd.DataFrame, dict[str, int], dict[int, str]]:
+) -> tuple[pd.DataFrame, dict[str, int]]:
     """
     Map MRNs to record IDs and prepare lookups.
 
@@ -181,7 +182,7 @@ def _map_mrns_to_records(
         (processed_alerts, mrn_lookup, record_events)
         - processed_alerts: Filtered alert DataFrame
         - mrn_lookup: Maps MRN string to record ID integer
-        - record_events: Maps record ID integer to event name string
+        - record_events: Maps field name to event name string
 
     """
     # Prepare data types
@@ -197,13 +198,15 @@ def _map_mrns_to_records(
         .to_dict(),
     )
     record_events = cast(
-        dict[int, str],
-        redcap_fields.groupby("record")["redcap_event_name"].first().to_dict(),
+        dict[str, str],
+        redcap_fields.groupby("field_name")["redcap_event_name"].first().to_dict(),
     )
     # Filter results
     result = redcap_alerts.loc[redcap_alerts["field_name"] != "mrn"].copy()
     result = result[result["field_name"].isin(redcap_fields["field_name"])]
-    return result, mrn_lookup, record_events
+    # Map event names by field name
+    result["redcap_event_name"] = result["field_name"].map(record_events)
+    return result, mrn_lookup
 
 
 def toggle_alerts(result: pd.DataFrame) -> pd.DataFrame:
@@ -243,14 +246,12 @@ def process_alerts_for_redcap(
     # Fetch existing REDCap data
     redcap_fields = fetch_data(PID_625, str(FieldList(alert_fields)), all_or_any="any")
     # Map MRNs to records
-    result, mrn_lookup, record_events = _map_mrns_to_records(
-        redcap_alerts, redcap_fields
-    )
-    # Add event names
-    result["redcap_event_name"] = result["record"].map(mrn_lookup).map(record_events)
+    result, mrn_lookup = _map_mrns_to_records(redcap_alerts, redcap_fields)
     # Map response values to indices
     choice_lookup = _create_choice_lookup(alerts_instrument)
-    result["lookup_key"] = list(zip(result["field_name"], result["value"].str.lower()))
+    result["lookup_key"] = list(
+        zip(result["field_name"], result["value"].str.strip().str.lower())
+    )
     result["value"] = result["lookup_key"].map(choice_lookup).fillna(result["value"])
     # Toggle alerts and set final record IDs
     result = toggle_alerts(result.drop("lookup_key", axis=1))
@@ -271,7 +272,6 @@ def push_alerts_to_redcap(result: pd.DataFrame) -> None:
             "%d rows successfully updated for alerts in PID 625.", result.shape[0]
         )
     except Exception:
-        breakpoint()
         logger.exception("Pushing alerts from Curious to REDCap failed.")
         raise
 
