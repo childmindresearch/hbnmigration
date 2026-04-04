@@ -108,14 +108,14 @@ class CuriousEncryption(TypedDict):
 
 
 class CuriousAlert(TypedDict):
-    """API response from Curious alerts endpoint."""
+    """Base API response from Curious alerts endpoint."""
 
     id: CuriousId
+    secretId: NotRequired[str]
     isWatched: bool
     appletId: CuriousId
     appletName: str
     version: SemanticVersion
-    secretId: str
     activityId: CuriousId
     activityItemId: CuriousId
     message: str

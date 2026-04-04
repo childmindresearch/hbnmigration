@@ -18,7 +18,7 @@ def fetch_data(
     export_fields: str,
     filter_logic: Optional[str] = None,
     *,
-    all_or_any: Literal["all", "any"] = "all",
+    all_or_any: Literal["all", "any"] = "any",
     flat: bool = False,
 ) -> pd.DataFrame:
     """

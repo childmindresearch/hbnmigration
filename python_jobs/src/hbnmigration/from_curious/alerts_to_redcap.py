@@ -25,6 +25,7 @@ from ..utility_functions import (
     fetch_api_data,
     initialize_logging,
     redcap_api_push,
+    setup_tsv_logger,
 )
 from .config import curious_authenticate
 
@@ -123,10 +124,15 @@ def parse_alert(alert: CuriousAlert) -> pd.DataFrame:
     Note: 'record', 'value', and 'redcap_event_name' columns need further processing.
     """
     columns = ["record", "field_name", "value", "redcap_event_name"]
-    answer, item = _parse_alert_message(alert["message"])
+
+    # Check for secretId FIRST
     if "secretId" not in alert:
         logger.info('Response: \n"""\n%s\n"""\ndoes not include "secretId"', alert)
+        tsv_logger = setup_tsv_logger("mrn_error_log", "mrn_error_log.tsv")
+        tsv_logger.error(str(alert), extra={"mrn": "", "attempt": "parse_alert"})
         return pd.DataFrame(columns=columns)
+
+    answer, item = _parse_alert_message(alert["message"])
     fields: list[tuple[str, Any]] = [("mrn", alert["secretId"]), (item, answer)]
     data: list[tuple[str, str, Any, Optional[str]]] = [
         (alert["secretId"], field_name, field_value, None)
