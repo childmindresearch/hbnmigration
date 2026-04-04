@@ -32,7 +32,6 @@ class Fields:
                 "mrn",
                 "adult_enrollment_form_complete",
                 "parent_involvement",
-                "parent_involvement___1",
                 "email",
                 "parentfirstname",
                 "parent_last_name",

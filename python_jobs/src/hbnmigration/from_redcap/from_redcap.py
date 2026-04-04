@@ -18,7 +18,7 @@ def fetch_data(
     export_fields: str,
     filter_logic: Optional[str] = None,
     *,
-    all_or_any: Literal["all", "any"] = "any",
+    all_or_any: Literal["all", "any"] = "all",
     flat: bool = False,
 ) -> pd.DataFrame:
     """
@@ -69,7 +69,6 @@ def fetch_data(
         )
     if filter_logic:
         redcap_participant_data["filterLogic"] = filter_logic
-
     df_redcap_participant_consent_data = fetch_api_data(
         Endpoints.base_url,
         redcap_variables.headers,
