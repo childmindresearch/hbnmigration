@@ -22,7 +22,7 @@ from ..utility_functions import (
     get_redcap_event_names,
     initialize_logging,
     InstrumentRowCount,
-    ProjectStatus,
+    PROJECT_STATUS,
     Results,
     today,
     tsx,
@@ -31,13 +31,6 @@ from ..utility_functions import (
 
 initialize_logging()
 logger = logging.getLogger(__name__)
-PROJECT_STATUS: ProjectStatus = "dev"
-"""
-Change to "prod" for production.
-
-- dev = HBN - Intake and Curious (TEMP for Transition) PID 744
-- prod = HBN - Operations and Data Collection PID 625
-"""
 
 ENDPOINTS: dict[Literal["Curious", "REDCap"], Endpoints] = {
     "Curious": curious_variables.Endpoints(),

@@ -12,6 +12,7 @@ from ..exceptions import NoData
 from ..utility_functions import (
     fetch_api_data,
     initialize_logging,
+    PROJECT_STATUS,
     ProjectStatus,
     yesterday,
 )
@@ -328,4 +329,4 @@ def main(project_status: ProjectStatus = "prod") -> None:
 
 
 if __name__ == "__main__":
-    main(project_status="prod")
+    main(project_status=PROJECT_STATUS)

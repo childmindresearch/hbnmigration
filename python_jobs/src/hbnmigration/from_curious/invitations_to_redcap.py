@@ -15,7 +15,7 @@ from ..utility_functions import (
     CuriousId,
     fetch_api_data,
     initialize_logging,
-    ProjectStatus,
+    PROJECT_STATUS,
     yesterday_or_more_recent,
 )
 from .config import curious_authenticate, invitation_statuses
@@ -23,7 +23,6 @@ from .decryption import decrypt_single, get_applet_encryption
 
 initialize_logging()
 logger = logging.getLogger(__name__)
-PROJECT_STATUS: ProjectStatus = "dev"
 
 
 class Endpoints:
