@@ -1410,9 +1410,7 @@ def sample_curious_alert_response() -> dict[str, Any]:
 def mock_alerts_dependencies() -> Generator[dict[str, Mock], None, None]:
     """Mock all external dependencies for alerts processing."""
     with (
-        patch(
-            "hbnmigration.from_curious.alerts_to_redcap.fetch_api_data"
-        ) as mock_fetch_api,
+        patch("hbnmigration.from_curious.utils.fetch_api_data") as mock_fetch_api,
         patch("hbnmigration.from_curious.alerts_to_redcap.fetch_data") as mock_fetch,
         patch(
             "hbnmigration.from_curious.alerts_to_redcap.redcap_api_push"
@@ -1421,7 +1419,7 @@ def mock_alerts_dependencies() -> Generator[dict[str, Mock], None, None]:
             "hbnmigration.from_curious.alerts_to_redcap.redcap_variables"
         ) as mock_vars,
         patch(
-            "hbnmigration.from_curious.alerts_to_redcap._fetch_alerts_metadata"
+            "hbnmigration.from_curious.alerts_to_redcap.fetch_alerts_metadata"
         ) as mock_fetch_metadata,
         patch(
             "hbnmigration.from_curious.alerts_to_redcap._create_choice_lookup"

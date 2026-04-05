@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import sys
 from tempfile import TemporaryDirectory
+import time
 from typing import Literal
 
 import polars as pl
@@ -22,11 +23,15 @@ from ..utility_functions import (
     get_redcap_event_names,
     initialize_logging,
     InstrumentRowCount,
-    PROJECT_STATUS,
     Results,
     today,
     tsx,
     yesterday,
+)
+from .utils import (
+    get_alert_field_event,
+    possible_alert_instruments,
+    REDCAP_TOKEN,
 )
 
 initialize_logging()
@@ -38,11 +43,6 @@ ENDPOINTS: dict[Literal["Curious", "REDCap"], Endpoints] = {
 }
 """Initialized endpoints"""
 
-REDCAP_TOKEN = getattr(
-    redcap_variables.Tokens, "pid625" if PROJECT_STATUS == "prod" else "pid744"
-)
-"""REDCap token for specified project status"""
-
 
 def format_for_redcap(
     curious_data_dir: Path,
@@ -51,10 +51,8 @@ def format_for_redcap(
     event_names = get_redcap_event_names(
         ENDPOINTS["REDCap"].base_url, redcap_variables.headers, {"token": REDCAP_TOKEN}
     )
-
     # Create formatter with project name
     formatter = RedcapImportFormat(project=event_names)
-
     # Process data
     try:
         ml_data = MindloggerData.create(curious_data_dir)
@@ -62,7 +60,6 @@ def format_for_redcap(
         logger.info("No Curious data to export.")
         sys.exit(0)
     outputs = formatter.produce(ml_data)
-
     logger.info(
         "Data formatted for these instruments: %s",
         "".join([f"\n\t- {_.name[:-7]}" for _ in outputs]),
@@ -79,9 +76,284 @@ def get_curious_data(request_json: CliOptions) -> None:
     )
 
 
+def get_redcap_records_for_instrument(
+    instrument: str, records: list[str], event: str = ""
+) -> dict[str, dict[str, str]]:
+    """
+    Get existing REDCap data for specific records and instrument.
+
+    Returns
+    -------
+    dict
+        Dict mapping record_id to field values for that record
+
+    """
+    # Get all fields for this instrument from metadata
+    metadata = fetch_api_data(
+        ENDPOINTS["REDCap"].base_url,
+        redcap_variables.headers,
+        {
+            "token": REDCAP_TOKEN,
+            "content": "metadata",
+            "format": "json",
+            "forms": instrument,
+        },
+    )
+    # Extract field names - metadata is a DataFrame
+    if metadata.empty:
+        logger.warning("No metadata found for instrument: %s", instrument)
+        return {}
+    fields = metadata["field_name"].tolist() if "field_name" in metadata.columns else []
+    alert_field = f"{instrument}_alerts"
+    # Only include alert field if it exists
+    if alert_field not in fields:
+        logger.debug("Alert field %s not found in instrument metadata", alert_field)
+        return {}
+    params = {
+        "token": REDCAP_TOKEN,
+        "content": "record",
+        "format": "json",
+        "type": "flat",
+        "records": ",".join(records),
+        "fields": f"record_id,{alert_field}",
+    }
+    if event:
+        params["events"] = event
+    try:
+        response = requests.post(
+            ENDPOINTS["REDCap"].base_url, data=params, headers=redcap_variables.headers
+        )
+        response.raise_for_status()
+        data = response.json()
+        # Convert to dict keyed by record_id
+        result = {}
+        for record in data:
+            record_id = record.get("record_id", "")
+            if record_id:
+                result[record_id] = record
+        return result
+    except Exception as e:
+        logger.warning("Could not fetch REDCap data for %s: %s", instrument, e)
+        return {}
+
+
+def _determine_record_id_column(df: pl.DataFrame) -> str | None:
+    """Find the record ID column in the DataFrame."""
+    for possible_col in ["record_id", "record", "participant_id", "subject_id"]:
+        if possible_col in df.columns:
+            return possible_col
+    return None
+
+
+def _determine_event_column(df: pl.DataFrame) -> str | None:
+    """Find the event column in the DataFrame."""
+    for possible_col in ["redcap_event_name", "event"]:
+        if possible_col in df.columns:
+            return possible_col
+    return None
+
+
+def _determine_event_for_alert(
+    df: pl.DataFrame,
+    event_col: str | None,
+    instrument_name: str,
+    base_url: str,
+) -> str | None:
+    """Determine the REDCap event name for this instrument's alert field."""
+    if event_col and len(df) > 0:
+        # First try: use the event from the CSV data
+        return str(df[event_col][0])
+
+    return get_alert_field_event(base_url, instrument_name)
+
+
+def _build_alert_values(  # noqa: PLR0913
+    df: pl.DataFrame,
+    record_id_col: str,
+    event_col: str | None,
+    event: str | None,
+    alert_field: str,
+    existing_data: dict[str, dict[str, str]],
+) -> tuple[list[str], list[str | None], int, int]:
+    """
+    Build alert values based on existing REDCap data.
+
+    Returns
+    -------
+    tuple
+        (alert_values, event_values, records_with_alerts, records_setting_no)
+
+    """
+    alert_values = []
+    event_values = []
+    records_with_alerts = 0
+    records_setting_no = 0
+
+    for row in df.iter_rows(named=True):
+        record_id = str(row[record_id_col])
+        row_event = str(row[event_col]) if event_col else event
+
+        # Check if this record already has an alert set to "yes"
+        existing_record = existing_data.get(record_id, {})
+        existing_status = existing_record.get(alert_field, "").strip()
+
+        if existing_status == "yes":
+            # don't overwrite existing "yes"
+            # leave blank so REDCap keeps existing value
+            alert_values.append("")
+            records_with_alerts += 1
+            logger.debug("Preserving %s='yes' for record %s", alert_field, record_id)
+        else:
+            # Set to "no" since it's either empty or something other than "yes"
+            alert_values.append("no")
+            records_setting_no += 1
+
+        event_values.append(row_event)
+
+    return alert_values, event_values, records_with_alerts, records_setting_no
+
+
+def add_alert_fields_if_needed(csv_path: Path) -> None:
+    """
+    Add alert fields with 'no' value if they don't already exist as 'yes'.
+
+    This function:
+    1. Checks if instrument can have alerts
+    2. Waits 15 seconds for any real-time websocket alerts to arrive
+    3. Checks REDCap for existing alert status
+    4. Only sets alert='no' if it's not already 'yes'
+    This prevents race conditions with alerts_to_redcap.py which uses websockets
+    to set alerts='yes' in real-time.
+    """
+    # Read the CSV
+    df = pl.read_csv(csv_path)
+    instrument_name = csv_path.stem.lower()
+
+    # Check if this instrument can have alerts
+    alert_instruments = [
+        inst.lower()
+        for inst in possible_alert_instruments(ENDPOINTS["REDCap"].base_url)
+    ]
+    if instrument_name not in alert_instruments:
+        logger.debug("Instrument %s does not have alerts", instrument_name)
+        return
+
+    logger.info("Processing alerts for instrument: %s", instrument_name)
+
+    # Determine record ID column
+    record_id_col = _determine_record_id_column(df)
+    if not record_id_col:
+        logger.warning("Could not find record ID column in %s", instrument_name)
+        return
+
+    # Determine event column (if present in the data)
+    event_col = _determine_event_column(df)
+    alert_field = f"{instrument_name}_alerts"
+
+    # Check if alert field already exists in the data
+    if alert_field in df.columns:
+        logger.info("Alert field %s already exists in data", alert_field)
+        return
+
+    # Get unique records from this batch
+    records_str = [str(r) for r in df[record_id_col].unique().to_list()]
+
+    # Wait 15 seconds to allow websocket alerts to arrive first
+    logger.info(
+        "Waiting 15 seconds before checking REDCap alert status for %d records...",
+        len(records_str),
+    )
+    time.sleep(15)
+
+    # Determine the event name for the ALERT FIELD (not from the data event)
+    # Alert fields are on ra_alerts_parent/child forms, typically on admin_arm_1
+    alert_event = get_alert_field_event(
+        ENDPOINTS["REDCap"].base_url,
+        instrument_name,
+    )
+
+    if not alert_event:
+        logger.warning(
+            "Could not determine event for alert field %s, skipping alert processing",
+            alert_field,
+        )
+        return
+
+    # Fetch existing REDCap data for all records
+    existing_data = get_redcap_records_for_instrument(
+        instrument_name, records_str, alert_event
+    )
+
+    # Build list of alert rows to add
+    alert_rows = []
+    records_with_alerts = 0
+    records_setting_no = 0
+
+    for record_id in df[record_id_col].unique():
+        record_id_str = str(record_id)
+
+        # Check if this record already has an alert set to "yes"
+        existing_record = existing_data.get(record_id_str, {})
+        existing_status = existing_record.get(alert_field, "").strip()
+
+        if existing_status == "yes":
+            # Don't add a row - REDCap already has "yes" for this record
+            records_with_alerts += 1
+            logger.debug(
+                "Preserving %s='yes' for record %s", alert_field, record_id_str
+            )
+        else:
+            # Create a new row for the alert field with the correct event
+            alert_row = {record_id_col: record_id}
+
+            # Add only the alert field and event
+            alert_row[alert_field] = "no"
+
+            if event_col:
+                alert_row[event_col] = alert_event
+
+            alert_rows.append(alert_row)
+            records_setting_no += 1
+
+    logger.info(
+        "Alert field summary for %s: %d records already have alerts='yes', "
+        "%d records will be set to 'no'",
+        instrument_name,
+        records_with_alerts,
+        records_setting_no,
+    )
+
+    if not alert_rows:
+        logger.info("No alert rows to add for %s", instrument_name)
+        return
+
+    # Create a DataFrame for the alert rows
+    alert_df = pl.DataFrame(alert_rows)
+
+    # If there's no event column in the original data, add it
+    if not event_col:
+        alert_df = alert_df.with_columns(pl.lit(alert_event).alias("redcap_event_name"))
+
+    # Append alert rows to the original DataFrame
+    df = pl.concat([df, alert_df], how="diagonal")
+
+    logger.info(
+        "Added %d alert rows for instrument %s with event %s",
+        len(alert_rows),
+        instrument_name,
+        alert_event,
+    )
+
+    # Write back to CSV
+    df.write_csv(csv_path)
+    logger.info("Updated %s with alert field", csv_path)
+
+
 def push_to_redcap(csv_path: Path) -> None:
     """Push data to RedCap."""
     if csv_path.stat().st_size:
+        # Add alert fields if needed before pushing
+        add_alert_fields_if_needed(csv_path)
         with csv_path.open("r") as csv_content:
             data = {
                 "token": REDCAP_TOKEN,
@@ -106,7 +378,6 @@ def push_to_redcap(csv_path: Path) -> None:
 def save_for_redcap(outputs: list[NamedOutput], redcap_data_dir: Path):
     """Save REDCap data."""
     # Save outputs
-
     for output in outputs:
         nested_cols = [
             col
@@ -165,7 +436,6 @@ def main() -> None:
     """Send Curious data to REDCap."""
     request_json = CliOptions({"fromDate": yesterday, "toDate": today})
     """All data from yesterday to now."""
-
     with TemporaryDirectory() as curious_temp_data_dir:
         applet_credentials = curious_variables.AppletCredentials.hbn_mindlogger[
             "Healthy Brain Network Questionnaires"

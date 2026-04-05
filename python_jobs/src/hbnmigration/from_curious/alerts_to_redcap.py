@@ -22,22 +22,25 @@ from ..from_redcap.config import FieldList
 from ..from_redcap.from_redcap import fetch_data, response_index_reverse_lookup
 from ..utility_functions import (
     CuriousAlert,
-    fetch_api_data,
     initialize_logging,
     redcap_api_push,
     setup_tsv_logger,
 )
 from .config import curious_authenticate
+from .utils import (
+    fetch_alerts_metadata,
+    REDCAP_TOKEN,
+)
 
 initialize_logging()
 logger = logging.getLogger(__name__)
 REDCAP_ENDPOINTS = redcap_variables.Endpoints()
+
 # ============================================================================
 # Constants
 # ============================================================================
-ALERTS_INSTRUMENT_FORM = "ra_alerts_child,ra_alerts_parent"
 ALERT_FIELD_PATTERN = r"alerts_([^_]+(?:_[^_]+)?)_\d+"
-PID_625 = redcap_variables.Tokens.pid625
+PID_625 = REDCAP_TOKEN  # Use token from alert_utils
 
 # WebSocket configuration constants
 WS_RECONNECT_DELAY = 5  # seconds
@@ -46,20 +49,6 @@ WS_PING_INTERVAL = 20  # seconds
 WS_PING_TIMEOUT = 10  # seconds
 WS_CLOSE_TIMEOUT = 5  # seconds
 
-# Standard REDCap metadata fetch parameters
-METADATA_PARAMS = {
-    "content": "metadata",
-    "action": "export",
-    "format": "csv",
-    "type": "eav",
-    "csvDelimiter": "",
-    "rawOrLabel": "raw",
-    "rawOrLabelHeaders": "raw",
-    "exportCheckboxLabel": "false",
-    "exportSurveyFields": "false",
-    "exportDataAccessGroups": "false",
-    "returnFormat": "csv",
-}
 # ============================================================================
 # Type Definitions
 # ============================================================================
@@ -124,14 +113,12 @@ def parse_alert(alert: CuriousAlert) -> pd.DataFrame:
     Note: 'record', 'value', and 'redcap_event_name' columns need further processing.
     """
     columns = ["record", "field_name", "value", "redcap_event_name"]
-
     # Check for secretId FIRST
     if "secretId" not in alert:
         logger.info('Response: \n"""\n%s\n"""\ndoes not include "secretId"', alert)
         tsv_logger = setup_tsv_logger("mrn_error_log", "mrn_error_log.tsv")
         tsv_logger.error(str(alert), extra={"mrn": "", "attempt": "parse_alert"})
         return pd.DataFrame(columns=columns)
-
     answer, item = _parse_alert_message(alert["message"])
     fields: list[tuple[str, Any]] = [("mrn", alert["secretId"]), (item, answer)]
     data: list[tuple[str, str, Any, Optional[str]]] = [
@@ -144,19 +131,6 @@ def parse_alert(alert: CuriousAlert) -> pd.DataFrame:
 # ============================================================================
 # REDCap Data Processing
 # ============================================================================
-
-
-def _fetch_alerts_metadata() -> pd.DataFrame:
-    """Fetch alerts instrument metadata from REDCap."""
-    return fetch_api_data(
-        REDCAP_ENDPOINTS.base_url,
-        redcap_variables.headers,
-        {
-            "token": PID_625,
-            "forms": ALERTS_INSTRUMENT_FORM,
-            **METADATA_PARAMS,
-        },
-    )
 
 
 def _create_choice_lookup(
@@ -185,10 +159,9 @@ def _map_mrns_to_records(
     Returns
     -------
     tuple
-        (processed_alerts, mrn_lookup, record_events)
-        - processed_alerts: Filtered alert DataFrame
+        (processed_alerts, mrn_lookup)
+        - processed_alerts: Filtered alert DataFrame with event names populated
         - mrn_lookup: Maps MRN string to record ID integer
-        - record_events: Maps field name to event name string
 
     """
     # Prepare data types
@@ -243,7 +216,7 @@ def process_alerts_for_redcap(
     """
     alert_fields = redcap_alerts["field_name"].unique()
     # Fetch metadata
-    alerts_instrument = _fetch_alerts_metadata()
+    alerts_instrument = fetch_alerts_metadata(REDCAP_ENDPOINTS.base_url)
     # Filter fields if partial landing
     if partial_redcap_landing:
         alert_fields = intersect1d(
@@ -384,7 +357,6 @@ async def main_with_reconnect(
                     attempt,
                     f" of {max_attempts}" if max_attempts else "",
                 )
-
             async with connect_to_websocket(token, uri) as websocket:
                 # Reset attempt counter on successful connection
                 if attempt > 0:
@@ -393,18 +365,15 @@ async def main_with_reconnect(
                 await websocket_listener(websocket, partial_redcap_landing)
                 logger.info("WebSocket listener completed normally")
                 break
-
         except ConnectionClosedError:
             attempt += 1
             if max_attempts and attempt >= max_attempts:
                 logger.exception("Max reconnection attempts reached. Exiting.")
                 raise
-
             logger.warning(
                 "Connection lost. Reconnecting in %d seconds...", WS_RECONNECT_DELAY
             )
             await asyncio.sleep(WS_RECONNECT_DELAY)
-
         except InvalidStatus as e:
             # Authentication or server errors
             logger.exception(
@@ -419,15 +388,12 @@ async def main_with_reconnect(
                 logger.exception("Max reconnection attempts reached. Exiting.")
                 raise
             await asyncio.sleep(WS_RECONNECT_DELAY)
-
         except asyncio.CancelledError:
             logger.info("Operation cancelled")
             raise
-
         except KeyboardInterrupt:
             logger.info("WebSocket listener cancelled manually")
             break
-
         except Exception:
             logger.exception("Fatal error in main loop")
             raise
@@ -456,7 +422,6 @@ async def main(
     """
     tokens = curious_authenticate()
     endpoints = curious_variables.Endpoints(protocol="wss")
-
     await main_with_reconnect(
         token=tokens.access,
         uri=endpoints.alerts,
@@ -503,7 +468,6 @@ def cli() -> None:
     parser.set_defaults(partial=False, synchronous=False)
     namespace = _SynchronousArgs()
     args = parser.parse_args(namespace=namespace)
-
     if args.synchronous:
         synchronous_main(args.partial)
     else:
