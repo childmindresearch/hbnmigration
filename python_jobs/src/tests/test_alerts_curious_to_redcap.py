@@ -622,3 +622,125 @@ def test_response_index_reverse_lookup(field_name, choices, expected):
     )
     result = response_index_reverse_lookup(row)
     assert result == expected
+
+
+# ============================================================================
+# Tests - fetch_alerts_metadata
+# ============================================================================
+
+
+def test_fetch_alerts_metadata_called_in_process_alerts(
+    mock_alerts_dependencies, redcap_alerts_metadata
+):
+    """Test that fetch_alerts_metadata is called during alert processing."""
+    setup_standard_alert_mocks(mock_alerts_dependencies, redcap_alerts_metadata)
+    alert_df = create_alert_df(["MRN12345"], ["alerts_parent_baseline_1"], ["yes"])
+
+    process_alerts_for_redcap(alert_df)
+
+    # The fetch_alerts_metadata should be called (it's the imported function)
+    assert mock_alerts_dependencies["fetch_metadata"].called
+
+
+# ============================================================================
+# Tests - Parametrized Parse Alert Tests
+# ============================================================================
+
+
+@pytest.mark.parametrize(
+    "message,expected_item",
+    [
+        (
+            'Red: "Yes" - Difficulty concentrating parent_baseline',
+            "alerts_parent_baseline_difficulty_concentrating",
+        ),
+        (
+            'Yellow: "No" - Sleep issues child_followup',
+            "alerts_child_followup_sleep_issues",
+        ),
+        (
+            'Green: "Sometimes" - Mood changes parent_followup',
+            "alerts_parent_followup_mood_changes",
+        ),
+    ],
+    ids=["red_parent", "yellow_child", "green_parent"],
+)
+def test_parse_alert_various_colors_and_items(
+    sample_curious_alert, message, expected_item
+):
+    """Test parse_alert with various color and item combinations."""
+    alert = sample_curious_alert.copy()
+    alert["message"] = message
+    result = parse_alert(alert)
+
+    assert not result.empty
+    assert sample_curious_alert["secretId"] in result["record"].values
+    # Verify that an item field was created
+    item_fields = result[result["field_name"] != "mrn"]
+    assert len(item_fields) > 0
+
+
+# ============================================================================
+# Tests - Parametrized Process Alerts Tests
+# ============================================================================
+
+
+@pytest.mark.parametrize(
+    "records,field_names,expected_summary",
+    [
+        (
+            ["001", "001"],
+            ["alerts_parent_baseline_1", "alerts_parent_baseline_2"],
+            "parent_baseline_alerts",
+        ),
+        (
+            ["003"],
+            ["alerts_parent_baseline_1"],
+            "parent_baseline_alerts",
+        ),
+    ],
+    ids=["parent_baseline", "single_record"],
+)
+def test_process_alerts_creates_summary_fields(
+    mock_alerts_dependencies,
+    redcap_alerts_metadata,
+    records,
+    field_names,
+    expected_summary,
+):
+    """Test that process_alerts creates appropriate summary fields."""
+    setup_standard_alert_mocks(mock_alerts_dependencies, redcap_alerts_metadata)
+    alert_df = create_alert_df(records, field_names, ["yes"] * len(field_names))
+
+    result = process_alerts_for_redcap(alert_df)
+
+    # Should have summary field if metadata contains the instrument
+    summary_rows = result[result["field_name"] == expected_summary]
+    assert len(summary_rows) > 0
+
+
+# ============================================================================
+# Tests - Parametrized Push Alerts Tests
+# ============================================================================
+
+
+@pytest.mark.parametrize(
+    "records,values",
+    [
+        (["001", "001"], ["yes", "no"]),
+        (["002"], ["1"]),
+        (["003", "004"], ["yes", "yes"]),
+    ],
+    ids=["mixed_yes_no", "numeric", "all_yes"],
+)
+def test_push_alerts_various_values(mock_alerts_dependencies, records, values):
+    """Test push_alerts_to_redcap with various alert values."""
+    alert_df = create_alert_df(
+        records, ["alerts_parent_baseline_1"] * len(records), values
+    )
+    push_alerts_to_redcap(alert_df)
+
+    push_mock = mock_alerts_dependencies["push"]
+    assert push_mock.called
+    pushed_data = push_mock.call_args[0][0]
+    assert len(pushed_data) == len(records)
