@@ -1,7 +1,7 @@
 """Utilities, including those to be used in the project Synapse Notebooks."""
 
 import csv
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 import importlib.util
 from io import StringIO
 import json
@@ -19,6 +19,7 @@ import pytz
 import requests
 
 from ..exceptions import TSVLoggedError
+from .cache import YESTERDAY_DATE
 from .logging import initialize_logging, setup_tsv_logger
 
 logger = initialize_logging()
@@ -609,16 +610,10 @@ _today = date.today()
 today = str(_today)
 """`YYYY-MM-DD` string date format of today."""
 
-_yesterday_date = _today - timedelta(days=1)
-"""Date representation of yesterday."""
-
-yesterday = "2026-04-01"  # str(_yesterday_date)
-"""`YYYY-MM-DD` string date format of yesterday."""
-
 
 def yesterday_or_more_recent(date_str: str) -> bool:
     """Return truth value if a string date-time is yesterday or more recent."""
-    return datetime.fromisoformat(date_str).date() >= _yesterday_date
+    return datetime.fromisoformat(date_str).date() >= YESTERDAY_DATE
 
 
 def create_tempory_file(extension: str = "csv") -> Path:

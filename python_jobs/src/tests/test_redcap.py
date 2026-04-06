@@ -600,8 +600,9 @@ class TestIntegration:
 
         to_curious.main()
 
-        # Should create 4 accounts (2 parents + 2 children)
-        assert mock_new_account.call_count == 4
+        # Cache deduplicates by MRN, so 2 unique MRNs create 2 accounts
+        # (deduplication prevents creating multiple accounts for same MRN)
+        assert mock_new_account.call_count == 2
         # Should update REDCap for 2 records
         mock_redcap_push.assert_called_once()
 

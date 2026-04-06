@@ -11,7 +11,7 @@ import pandas as pd
 from .._config_variables import redcap_variables
 from ..config import Config
 from ..exceptions import NoData
-from ..utility_functions import initialize_logging, redcap_api_push
+from ..utility_functions import DataCache, initialize_logging, redcap_api_push
 from .config import Fields, Values
 from .from_redcap import fetch_data
 
@@ -119,6 +119,9 @@ def update_complete_parent_second_guardian_consent(df: pd.DataFrame) -> pd.DataF
 
 def main() -> None:
     """Transfer data from REDCap to REDCap."""
+    # Initialize cache for minute-by-minute transfers (TTL: 2 minutes)
+    cache = DataCache("redcap_to_redcap", ttl_minutes=2)
+
     try:
         # get data from PID247
         data247 = fetch_data(
@@ -131,6 +134,22 @@ def main() -> None:
         )
         if data247.empty:
             raise NoData
+
+        # Filter out records already processed by cache
+        unique_records = data247["record"].unique()
+        unprocessed_records = cache.get_unprocessed_records(unique_records.tolist())
+
+        if len(unprocessed_records) < len(unique_records):
+            logger.info(
+                "Skipping %d already-processed records (cache hit)",
+                len(unique_records) - len(unprocessed_records),
+            )
+            data247 = data247[data247["record"].isin(unprocessed_records)]
+
+        if data247.empty:
+            logger.info("All records already processed in cache.")
+            return
+
         # rename columns for PID744
         data247 = update_complete_parent_second_guardian_consent(data247)
         data247["field_name"] = data247["field_name"].replace(
@@ -174,10 +193,27 @@ def main() -> None:
         )
         if not rows_imported_744:
             raise NoData
+
+        # Mark source records as processed in cache
+        source_records = data247["record"].unique().tolist()
+        cache.bulk_mark_processed(
+            source_records,
+            metadata={"rows_imported": rows_imported_744},
+        )
+
         rows_updated_274 = update_source(df_744, record_ids)
         assert rows_imported_744 == rows_updated_274, (
             f"rows imported to PID 744 ({rows_imported_744}) "
             f"≠ rows updated in PID 274 ({rows_updated_274})."
+        )
+
+        # Log cache statistics
+        cache_stats = cache.get_stats()
+        logger.info(
+            "Cache statistics: %d entries, file size: %d bytes, last activity: %s",
+            cache_stats["total_entries"],
+            cache_stats["file_size_bytes"],
+            cache_stats.get("last_activity", "never"),
         )
     except NoData:
         logger.info("No data to transfer from PID 274 to PID 744.")

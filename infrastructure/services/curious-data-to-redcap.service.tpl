@@ -24,6 +24,7 @@ PrivateTmp=true
 ProtectSystem=strict
 ReadWritePaths=${project_root}
 ReadWritePaths=${log_directory}
+ReadWritePaths=%h/.hbnmigration_cache
 
 [Install]
 WantedBy=multi-user.target

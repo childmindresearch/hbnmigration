@@ -21,15 +21,16 @@ from .._config_variables import curious_variables, redcap_variables
 from ..config import Config
 from ..utility_functions import (
     CliOptions,
+    DataCache,
     Endpoints,
     fetch_api_data,
+    get_recent_time_window,
     get_redcap_event_names,
     initialize_logging,
     InstrumentRowCount,
     Results,
-    today,
     tsx,
-    yesterday,
+    YESTERDAY,
 )
 from .utils import (
     get_alert_field_event,
@@ -621,7 +622,11 @@ def save_for_redcap(outputs: list[NamedOutput], redcap_data_dir: Path):
         )
 
 
-def send_to_redcap(redcap_path: Path, instrument_row_count: dict[str, int]) -> Results:
+def send_to_redcap(
+    redcap_path: Path,
+    instrument_row_count: dict[str, int],
+    cache: DataCache | None = None,
+) -> Results:
     """Send data to REDCap."""
     results = Results()
     instruments: list[str] = [
@@ -649,9 +654,29 @@ def send_to_redcap(redcap_path: Path, instrument_row_count: dict[str, int]) -> R
         "".join([f"\n\t- {file.stem}" for file in to_send]),
     )
     for instrument in to_send:
+        instrument_key = instrument.stem
+
+        # Check cache to skip if already processed
+        if cache and cache.is_processed(instrument_key):
+            logger.info(
+                "Skipping %s (already processed in cache)",
+                instrument_key,
+            )
+            results.success += instrument_row_count.get(instrument.stem, 0)
+            continue
+
         try:
             push_to_redcap(instrument)
             results.success += instrument_row_count.get(instrument.stem, 0)
+
+            # Mark as processed in cache
+            if cache:
+                cache.mark_processed(
+                    instrument_key,
+                    metadata={
+                        "row_count": instrument_row_count.get(instrument.stem, 0)
+                    },
+                )
         except Exception:
             logger.exception("%s\n", instrument)
             results.failure.append(instrument.stem)
@@ -660,8 +685,23 @@ def send_to_redcap(redcap_path: Path, instrument_row_count: dict[str, int]) -> R
 
 def main() -> None:
     """Send Curious data to REDCap."""
-    request_json = CliOptions({"fromDate": yesterday, "toDate": today})
-    """All data from yesterday to now."""
+    # Use 2-minute window for minute-by-minute transfers
+    # Auto-fallback to full-day on downtime (2+ hours without activity)
+    # Recovery mode is logged by get_recent_time_window()
+    from_date, to_date = get_recent_time_window(
+        minutes_back=2, allow_full_day_fallback=True
+    )
+
+    # Convert ISO datetime to date-only format for TypeScript (YYYY-MM-DD)
+    # TypeScript's setDateParams will append T00:00:00 and T23:59:59
+    from_date_only = from_date.split("T")[0]  # Extract YYYY-MM-DD
+    to_date_only = to_date.split("T")[0]  # Extract YYYY-MM-DD
+
+    request_json = CliOptions({"fromDate": from_date_only, "toDate": to_date_only})
+
+    # Initialize cache for minute-by-minute transfers (TTL: 2 minutes)
+    cache = DataCache("curious_data_to_redcap", ttl_minutes=2)
+
     with TemporaryDirectory() as curious_temp_data_dir:
         applet_credentials = curious_variables.AppletCredentials.hbn_mindlogger[
             "Healthy Brain Network Questionnaires"
@@ -684,8 +724,18 @@ def main() -> None:
             k: v for k, v in _instrument_row_count.items() if v is not None
         }
         save_for_redcap(outputs, data_dir_paths["redcap"])
-        results = send_to_redcap(data_dir_paths["redcap"], instrument_row_count)
-        logger.info(results.report, yesterday)
+        results = send_to_redcap(data_dir_paths["redcap"], instrument_row_count, cache)
+
+        # Log cache statistics
+        cache_stats = cache.get_stats()
+        logger.info(
+            "Cache statistics: %d entries, file size: %d bytes, last activity: %s",
+            cache_stats["total_entries"],
+            cache_stats["file_size_bytes"],
+            cache_stats.get("last_activity", "never"),
+        )
+
+        logger.info(results.report, YESTERDAY)
 
 
 if __name__ == "__main__":

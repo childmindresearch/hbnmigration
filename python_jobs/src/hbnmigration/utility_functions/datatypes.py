@@ -217,8 +217,10 @@ class Results:
 
         Usage
         -----
+        >>> from logging import getLogger
+        >>> from hbnmigration.utility_functions.cache import YESTERDAY
         >>> results = Results()
-        >>> logger.info(results.report, yesterday)
+        >>> getLogger(__name__).info(results.report, YESTERDAY)
         """
         if self.success:
             return f"{self.success} rows submitted to REDCap for %s."

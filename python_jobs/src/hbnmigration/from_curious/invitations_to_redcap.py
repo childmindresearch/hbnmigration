@@ -14,6 +14,7 @@ from ..from_redcap.config import Values as RedcapValues
 from ..utility_functions import (
     CuriousDecryptedAnswer,
     CuriousId,
+    DataCache,
     fetch_api_data,
     initialize_logging,
     yesterday_or_more_recent,
@@ -394,7 +395,7 @@ def pull_data_from_curious(token: str) -> pl.DataFrame:
     return invitation_df
 
 
-def push_to_redcap(csv_data: str) -> int:
+def push_to_redcap(csv_data: str, cache: DataCache | None = None) -> int:
     """
     Push data to RedCap.
 
@@ -456,26 +457,66 @@ def update_already_completed(df: pl.DataFrame) -> pl.DataFrame:
 
 def main() -> None:
     """Monitor Curious account invitations and send updates to REDCap."""
+    # Initialize cache for minute-by-minute transfers (TTL: 2 minutes)
+    cache = DataCache("curious_invitations_to_redcap", ttl_minutes=2)
+
     auth = curious_authenticate()
     invitation_df = pull_data_from_curious(auth.access)
     if invitation_df.is_empty():
         logger.info("No invitations to update.")
         return
+
+    # Filter out records already processed by cache
+    if cache:
+        unprocessed_records = cache.get_unprocessed_records(
+            invitation_df["record_id"].to_list()
+        )
+        if len(unprocessed_records) < len(invitation_df):
+            logger.info(
+                "Skipping %d already-processed records (cache hit)",
+                len(invitation_df) - len(unprocessed_records),
+            )
+            invitation_df = invitation_df.filter(
+                pl.col("record_id").is_in(unprocessed_records)
+            )
+
+    if invitation_df.is_empty():
+        logger.info("All invitations already processed in cache.")
+        return
+
     invitation_df = check_activity_responses(
         auth.access,
         invitation_df,
         curious_variables.applet_ids["Healthy Brain Network Questionnaires"],
         curious_variables.activity_ids["Curious Account Created"],
     ).unique(subset=["record_id"], keep="last")
-    n_records = push_to_redcap(invitation_df.write_csv())
+
+    n_records = push_to_redcap(invitation_df.write_csv(), cache)
     logger.info(
         "%d records updated in REDCap from Curious account creation.", n_records
     )
+
+    # Mark records as processed in cache
+    if cache and n_records > 0:
+        cache.bulk_mark_processed(
+            invitation_df["record_id"].to_list(),
+            metadata={"count": n_records},
+        )
+
     if n_records != invitation_df.shape[0]:
         msg = (
             f"Expected {invitation_df.shape[0]} records to update but {n_records} did."
         )
         raise ValueError(msg)
+
+    # Log cache statistics
+    cache_stats = cache.get_stats()
+    logger.info(
+        "Cache statistics: %d entries, file size: %d bytes, last activity: %s",
+        cache_stats["total_entries"],
+        cache_stats["file_size_bytes"],
+        cache_stats.get("last_activity", "never"),
+    )
     return
 
 

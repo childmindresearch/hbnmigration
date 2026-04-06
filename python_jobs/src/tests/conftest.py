@@ -3,6 +3,7 @@
 from collections.abc import Generator
 from contextlib import contextmanager, ExitStack
 import json
+import os
 from pathlib import Path
 import tempfile
 from typing import Any, cast, ContextManager, TypedDict
@@ -45,6 +46,24 @@ SAMPLE_RESPONDENT_ID = "resp1234-ab12-cd34-ef56-abcdef123456"
 SAMPLE_SUBJECT_ID = "subj1234-ab12-cd34-ef56-abcdef123456"
 SAMPLE_SUBMIT_ID = "smit1234-ab12-cd34-ef56-abcdef123456"
 INVITATIONS_MOD = "hbnmigration.from_curious.invitations_to_redcap"
+
+
+@pytest.fixture(autouse=True)
+def isolated_cache(tmp_path: Path) -> Generator[None, None, None]:
+    """Isolate cache directory per test to prevent cross-test pollution."""
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
+    old_cache_dir = os.environ.get("HBNMIGRATION_CACHE_DIR")
+    os.environ["HBNMIGRATION_CACHE_DIR"] = str(cache_dir)
+
+    yield
+
+    # Restore original value
+    if old_cache_dir is None:
+        os.environ.pop("HBNMIGRATION_CACHE_DIR", None)
+    else:
+        os.environ["HBNMIGRATION_CACHE_DIR"] = old_cache_dir
 
 
 @pytest.fixture

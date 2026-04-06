@@ -22,6 +22,7 @@ from ..from_redcap.config import FieldList
 from ..from_redcap.from_redcap import fetch_data, response_index_reverse_lookup
 from ..utility_functions import (
     CuriousAlert,
+    DataCache,
     initialize_logging,
     redcap_api_push,
     setup_tsv_logger,
@@ -432,6 +433,9 @@ async def main(
 
 def synchronous_main(partial_redcap_landing: bool = False) -> None:
     """Send Curious alerts to REDCap (synchronous version via REST API)."""
+    # Initialize cache for minute-by-minute transfers (TTL: 2 minutes)
+    cache = DataCache("curious_alerts_to_redcap", ttl_minutes=2)
+
     tokens = curious_authenticate()
     response = requests.get(
         tokens.endpoints.alerts,
@@ -441,11 +445,45 @@ def synchronous_main(partial_redcap_landing: bool = False) -> None:
         response.raise_for_status()
         return
     results: list[CuriousAlert] = response.json()["result"]
-    # Parse and concatenate all alerts
-    redcap_alerts = pd.concat([parse_alert(alert) for alert in results])
+
+    # Filter out alerts already processed
+    unprocessed_alerts = []
+    for alert in results:
+        alert_id = alert.get("id", "")
+        if not cache.is_processed(alert_id):
+            unprocessed_alerts.append(alert)
+        else:
+            logger.debug("Skipping already-processed alert: %s", alert_id)
+
+    if not unprocessed_alerts:
+        logger.info("All alerts already processed in cache.")
+        return
+
+    logger.info(
+        "Processing %d new alerts (skipped %d cached)",
+        len(unprocessed_alerts),
+        len(results) - len(unprocessed_alerts),
+    )
+
+    # Parse and concatenate all new alerts
+    redcap_alerts = pd.concat([parse_alert(alert) for alert in unprocessed_alerts])
     # Process and push to REDCap
     result = process_alerts_for_redcap(redcap_alerts, partial_redcap_landing)
     push_alerts_to_redcap(result)
+
+    # Mark alerts as processed in cache
+    for alert in unprocessed_alerts:
+        alert_id = alert.get("id", "")
+        cache.mark_processed(alert_id, metadata={"processed": True})
+
+    # Log cache statistics
+    cache_stats = cache.get_stats()
+    logger.info(
+        "Cache statistics: %d entries, file size: %d bytes, last activity: %s",
+        cache_stats["total_entries"],
+        cache_stats["file_size_bytes"],
+        cache_stats.get("last_activity", "never"),
+    )
 
 
 # ============================================================================

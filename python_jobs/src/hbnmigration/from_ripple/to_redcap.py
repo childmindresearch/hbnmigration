@@ -11,10 +11,11 @@ from .._config_variables import redcap_variables, ripple_variables
 from ..config import Config
 from ..exceptions import NoData
 from ..utility_functions import (
+    DataCache,
     fetch_api_data,
+    get_recent_time_window,
     initialize_logging,
     ProjectStatus,
-    yesterday,
 )
 
 logger = initialize_logging(__name__)
@@ -31,12 +32,15 @@ class Endpoints:
 
 def request_potential_participants() -> pd.DataFrame:
     """Request Ripple potential participants data via Ripple API Export."""
+    # Use 2-minute window for minute-by-minute transfers
+    from_date, _ = get_recent_time_window(minutes_back=2)
+
     ripple_df = pd.concat(
         [
             Endpoints.Ripple.export_from_ripple(
                 ripple_study,
                 {
-                    "surveyExportSince": yesterday,
+                    "surveyExportSince": from_date,
                     **ripple_variables.column_dict(
                         [
                             "globalId",
@@ -123,9 +127,27 @@ def set_redcap_columns(
     return redcap_df[["record_id", *columns_to_keep]].drop_duplicates()
 
 
-def prepare_redcap_data(df: pd.DataFrame) -> None:
+def prepare_redcap_data(df: pd.DataFrame, cache: DataCache | None = None) -> None:
     """Prepare Ripple API returned data to be imported into REDCap."""
     copy_selected_redcap_df = set_redcap_columns(df)
+
+    # Filter out records already processed by cache
+    if cache:
+        unprocessed_mrns = cache.get_unprocessed_records(
+            copy_selected_redcap_df["mrn"].astype(str).tolist()
+        )
+        if len(unprocessed_mrns) < len(copy_selected_redcap_df):
+            logger.info(
+                "Skipping %d already-processed records (cache hit)",
+                len(copy_selected_redcap_df) - len(unprocessed_mrns),
+            )
+            copy_selected_redcap_df = copy_selected_redcap_df[
+                copy_selected_redcap_df["mrn"].astype(str).isin(unprocessed_mrns)
+            ]
+
+    if copy_selected_redcap_df.empty:
+        logger.info("No new records to prepare for REDCap")
+        return
 
     # Split into update and new
     to_update, new_subjects = get_redcap_subjects_to_update(copy_selected_redcap_df)
@@ -135,6 +157,11 @@ def prepare_redcap_data(df: pd.DataFrame) -> None:
         to_update.to_csv(redcap_variables.redcap_update_file, index=False)
     if not new_subjects.empty:
         new_subjects.to_csv(redcap_variables.redcap_import_file, index=False)
+
+    # Mark as processed in cache
+    if cache:
+        processed_mrns = copy_selected_redcap_df["mrn"].astype(str).tolist()
+        cache.bulk_mark_processed(processed_mrns, metadata={"from_ripple": True})
 
 
 def get_redcap_subjects_to_update(
@@ -310,6 +337,9 @@ def cleanup(temp_files: list[str | Path]) -> None:
 
 def main(project_status: ProjectStatus = "prod") -> None:
     """Transfer data from Ripple to REDCap."""
+    # Initialize cache for minute-by-minute transfers (TTL: 2 minutes)
+    cache = DataCache("ripple_to_redcap", ttl_minutes=2)
+
     project: dict[ProjectStatus, dict[str, str]] = {
         "dev": {"token": redcap_variables.Tokens.pid757},
         "prod": {"token": redcap_variables.Tokens.pid247},
@@ -317,11 +347,20 @@ def main(project_status: ProjectStatus = "prod") -> None:
     ripple_import_files: dict[str, str] = {}
     try:
         filtered_ripple_df = request_potential_participants()
-        prepare_redcap_data(filtered_ripple_df)
+        prepare_redcap_data(filtered_ripple_df, cache)
         ripple_import_files = prepare_ripple_to_ripple(filtered_ripple_df)
         push_to_redcap(project[project_status]["token"])
         for ripple_study, ripple_import_file in ripple_import_files.items():
             set_status_in_ripple(ripple_study, ripple_import_file)
+
+        # Log cache statistics
+        cache_stats = cache.get_stats()
+        logger.info(
+            "Cache statistics: %d entries, file size: %d bytes, last activity: %s",
+            cache_stats["total_entries"],
+            cache_stats["file_size_bytes"],
+            cache_stats.get("last_activity", "never"),
+        )
     except NoData:
         pass
     finally:
