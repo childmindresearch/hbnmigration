@@ -11,6 +11,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Moved project status to envrironment variable `$HBNMIGRATION_PROJECT_STATUS` with default `"prod"`
 - Log missing fields but push acceptable data in those cases
+- Log invalid categories separately
+
+### Fixed
+
+- Don't create `{mrn}_P` records in REDCap.
 
 ## 1.6.1
 

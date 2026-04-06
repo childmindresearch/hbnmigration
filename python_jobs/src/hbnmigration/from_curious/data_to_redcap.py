@@ -1,5 +1,6 @@
 """Send Curious data to REDCap."""
 
+import csv
 from datetime import datetime
 import logging
 import os
@@ -61,11 +62,33 @@ def format_for_redcap(
         logger.info("No Curious data to export.")
         sys.exit(0)
     outputs = formatter.produce(ml_data)
+
+    # Filter out records where target subject is a parent (_P suffix)
+    filtered_outputs = []
+    for output in outputs:
+        df = output.output
+        if "target_user_secret_id" in df.columns:
+            # Only keep rows where target_user_secret_id does NOT end with "_P"
+            df_filtered = df.filter(
+                ~pl.col("target_user_secret_id").cast(pl.Utf8).str.ends_with("_P")
+            )
+            filtered_count = len(df) - len(df_filtered)
+            if filtered_count > 0:
+                logger.info(
+                    "Filtered %d rows from %s (target subject is parent)",
+                    filtered_count,
+                    output.name,
+                )
+            # Create new NamedOutput with filtered data
+            filtered_outputs.append(NamedOutput(name=output.name, output=df_filtered))
+        else:
+            filtered_outputs.append(output)
+
     logger.info(
         "Data formatted for these instruments: %s",
-        "".join([f"\n\t- {_.name[:-7]}" for _ in outputs]),
+        "".join([f"\n\t- {_.name[:-7]}" for _ in filtered_outputs]),
     )
-    return outputs, formatter.get_instrument_row_counts()
+    return filtered_outputs, formatter.get_instrument_row_counts()
 
 
 def get_curious_data(request_json: CliOptions) -> None:
@@ -336,8 +359,8 @@ def extract_unfound_fields(error_text: str) -> list[str]:
 
     """
     match = re.search(
-        r"The following fields were not found in the project as real data fields: "
-        r"(.+?)(?:\n|$)",
+        r"The following fields were not found in the project as real data fields:"
+        r" (.+?)(?:\n|$)",
         error_text,
     )
     if match:
@@ -345,6 +368,80 @@ def extract_unfound_fields(error_text: str) -> list[str]:
         # Split by comma and strip whitespace
         return [field.strip() for field in fields_str.split(",")]
     return []
+
+
+def extract_invalid_category_errors(error_text: str) -> list[dict[str, str]]:
+    """
+    Extract invalid category errors from REDCap error message.
+
+    Parameters
+    ----------
+    error_text : str
+        The error response text from REDCap
+
+    Returns
+    -------
+    list[dict[str, str]]
+        List of dicts with keys: record, field_name, value, error_message
+
+    """
+    errors = []
+    pattern = (
+        r'"([^"]+)","([^"]+)","([^"]*)","The value is not a valid category for ([^"]+)"'
+    )
+
+    for match in re.finditer(pattern, error_text):
+        record_id, field_name, value, _ = match.groups()
+        errors.append(
+            {
+                "record": record_id,
+                "field_name": field_name,
+                "value": value,
+                "error_message": f"The value is not a valid category for {field_name}",
+            }
+        )
+
+    return errors
+
+
+def save_invalid_category_errors(
+    csv_path: Path,
+    errors: list[dict[str, str]],
+) -> Path:
+    """
+    Save invalid category errors to log file.
+
+    Parameters
+    ----------
+    csv_path : Path
+        Original CSV file path (for naming the log file)
+    errors : list[dict[str, str]]
+        List of error dicts from extract_invalid_category_errors
+
+    Returns
+    -------
+    Path
+        Path to the saved error log file
+
+    """
+    # Create invalid_categories subdirectory in LOG_ROOT
+    log_dir = Config.LOG_ROOT / "invalid_categories"
+    log_dir.mkdir(parents=True, exist_ok=True)
+
+    # Add timestamp to filename
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    error_log_path = log_dir / f"{csv_path.stem}_invalid_categories_{timestamp}.csv"
+
+    # Write errors to CSV
+    with error_log_path.open("w", newline="") as f:
+        if errors:
+            writer = csv.DictWriter(
+                f, fieldnames=["record", "field_name", "value", "error_message"]
+            )
+            writer.writeheader()
+            writer.writerows(errors)
+
+    return error_log_path
 
 
 def split_csv_by_fields(
@@ -398,7 +495,6 @@ def split_csv_by_fields(
     valid_path = csv_path.with_stem(f"{csv_path.stem}_valid_fields")
     valid_df.write_csv(valid_path)
 
-    # Save unfound fields to LOG_ROOT for permanent storage
     log_dir = Config.LOG_ROOT / "unfound_fields"
     log_dir.mkdir(parents=True, exist_ok=True)
 
@@ -458,6 +554,20 @@ def push_to_redcap(csv_path: Path, retry_on_field_error: bool = True) -> None:
             logger.error("Bad Request")
             logger.error(r.text)
             logger.error("HTTP Status: %d", r.status_code)
+
+            # Check for invalid category errors
+            invalid_cat_errors = extract_invalid_category_errors(r.text)
+            if invalid_cat_errors:
+                error_log_path = save_invalid_category_errors(
+                    csv_path, invalid_cat_errors
+                )
+                logger.warning(
+                    "Found %d invalid category errors. Saved to: %s",
+                    len(invalid_cat_errors),
+                    error_log_path,
+                )
+                # Still raise the error after logging
+                r.raise_for_status()
 
             # Check if this is a field not found error
             if (

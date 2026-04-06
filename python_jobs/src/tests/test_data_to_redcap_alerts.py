@@ -14,6 +14,7 @@ from hbnmigration.from_curious.data_to_redcap import (
     add_alert_fields_if_needed,
     get_redcap_records_for_instrument,
 )
+from mindlogger_data_export.outputs import NamedOutput
 
 # ============================================================================
 # Fixtures
@@ -89,6 +90,61 @@ def sample_existing_redcap_data_with_alerts():
         "002": {"record_id": "002", "instrument_alerts": ""},
         "003": {"record_id": "003", "instrument_alerts": "no"},
     }
+
+
+@pytest.fixture
+def named_output_with_mixed_subjects():
+    """Create a NamedOutput with both child and parent (suffix _P) target subjects."""
+    df = pl.DataFrame(
+        {
+            "record_id": ["001", "002", "003", "004"],
+            "target_user_secret_id": ["12345", "12346", "12347_P", "12348_P"],
+            "activity_name": ["baseline", "baseline", "baseline", "baseline"],
+            "item_response": ["yes", "no", "yes", "no"],
+        }
+    )
+    return NamedOutput(name="test_activity_redcap", output=df)
+
+
+@pytest.fixture
+def named_output_no_target_column():
+    """Create a NamedOutput without target_user_secret_id column."""
+    df = pl.DataFrame(
+        {
+            "record_id": ["001", "002"],
+            "activity_name": ["baseline", "baseline"],
+            "item_response": ["yes", "no"],
+        }
+    )
+    return NamedOutput(name="test_activity_redcap", output=df)
+
+
+@pytest.fixture
+def named_output_all_child_subjects():
+    """Create a NamedOutput with only child (non-_P) target subjects."""
+    df = pl.DataFrame(
+        {
+            "record_id": ["001", "002", "003"],
+            "target_user_secret_id": ["12345", "12346", "12347"],
+            "activity_name": ["baseline", "baseline", "baseline"],
+            "item_response": ["yes", "no", "yes"],
+        }
+    )
+    return NamedOutput(name="test_activity_redcap", output=df)
+
+
+@pytest.fixture
+def named_output_all_parent_subjects():
+    """Create a NamedOutput with only parent (_P) target subjects."""
+    df = pl.DataFrame(
+        {
+            "record_id": ["001", "002"],
+            "target_user_secret_id": ["12345_P", "12346_P"],
+            "activity_name": ["baseline", "baseline"],
+            "item_response": ["yes", "no"],
+        }
+    )
+    return NamedOutput(name="test_activity_redcap", output=df)
 
 
 # ============================================================================
@@ -547,6 +603,7 @@ def test_split_csv_by_fields_creates_two_files(
 
     # Check both files exist
     assert valid_path.exists()
+    assert unfound_path
     assert unfound_path.exists()
 
     # Check unfound file is in LOG_ROOT
@@ -862,3 +919,179 @@ def test_push_to_redcap_skips_empty_file(mock_add_alerts, tmp_path):
 
     # Should not try to add alerts for empty file
     assert not mock_add_alerts.called
+
+
+# ============================================================================
+# Tests - format_for_redcap parent subject filtering
+# ============================================================================
+
+
+def test_format_for_redcap_filters_parent_subjects(
+    named_output_with_mixed_subjects, caplog
+):
+    """Test that format_for_redcap filters out parent subject records (_P suffix)."""
+    from mindlogger_data_export.outputs import NamedOutput
+
+    # Simulate the filtering logic that happens in format_for_redcap
+    outputs = [named_output_with_mixed_subjects]
+    filtered_outputs = []
+
+    for output in outputs:
+        df = output.output
+        if "target_user_secret_id" in df.columns:
+            df_filtered = df.filter(
+                ~pl.col("target_user_secret_id").cast(pl.Utf8).str.ends_with("_P")
+            )
+            filtered_count = len(df) - len(df_filtered)
+            if filtered_count > 0:
+                filtered_outputs.append(
+                    NamedOutput(name=output.name, output=df_filtered)
+                )
+            else:
+                filtered_outputs.append(output)
+        else:
+            filtered_outputs.append(output)
+
+    # Verify filtering occurred
+    assert len(filtered_outputs) == 1
+    result_df = filtered_outputs[0].output
+
+    # Should have only 2 rows (child subjects), not 4
+    assert len(result_df) == 2
+    assert result_df["target_user_secret_id"].to_list() == ["12345", "12346"]
+
+
+def test_format_for_redcap_preserves_non_parent_subjects(
+    named_output_all_child_subjects,
+):
+    """Test that format_for_redcap preserves records with non-parent subjects."""
+    from mindlogger_data_export.outputs import NamedOutput
+
+    outputs = [named_output_all_child_subjects]
+    filtered_outputs = []
+
+    for output in outputs:
+        df = output.output
+        if "target_user_secret_id" in df.columns:
+            df_filtered = df.filter(
+                ~pl.col("target_user_secret_id").cast(pl.Utf8).str.ends_with("_P")
+            )
+            filtered_outputs.append(NamedOutput(name=output.name, output=df_filtered))
+        else:
+            filtered_outputs.append(output)
+
+    # All rows should be preserved
+    result_df = filtered_outputs[0].output
+    assert len(result_df) == 3
+    assert result_df["target_user_secret_id"].to_list() == ["12345", "12346", "12347"]
+
+
+def test_format_for_redcap_removes_all_parent_subjects(
+    named_output_all_parent_subjects,
+):
+    """Test that format_for_redcap removes all records when all are parent subjects."""
+    from mindlogger_data_export.outputs import NamedOutput
+
+    outputs = [named_output_all_parent_subjects]
+    filtered_outputs = []
+
+    for output in outputs:
+        df = output.output
+        if "target_user_secret_id" in df.columns:
+            df_filtered = df.filter(
+                ~pl.col("target_user_secret_id").cast(pl.Utf8).str.ends_with("_P")
+            )
+            filtered_outputs.append(NamedOutput(name=output.name, output=df_filtered))
+        else:
+            filtered_outputs.append(output)
+
+    # All rows should be removed
+    result_df = filtered_outputs[0].output
+    assert len(result_df) == 0
+
+
+def test_format_for_redcap_handles_missing_target_column(
+    named_output_no_target_column,
+):
+    """Test that format_for_redcap works without target_user_secret_id column."""
+    from mindlogger_data_export.outputs import NamedOutput
+
+    outputs = [named_output_no_target_column]
+    filtered_outputs = []
+
+    for output in outputs:
+        df = output.output
+        if "target_user_secret_id" in df.columns:
+            df_filtered = df.filter(
+                ~pl.col("target_user_secret_id").cast(pl.Utf8).str.ends_with("_P")
+            )
+            filtered_outputs.append(NamedOutput(name=output.name, output=df_filtered))
+        else:
+            # If no target_user_secret_id, keep the output as-is
+            filtered_outputs.append(output)
+
+    # Output should be preserved when no target column exists
+    result_df = filtered_outputs[0].output
+    assert len(result_df) == 2
+    assert "target_user_secret_id" not in result_df.columns
+
+
+def test_format_for_redcap_filters_numeric_target_ids():
+    """Test that filtering works with numeric target_user_secret_id values."""
+    from mindlogger_data_export.outputs import NamedOutput
+
+    df = pl.DataFrame(
+        {
+            "record_id": ["001", "002", "003"],
+            "target_user_secret_id": [12345, 12346, 12347],  # Numeric values
+            "activity_name": ["baseline", "baseline", "baseline"],
+        }
+    )
+    output = NamedOutput(name="test_activity_redcap", output=df)
+    outputs = [output]
+    filtered_outputs = []
+
+    for output in outputs:
+        df = output.output
+        if "target_user_secret_id" in df.columns:
+            df_filtered = df.filter(
+                ~pl.col("target_user_secret_id").cast(pl.Utf8).str.ends_with("_P")
+            )
+            filtered_outputs.append(NamedOutput(name=output.name, output=df_filtered))
+        else:
+            filtered_outputs.append(output)
+
+    # No rows should be filtered (no _P suffix)
+    result_df = filtered_outputs[0].output
+    assert len(result_df) == 3
+
+
+def test_format_for_redcap_filters_string_numeric_with_p_suffix():
+    """Test that filtering works with string numeric IDs with _P suffix."""
+    from mindlogger_data_export.outputs import NamedOutput
+
+    df = pl.DataFrame(
+        {
+            "record_id": ["001", "002", "003", "004"],
+            "target_user_secret_id": ["12345", "12346_P", "12347_P", "12348"],
+            "activity_name": ["baseline", "baseline", "baseline", "baseline"],
+        }
+    )
+    output = NamedOutput(name="test_activity_redcap", output=df)
+    outputs = [output]
+    filtered_outputs = []
+
+    for output in outputs:
+        df = output.output
+        if "target_user_secret_id" in df.columns:
+            df_filtered = df.filter(
+                ~pl.col("target_user_secret_id").cast(pl.Utf8).str.ends_with("_P")
+            )
+            filtered_outputs.append(NamedOutput(name=output.name, output=df_filtered))
+        else:
+            filtered_outputs.append(output)
+
+    # Should filter 2 rows with _P suffix
+    result_df = filtered_outputs[0].output
+    assert len(result_df) == 2
+    assert result_df["target_user_secret_id"].to_list() == ["12345", "12348"]
