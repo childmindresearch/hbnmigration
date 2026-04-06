@@ -509,3 +509,356 @@ def test_add_alert_fields_uses_event_column_if_present(
     assert "redcap_event_name" in result.columns
     # Alert field should be added
     assert "test_instrument_alerts" in result.columns
+
+
+# ============================================================================
+# Tests - split_csv_by_fields
+# ============================================================================
+
+
+@pytest.fixture
+def sample_csv_with_mixed_fields(tmp_path):
+    """Create CSV with both valid and unfound fields."""
+    csv_path = tmp_path / "test_instrument.csv"
+    df = pl.DataFrame(
+        {
+            "record_id": ["001", "002"],
+            "redcap_event_name": ["baseline_arm_1", "baseline_arm_1"],
+            "valid_field_1": ["a", "b"],
+            "valid_field_2": [1, 2],
+            "unfound_field_1": ["x", "y"],
+            "unfound_field_2": [10, 20],
+        }
+    )
+    df.write_csv(csv_path)
+    return csv_path
+
+
+def test_split_csv_by_fields_creates_two_files(
+    sample_csv_with_mixed_fields, mock_config_log_root
+):
+    """Test that split_csv_by_fields creates valid and unfound files."""
+    from hbnmigration.from_curious.data_to_redcap import split_csv_by_fields
+
+    unfound_fields = ["unfound_field_1", "unfound_field_2"]
+    valid_path, unfound_path = split_csv_by_fields(
+        sample_csv_with_mixed_fields, unfound_fields
+    )
+
+    # Check both files exist
+    assert valid_path.exists()
+    assert unfound_path.exists()
+
+    # Check unfound file is in LOG_ROOT
+    assert mock_config_log_root in unfound_path.parents
+    assert "unfound_fields" in str(unfound_path)
+
+
+def test_split_csv_valid_file_excludes_unfound_fields(
+    sample_csv_with_mixed_fields, mock_config_log_root
+):
+    """Test that valid file excludes unfound fields."""
+    from hbnmigration.from_curious.data_to_redcap import split_csv_by_fields
+
+    unfound_fields = ["unfound_field_1", "unfound_field_2"]
+    valid_path, _ = split_csv_by_fields(sample_csv_with_mixed_fields, unfound_fields)
+
+    valid_df = pl.read_csv(valid_path)
+
+    # Should have identifiers and valid fields only
+    assert "record_id" in valid_df.columns
+    assert "redcap_event_name" in valid_df.columns
+    assert "valid_field_1" in valid_df.columns
+    assert "valid_field_2" in valid_df.columns
+
+    # Should NOT have unfound fields
+    assert "unfound_field_1" not in valid_df.columns
+    assert "unfound_field_2" not in valid_df.columns
+
+
+def test_split_csv_unfound_file_includes_identifiers(
+    sample_csv_with_mixed_fields, mock_config_log_root
+):
+    """Test that unfound file includes record identifiers."""
+    from hbnmigration.from_curious.data_to_redcap import split_csv_by_fields
+
+    unfound_fields = ["unfound_field_1", "unfound_field_2"]
+    _, unfound_path = split_csv_by_fields(sample_csv_with_mixed_fields, unfound_fields)
+
+    unfound_df = pl.read_csv(unfound_path)
+
+    # Should have identifiers
+    assert "record_id" in unfound_df.columns
+    assert "redcap_event_name" in unfound_df.columns
+
+    # Should have unfound fields
+    assert "unfound_field_1" in unfound_df.columns
+    assert "unfound_field_2" in unfound_df.columns
+
+    # Should NOT have valid fields
+    assert "valid_field_1" not in unfound_df.columns
+    assert "valid_field_2" not in unfound_df.columns
+
+
+def test_split_csv_unfound_file_has_timestamp(
+    sample_csv_with_mixed_fields, mock_config_log_root
+):
+    """Test that unfound file has timestamp in filename."""
+    import re
+
+    from hbnmigration.from_curious.data_to_redcap import split_csv_by_fields
+
+    unfound_fields = ["unfound_field_1"]
+    _, unfound_path = split_csv_by_fields(sample_csv_with_mixed_fields, unfound_fields)
+
+    # Check filename contains timestamp pattern (YYYYMMDD_HHMMSS)
+    timestamp_pattern = r"\d{8}_\d{6}"
+    assert re.search(timestamp_pattern, unfound_path.name)
+
+
+def test_split_csv_no_unfound_fields_present(
+    sample_csv_with_mixed_fields, mock_config_log_root, caplog
+):
+    """Test split_csv when unfound fields aren't in the CSV."""
+    from hbnmigration.from_curious.data_to_redcap import split_csv_by_fields
+
+    unfound_fields = ["field_that_doesnt_exist_1", "field_that_doesnt_exist_2"]
+    valid_path, unfound_path = split_csv_by_fields(
+        sample_csv_with_mixed_fields, unfound_fields
+    )
+
+    # Should return original path and None
+    assert valid_path == sample_csv_with_mixed_fields
+    assert unfound_path is None
+    assert "None of the unfound fields are present" in caplog.text
+
+
+def test_split_csv_preserves_all_data_rows(
+    sample_csv_with_mixed_fields, mock_config_log_root
+):
+    """Test that split doesn't lose any data rows."""
+    from hbnmigration.from_curious.data_to_redcap import split_csv_by_fields
+
+    original_df = pl.read_csv(sample_csv_with_mixed_fields)
+    unfound_fields = ["unfound_field_1", "unfound_field_2"]
+
+    valid_path, unfound_path = split_csv_by_fields(
+        sample_csv_with_mixed_fields, unfound_fields
+    )
+
+    valid_df = pl.read_csv(valid_path)
+    unfound_df = pl.read_csv(unfound_path)
+
+    # Both should have same number of rows
+    assert len(valid_df) == len(original_df)
+    assert len(unfound_df) == len(original_df)
+
+    # Record IDs should match
+    assert set(valid_df["record_id"]) == set(original_df["record_id"])
+    assert set(unfound_df["record_id"]) == set(original_df["record_id"])
+
+
+# ============================================================================
+# Tests - extract_unfound_fields
+# ============================================================================
+
+
+def test_extract_unfound_fields_parses_error_message():
+    """Test extract_unfound_fields parses REDCap error correctly."""
+    from hbnmigration.from_curious.data_to_redcap import extract_unfound_fields
+
+    error_text = (
+        "ERROR: The following fields were not found in the project as real data fields:"
+        " field1, field2, field3"
+    )
+
+    result = extract_unfound_fields(error_text)
+    assert result == ["field1", "field2", "field3"]
+
+
+def test_extract_unfound_fields_handles_newline():
+    """Test extract_unfound_fields stops at newline."""
+    from hbnmigration.from_curious.data_to_redcap import extract_unfound_fields
+
+    error_text = (
+        "ERROR: The following fields were not found in the project as real data fields:"
+        " field1, field2\nOther error text"
+    )
+
+    result = extract_unfound_fields(error_text)
+    assert result == ["field1", "field2"]
+
+
+def test_extract_unfound_fields_strips_whitespace():
+    """Test extract_unfound_fields strips whitespace from field names."""
+    from hbnmigration.from_curious.data_to_redcap import extract_unfound_fields
+
+    error_text = (
+        "ERROR: The following fields were not found in the project as real data fields:"
+        " field1 , field2  ,  field3"
+    )
+
+    result = extract_unfound_fields(error_text)
+    assert result == ["field1", "field2", "field3"]
+
+
+def test_extract_unfound_fields_no_match():
+    """Test extract_unfound_fields returns empty list when no match."""
+    from hbnmigration.from_curious.data_to_redcap import extract_unfound_fields
+
+    error_text = "Some other error message"
+
+    result = extract_unfound_fields(error_text)
+    assert result == []
+
+
+def test_extract_unfound_fields_multiline_error():
+    """Test extract_unfound_fields with multiline error message."""
+    from hbnmigration.from_curious.data_to_redcap import extract_unfound_fields
+
+    error_text = """
+    HTTP Error 400
+    ERROR: The following fields were not found in the project as real data fields: pmhs_p_start_date, pmhs_p_total_score
+
+    Additional context
+    """  # noqa: E501
+
+    result = extract_unfound_fields(error_text)
+    assert result == ["pmhs_p_start_date", "pmhs_p_total_score"]
+
+
+# ============================================================================
+# Tests - push_to_redcap with retry logic
+# ============================================================================
+
+
+@patch("hbnmigration.from_curious.data_to_redcap.requests.post")
+@patch("hbnmigration.from_curious.data_to_redcap.add_alert_fields_if_needed")
+def test_push_to_redcap_success_no_retry(
+    mock_add_alerts, mock_post, sample_csv_with_mixed_fields
+):
+    """Test push_to_redcap succeeds without retry."""
+    from hbnmigration.from_curious.data_to_redcap import push_to_redcap
+
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_post.return_value = mock_response
+
+    push_to_redcap(sample_csv_with_mixed_fields)
+
+    assert mock_post.call_count == 1
+    assert mock_add_alerts.called
+
+
+@patch("hbnmigration.from_curious.data_to_redcap.split_csv_by_fields")
+@patch("hbnmigration.from_curious.data_to_redcap.requests.post")
+@patch("hbnmigration.from_curious.data_to_redcap.add_alert_fields_if_needed")
+def test_push_to_redcap_retries_on_field_error(
+    mock_add_alerts,
+    mock_post,
+    mock_split,
+    sample_csv_with_mixed_fields,
+    tmp_path,
+    mock_config_log_root,
+):
+    """Test push_to_redcap retries after splitting on field error."""
+    from hbnmigration.from_curious.data_to_redcap import push_to_redcap
+
+    # First call fails with field error
+    mock_error_response = MagicMock()
+    mock_error_response.status_code = 400
+    mock_error_response.text = (
+        "ERROR: The following fields were not found in the project as real data fields:"
+        " unfound_field_1, unfound_field_2"
+    )
+
+    # Second call succeeds
+    mock_success_response = MagicMock()
+    mock_success_response.status_code = 200
+
+    mock_post.side_effect = [mock_error_response, mock_success_response]
+
+    # Mock split to return valid path
+    valid_path = tmp_path / "valid.csv"
+    pl.DataFrame({"record_id": ["001"], "valid_field": ["a"]}).write_csv(valid_path)
+    unfound_path = mock_config_log_root / "unfound_fields" / "unfound.csv"
+    mock_split.return_value = (valid_path, unfound_path)
+
+    push_to_redcap(sample_csv_with_mixed_fields)
+
+    # Should have called post twice (original + retry)
+    assert mock_post.call_count == 2
+    assert mock_split.called
+
+
+@patch("hbnmigration.from_curious.data_to_redcap.requests.post")
+@patch("hbnmigration.from_curious.data_to_redcap.add_alert_fields_if_needed")
+def test_push_to_redcap_no_retry_on_other_errors(
+    mock_add_alerts, mock_post, sample_csv_with_mixed_fields
+):
+    """Test push_to_redcap doesn't retry on non-field errors."""
+    from hbnmigration.from_curious.data_to_redcap import push_to_redcap
+
+    mock_response = MagicMock()
+    mock_response.status_code = 401
+    mock_response.text = "Unauthorized"
+    mock_response.raise_for_status.side_effect = Exception("401 Unauthorized")
+    mock_post.return_value = mock_response
+
+    with pytest.raises(Exception):
+        push_to_redcap(sample_csv_with_mixed_fields)
+
+    # Should only try once
+    assert mock_post.call_count == 1
+
+
+@patch("hbnmigration.from_curious.data_to_redcap.split_csv_by_fields")
+@patch("hbnmigration.from_curious.data_to_redcap.requests.post")
+@patch("hbnmigration.from_curious.data_to_redcap.add_alert_fields_if_needed")
+def test_push_to_redcap_logs_unfound_path(
+    mock_add_alerts,
+    mock_post,
+    mock_split,
+    sample_csv_with_mixed_fields,
+    mock_config_log_root,
+    caplog,
+):
+    """Test push_to_redcap logs the unfound fields file path."""
+    from hbnmigration.from_curious.data_to_redcap import push_to_redcap
+
+    mock_error_response = MagicMock()
+    mock_error_response.status_code = 400
+    mock_error_response.text = (
+        "ERROR: The following fields were not found in the project as real data fields:"
+        " unfound_field_1"
+    )
+
+    mock_success_response = MagicMock()
+    mock_success_response.status_code = 200
+
+    mock_post.side_effect = [mock_error_response, mock_success_response]
+
+    unfound_path = mock_config_log_root / "unfound_fields" / "test_20240101_120000.csv"
+    unfound_path.parent.mkdir(parents=True, exist_ok=True)
+    unfound_path.touch()
+
+    mock_split.return_value = (sample_csv_with_mixed_fields, unfound_path)
+
+    push_to_redcap(sample_csv_with_mixed_fields)
+
+    assert "Unfound fields data saved to:" in caplog.text
+    assert str(unfound_path) in caplog.text
+
+
+@patch("hbnmigration.from_curious.data_to_redcap.add_alert_fields_if_needed")
+def test_push_to_redcap_skips_empty_file(mock_add_alerts, tmp_path):
+    """Test push_to_redcap skips empty files."""
+    from hbnmigration.from_curious.data_to_redcap import push_to_redcap
+
+    empty_csv = tmp_path / "empty.csv"
+    empty_csv.touch()
+
+    push_to_redcap(empty_csv)
+
+    # Should not try to add alerts for empty file
+    assert not mock_add_alerts.called

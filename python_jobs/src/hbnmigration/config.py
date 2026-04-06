@@ -29,6 +29,13 @@ class Config:
     )
     """Path to root of hbnmigration project on server."""
 
+    LOG_ROOT: Path = (
+        Path(os.environ["HBNMIGTRATION_LOG_ROOT"])
+        if "HBNMIGRATION_LOG_ROOT" in os.environ
+        else PROJECT_ROOT / ".logs"
+    )
+    """Path to logging root."""
+
     PROJECT_STATUS: ProjectStatus = _get_project_status()
     """
     Project status.

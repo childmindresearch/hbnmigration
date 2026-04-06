@@ -612,7 +612,7 @@ today = str(_today)
 _yesterday_date = _today - timedelta(days=1)
 """Date representation of yesterday."""
 
-yesterday = str(_yesterday_date)
+yesterday = "2026-04-01"  # str(_yesterday_date)
 """`YYYY-MM-DD` string date format of yesterday."""
 
 

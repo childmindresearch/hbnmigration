@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Moved project status to envrironment variable `$HBNMIGRATION_PROJECT_STATUS` with default `"prod"`
+- Log missing fields but push acceptable data in those cases
 
 ## 1.6.1
 

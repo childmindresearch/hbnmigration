@@ -90,6 +90,7 @@ build/
 
 # Logs
 *.log
+.logs/
 logs/
 
 # Secrets

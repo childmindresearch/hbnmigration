@@ -46,6 +46,17 @@ SAMPLE_SUBJECT_ID = "subj1234-ab12-cd34-ef56-abcdef123456"
 SAMPLE_SUBMIT_ID = "smit1234-ab12-cd34-ef56-abcdef123456"
 INVITATIONS_MOD = "hbnmigration.from_curious.invitations_to_redcap"
 
+
+@pytest.fixture
+def mock_config_log_root(tmp_path: Path) -> Generator[Path, None, None]:
+    """Mock Config.LOG_ROOT for testing."""
+    log_root = tmp_path / "logs"
+    log_root.mkdir(parents=True, exist_ok=True)
+    with patch("hbnmigration.from_curious.data_to_redcap.Config") as mock_config:
+        mock_config.LOG_ROOT = log_root
+        yield log_root
+
+
 # ============================================================================
 # Constants - Alert Testing
 # ============================================================================

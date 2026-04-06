@@ -461,3 +461,30 @@ def test_get_field_to_event_mapping_various_inputs(
     result = get_field_to_event_mapping(base_url, field_names)
 
     assert len(result) == expected_count
+
+
+# ============================================================================
+# Tests - Integration with data_to_redcap
+# ============================================================================
+
+
+def test_utils_compatible_with_data_to_redcap_workflow(
+    mock_fetch_api_data, sample_alerts_metadata, sample_instrument_event_mapping
+):
+    """Test that utils functions work together for data_to_redcap workflow."""
+    base_url = "https://redcap.example.com/api/"
+
+    # Test the full workflow
+    mock_fetch_api_data.side_effect = [
+        sample_alerts_metadata,
+        sample_instrument_event_mapping,
+    ]
+
+    # Step 1: Get possible instruments
+    instruments = possible_alert_instruments(base_url)
+    assert "parent_baseline" in instruments
+
+    # Step 2: For each instrument, get the alert event
+    for instrument in instruments:
+        event = get_alert_field_event(base_url, instrument)
+        assert event in ["admin_arm_1", "baseline_arm_1"]

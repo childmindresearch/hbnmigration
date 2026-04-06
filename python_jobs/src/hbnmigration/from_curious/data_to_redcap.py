@@ -1,8 +1,10 @@
 """Send Curious data to REDCap."""
 
+from datetime import datetime
 import logging
 import os
 from pathlib import Path
+import re
 import sys
 from tempfile import TemporaryDirectory
 import time
@@ -36,7 +38,6 @@ from .utils import (
 
 initialize_logging()
 logger = logging.getLogger(__name__)
-
 ENDPOINTS: dict[Literal["Curious", "REDCap"], Endpoints] = {
     "Curious": curious_variables.Endpoints(),
     "REDCap": redcap_variables.Endpoints(),
@@ -163,7 +164,6 @@ def _determine_event_for_alert(
     if event_col and len(df) > 0:
         # First try: use the event from the CSV data
         return str(df[event_col][0])
-
     return get_alert_field_event(base_url, instrument_name)
 
 
@@ -188,15 +188,12 @@ def _build_alert_values(  # noqa: PLR0913
     event_values = []
     records_with_alerts = 0
     records_setting_no = 0
-
     for row in df.iter_rows(named=True):
         record_id = str(row[record_id_col])
         row_event = str(row[event_col]) if event_col else event
-
         # Check if this record already has an alert set to "yes"
         existing_record = existing_data.get(record_id, {})
         existing_status = existing_record.get(alert_field, "").strip()
-
         if existing_status == "yes":
             # don't overwrite existing "yes"
             # leave blank so REDCap keeps existing value
@@ -207,9 +204,7 @@ def _build_alert_values(  # noqa: PLR0913
             # Set to "no" since it's either empty or something other than "yes"
             alert_values.append("no")
             records_setting_no += 1
-
         event_values.append(row_event)
-
     return alert_values, event_values, records_with_alerts, records_setting_no
 
 
@@ -228,7 +223,6 @@ def add_alert_fields_if_needed(csv_path: Path) -> None:
     # Read the CSV
     df = pl.read_csv(csv_path)
     instrument_name = csv_path.stem.lower()
-
     # Check if this instrument can have alerts
     alert_instruments = [
         inst.lower()
@@ -237,65 +231,52 @@ def add_alert_fields_if_needed(csv_path: Path) -> None:
     if instrument_name not in alert_instruments:
         logger.debug("Instrument %s does not have alerts", instrument_name)
         return
-
     logger.info("Processing alerts for instrument: %s", instrument_name)
-
     # Determine record ID column
     record_id_col = _determine_record_id_column(df)
     if not record_id_col:
         logger.warning("Could not find record ID column in %s", instrument_name)
         return
-
     # Determine event column (if present in the data)
     event_col = _determine_event_column(df)
     alert_field = f"{instrument_name}_alerts"
-
     # Check if alert field already exists in the data
     if alert_field in df.columns:
         logger.info("Alert field %s already exists in data", alert_field)
         return
-
     # Get unique records from this batch
     records_str = [str(r) for r in df[record_id_col].unique().to_list()]
-
     # Wait 15 seconds to allow websocket alerts to arrive first
     logger.info(
         "Waiting 15 seconds before checking REDCap alert status for %d records...",
         len(records_str),
     )
     time.sleep(15)
-
     # Determine the event name for the ALERT FIELD (not from the data event)
     # Alert fields are on ra_alerts_parent/child forms, typically on admin_arm_1
     alert_event = get_alert_field_event(
         ENDPOINTS["REDCap"].base_url,
         instrument_name,
     )
-
     if not alert_event:
         logger.warning(
             "Could not determine event for alert field %s, skipping alert processing",
             alert_field,
         )
         return
-
     # Fetch existing REDCap data for all records
     existing_data = get_redcap_records_for_instrument(
         instrument_name, records_str, alert_event
     )
-
     # Build list of alert rows to add
     alert_rows = []
     records_with_alerts = 0
     records_setting_no = 0
-
     for record_id in df[record_id_col].unique():
         record_id_str = str(record_id)
-
         # Check if this record already has an alert set to "yes"
         existing_record = existing_data.get(record_id_str, {})
         existing_status = existing_record.get(alert_field, "").strip()
-
         if existing_status == "yes":
             # Don't add a row - REDCap already has "yes" for this record
             records_with_alerts += 1
@@ -305,16 +286,12 @@ def add_alert_fields_if_needed(csv_path: Path) -> None:
         else:
             # Create a new row for the alert field with the correct event
             alert_row = {record_id_col: record_id}
-
             # Add only the alert field and event
             alert_row[alert_field] = "no"
-
             if event_col:
                 alert_row[event_col] = alert_event
-
             alert_rows.append(alert_row)
             records_setting_no += 1
-
     logger.info(
         "Alert field summary for %s: %d records already have alerts='yes', "
         "%d records will be set to 'no'",
@@ -322,57 +299,196 @@ def add_alert_fields_if_needed(csv_path: Path) -> None:
         records_with_alerts,
         records_setting_no,
     )
-
     if not alert_rows:
         logger.info("No alert rows to add for %s", instrument_name)
         return
-
     # Create a DataFrame for the alert rows
     alert_df = pl.DataFrame(alert_rows)
-
     # If there's no event column in the original data, add it
     if not event_col:
         alert_df = alert_df.with_columns(pl.lit(alert_event).alias("redcap_event_name"))
-
     # Append alert rows to the original DataFrame
     df = pl.concat([df, alert_df], how="diagonal")
-
     logger.info(
         "Added %d alert rows for instrument %s with event %s",
         len(alert_rows),
         instrument_name,
         alert_event,
     )
-
     # Write back to CSV
     df.write_csv(csv_path)
     logger.info("Updated %s with alert field", csv_path)
 
 
-def push_to_redcap(csv_path: Path) -> None:
-    """Push data to RedCap."""
-    if csv_path.stat().st_size:
-        # Add alert fields if needed before pushing
-        add_alert_fields_if_needed(csv_path)
-        with csv_path.open("r") as csv_content:
-            data = {
-                "token": REDCAP_TOKEN,
-                "content": "record",
-                "action": "import",
-                "format": "csv",
-                "type": "flat",
-                "overwriteBehavior": "normal",
-                "forceAutoNumber": "false",
-                "data": csv_content.read(),  # Send to RedCap cvs file content
-                "returnContent": "count",
-                "returnFormat": "csv",
-            }
-            r = requests.post(ENDPOINTS["REDCap"].base_url, data=data)
-            if r.status_code != requests.codes["okay"]:
-                logger.exception(r.reason)
-                logger.exception(r.text)
-                logger.exception("HTTP Status: %d", r.status_code)
-                r.raise_for_status()
+def extract_unfound_fields(error_text: str) -> list[str]:
+    """
+    Extract field names from REDCap error message.
+
+    Parameters
+    ----------
+    error_text : str
+        The error response text from REDCap
+
+    Returns
+    -------
+    list[str]
+        List of field names that were not found
+
+    """
+    match = re.search(
+        r"The following fields were not found in the project as real data fields: "
+        r"(.+?)(?:\n|$)",
+        error_text,
+    )
+    if match:
+        fields_str = match.group(1)
+        # Split by comma and strip whitespace
+        return [field.strip() for field in fields_str.split(",")]
+    return []
+
+
+def split_csv_by_fields(
+    csv_path: Path, unfound_fields: list[str]
+) -> tuple[Path, Path | None]:
+    """
+    Split CSV into two files: one with unfound fields, one without.
+
+    Parameters
+    ----------
+    csv_path : Path
+        Path to the original CSV file
+    unfound_fields : list[str]
+        List of field names that were not found in REDCap
+
+    Returns
+    -------
+    tuple[Path, Path | None]
+        (path_to_valid_fields_csv, path_to_unfound_fields_csv)
+        The unfound_fields_csv will be saved under Config.LOG_ROOT
+
+    """
+    df = pl.read_csv(csv_path)
+
+    # Identify record identifier columns to keep in unfound file
+    identifier_cols = []
+    for col in [
+        "record_id",
+        "redcap_event_name",
+        "redcap_repeat_instrument",
+        "redcap_repeat_instance",
+    ]:
+        if col in df.columns:
+            identifier_cols.append(col)
+
+    # Columns that exist in the dataframe and are in unfound list
+    unfound_cols_present = [col for col in unfound_fields if col in df.columns]
+
+    if not unfound_cols_present:
+        logger.info("None of the unfound fields are present in the CSV")
+        return csv_path, None
+
+    # Create unfound fields dataframe (identifiers + unfound columns)
+    unfound_df = df.select(identifier_cols + unfound_cols_present)
+
+    # Create valid fields dataframe (all columns except unfound)
+    valid_cols = [col for col in df.columns if col not in unfound_cols_present]
+    valid_df = df.select(valid_cols)
+
+    # Save valid fields to temp location (will be used immediately)
+    valid_path = csv_path.with_stem(f"{csv_path.stem}_valid_fields")
+    valid_df.write_csv(valid_path)
+
+    # Save unfound fields to LOG_ROOT for permanent storage
+    log_dir = Config.LOG_ROOT / "unfound_fields"
+    log_dir.mkdir(parents=True, exist_ok=True)
+
+    # Add timestamp to filename for uniqueness
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    unfound_path = log_dir / f"{csv_path.stem}_unfound_fields_{timestamp}.csv"
+    unfound_df.write_csv(unfound_path)
+
+    logger.info(
+        "Split %s into:\n\t- Valid fields (%d columns): %s\n"
+        "\t- Unfound fields (%d columns): %s",
+        csv_path.name,
+        len(valid_cols),
+        valid_path.name,
+        len(unfound_cols_present),
+        unfound_path,
+    )
+
+    return valid_path, unfound_path
+
+
+def push_to_redcap(csv_path: Path, retry_on_field_error: bool = True) -> None:
+    """
+    Push data to RedCap.
+
+    Parameters
+    ----------
+    csv_path : Path
+        Path to CSV file to upload
+    retry_on_field_error : bool
+        If True, will retry with only valid fields if field error occurs
+
+    """
+    if not csv_path.stat().st_size:
+        logger.info("Skipping empty file: %s", csv_path)
+        return
+
+    # Add alert fields if needed before pushing
+    add_alert_fields_if_needed(csv_path)
+
+    with csv_path.open("r") as csv_content:
+        data = {
+            "token": REDCAP_TOKEN,
+            "content": "record",
+            "action": "import",
+            "format": "csv",
+            "type": "flat",
+            "overwriteBehavior": "normal",
+            "forceAutoNumber": "false",
+            "data": csv_content.read(),
+            "returnContent": "count",
+            "returnFormat": "csv",
+        }
+        r = requests.post(ENDPOINTS["REDCap"].base_url, data=data)
+
+        if r.status_code != requests.codes["okay"]:
+            logger.error("Bad Request")
+            logger.error(r.text)
+            logger.error("HTTP Status: %d", r.status_code)
+
+            # Check if this is a field not found error
+            if (
+                retry_on_field_error
+                and "fields were not found in the project" in r.text
+            ):
+                unfound_fields = extract_unfound_fields(r.text)
+                if unfound_fields:
+                    logger.warning(
+                        "Found %d unfound fields: %s",
+                        len(unfound_fields),
+                        ", ".join(unfound_fields),
+                    )
+
+                    # Split the CSV
+                    valid_path, unfound_path = split_csv_by_fields(
+                        csv_path, unfound_fields
+                    )
+
+                    # Log the unfound fields data location
+                    if unfound_path:
+                        logger.warning("Unfound fields data saved to: %s", unfound_path)
+
+                    # Retry with valid fields only
+                    if valid_path != csv_path:
+                        logger.info("Retrying upload with only valid fields...")
+                        push_to_redcap(valid_path, retry_on_field_error=False)
+                        return
+
+            # If we get here, either it's not a field error or retry failed
+            r.raise_for_status()
 
 
 def save_for_redcap(outputs: list[NamedOutput], redcap_data_dir: Path):
