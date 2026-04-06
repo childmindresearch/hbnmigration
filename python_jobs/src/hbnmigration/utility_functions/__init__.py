@@ -36,7 +36,6 @@ from .datatypes import (
     Endpoints,
     FieldDescriptor,
     InstrumentRowCount,
-    PROJECT_STATUS,
     ProjectStatus,
     Results,
     Tokens,
@@ -48,7 +47,6 @@ from .secrets import ImportWithFallback
 from .typescript import tsx
 
 __all__ = [
-    "PROJECT_STATUS",
     "ApiProtocol",
     "ApiProtocols",
     "CliOptions",

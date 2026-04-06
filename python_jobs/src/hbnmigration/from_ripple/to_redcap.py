@@ -8,11 +8,11 @@ import pandas as pd
 import requests
 
 from .._config_variables import redcap_variables, ripple_variables
+from ..config import Config
 from ..exceptions import NoData
 from ..utility_functions import (
     fetch_api_data,
     initialize_logging,
-    PROJECT_STATUS,
     ProjectStatus,
     yesterday,
 )
@@ -329,4 +329,4 @@ def main(project_status: ProjectStatus = "prod") -> None:
 
 
 if __name__ == "__main__":
-    main(project_status=PROJECT_STATUS)
+    main(project_status=Config.PROJECT_STATUS)

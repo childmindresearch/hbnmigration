@@ -9,13 +9,13 @@ from mindlogger_data_export.mindlogger import MindloggerData
 from mindlogger_data_export.outputs import NamedOutput, RedcapImportFormat
 
 from .._config_variables import curious_variables, redcap_variables
+from ..config import Config
 from ..from_redcap.config import Values as RedcapValues
 from ..utility_functions import (
     CuriousDecryptedAnswer,
     CuriousId,
     fetch_api_data,
     initialize_logging,
-    PROJECT_STATUS,
     yesterday_or_more_recent,
 )
 from .config import curious_authenticate, invitation_statuses
@@ -406,7 +406,7 @@ def push_to_redcap(csv_data: str) -> int:
     """
     data = {
         "token": redcap_variables.Tokens.pid744
-        if PROJECT_STATUS == "dev"
+        if Config.PROJECT_STATUS == "dev"
         else redcap_variables.Tokens.pid625,
         "content": "record",
         "action": "import",

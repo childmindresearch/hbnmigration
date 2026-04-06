@@ -188,13 +188,7 @@ class FieldDescriptor(UserDict):
 
 InstrumentRowCount = dict[str, int | None]
 ProjectStatus = Literal["dev", "prod"]
-PROJECT_STATUS: ProjectStatus = "prod"
-"""
-Project status.
-
-- dev = HBN - Intake and Curious (TEMP for Transition) PID 744
-- prod = HBN - Operations and Data Collection PID 625
-"""
+ProjectStatuses: list[ProjectStatus] = ["dev", "prod"]
 
 
 class Results:

@@ -6,12 +6,13 @@ from typing import cast
 import pandas as pd
 
 from .._config_variables import redcap_variables
-from ..utility_functions import fetch_api_data, PROJECT_STATUS
+from ..config import Config
+from ..utility_functions import fetch_api_data
 
 logger = logging.getLogger(__name__)
 
 REDCAP_TOKEN = getattr(
-    redcap_variables.Tokens, "pid625" if PROJECT_STATUS == "prod" else "pid744"
+    redcap_variables.Tokens, "pid625" if Config.PROJECT_STATUS == "prod" else "pid744"
 )
 
 # Standard REDCap metadata fetch parameters

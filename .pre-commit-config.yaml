@@ -68,7 +68,7 @@ repos:
 - repo: local
   hooks:
   - id: sync-version
-    name: Sync VERSION to Node.js package files
+    name: Sync VERSION to package files
     entry: .github/scripts/sync-version.sh
     language: unsupported
     files: ^VERSION$

@@ -9,8 +9,9 @@ For each subject in PID 247, if `intake_ready` == 1:
 import pandas as pd
 
 from .._config_variables import redcap_variables
+from ..config import Config
 from ..exceptions import NoData
-from ..utility_functions import initialize_logging, PROJECT_STATUS, redcap_api_push
+from ..utility_functions import initialize_logging, redcap_api_push
 from .config import Fields, Values
 from .from_redcap import fetch_data
 
@@ -166,7 +167,7 @@ def main() -> None:
             df=df_744,
             token=getattr(
                 redcap_variables.Tokens,
-                "pid625" if PROJECT_STATUS == "prod" else "pid744",
+                "pid625" if Config.PROJECT_STATUS == "prod" else "pid744",
             ),
             url=Endpoints.base_url,
             headers=redcap_variables.headers,
