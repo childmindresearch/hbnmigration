@@ -11,6 +11,8 @@ ExecStart=${venv_path}/bin/curious-data-to-redcap
 Environment="WORKSPACE=${workspace}"
 Environment="HBNMIGRATION_PROJECT_ROOT=${project_root}"
 Environment="HBNMIGRATION_LOG_PATH=${log_directory}"
+Environment="HBNMIGRATION_PROJECT_STATUS=${project_status}"
+Environment="HBNMIGRATION_RECOVERY_MODE=${recovery_mode ? "1" : "0"}"
 
 # Logging
 BindPaths=/data/logs/hbnmigration:/home/hbnmigration/hbnmigration/.hbnmigration_logs

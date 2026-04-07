@@ -34,3 +34,19 @@ variable "log_directory" {
   type        = string
   default     = "/var/log/hbnmigration"
 }
+
+variable "project_status" {
+  description = "Project status (dev or prod) for HBN migration"
+  type        = string
+  default     = "prod"
+  validation {
+    condition     = contains(["dev", "prod"], lower(var.project_status))
+    error_message = "The project_status must be either 'dev' or 'prod'."
+  }
+}
+
+variable "recovery_mode" {
+  description = "Enable recovery mode for full-day data pull on downtime"
+  type        = bool
+  default     = false
+}

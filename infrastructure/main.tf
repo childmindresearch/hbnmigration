@@ -93,11 +93,13 @@ resource "null_resource" "ensure_user_group" {
 # Generate systemd service files from templates
 resource "local_file" "ripple_sync_service" {
   content = templatefile("${path.module}/services/ripple-to-redcap.service.tpl", {
-    user_group    = var.user_group
-    project_root  = local.workspace_dir
-    venv_path     = local.venv_full_path
-    log_directory = local.log_full_path
-    workspace     = terraform.workspace
+    user_group     = var.user_group
+    project_root   = local.workspace_dir
+    venv_path      = local.venv_full_path
+    log_directory  = local.log_full_path
+    workspace      = terraform.workspace
+    project_status = var.project_status
+    recovery_mode  = var.recovery_mode
   })
   filename   = "${path.module}/.generated/${local.services.ripple_sync}.service"
   depends_on = [null_resource.ensure_user_group]
@@ -105,11 +107,13 @@ resource "local_file" "ripple_sync_service" {
 
 resource "local_file" "redcap_sync_service" {
   content = templatefile("${path.module}/services/redcap-to-redcap.service.tpl", {
-    user_group    = var.user_group
-    project_root  = local.workspace_dir
-    venv_path     = local.venv_full_path
-    log_directory = local.log_full_path
-    workspace     = terraform.workspace
+    user_group     = var.user_group
+    project_root   = local.workspace_dir
+    venv_path      = local.venv_full_path
+    log_directory  = local.log_full_path
+    workspace      = terraform.workspace
+    project_status = var.project_status
+    recovery_mode  = var.recovery_mode
   })
   filename   = "${path.module}/.generated/${local.services.redcap_sync}.service"
   depends_on = [null_resource.ensure_user_group]
@@ -117,11 +121,13 @@ resource "local_file" "redcap_sync_service" {
 
 resource "local_file" "redcap_to_curious_service" {
   content = templatefile("${path.module}/services/redcap-to-curious.service.tpl", {
-    user_group    = var.user_group
-    project_root  = local.workspace_dir
-    venv_path     = local.venv_full_path
-    log_directory = local.log_full_path
-    workspace     = terraform.workspace
+    user_group     = var.user_group
+    project_root   = local.workspace_dir
+    venv_path      = local.venv_full_path
+    log_directory  = local.log_full_path
+    workspace      = terraform.workspace
+    project_status = var.project_status
+    recovery_mode  = var.recovery_mode
   })
   filename   = "${path.module}/.generated/${local.services.redcap_to_curious}.service"
   depends_on = [null_resource.ensure_user_group]
@@ -129,11 +135,13 @@ resource "local_file" "redcap_to_curious_service" {
 
 resource "local_file" "curious_alerts_websocket_service" {
   content = templatefile("${path.module}/services/curious-alerts-websocket.service.tpl", {
-    user_group    = var.user_group
-    project_root  = local.workspace_dir
-    venv_path     = local.venv_full_path
-    log_directory = local.log_full_path
-    workspace     = terraform.workspace
+    user_group     = var.user_group
+    project_root   = local.workspace_dir
+    venv_path      = local.venv_full_path
+    log_directory  = local.log_full_path
+    workspace      = terraform.workspace
+    project_status = var.project_status
+    recovery_mode  = var.recovery_mode
   })
   filename   = "${path.module}/.generated/${local.services.curious_alerts_websocket}.service"
   depends_on = [null_resource.ensure_user_group]
@@ -141,11 +149,13 @@ resource "local_file" "curious_alerts_websocket_service" {
 
 resource "local_file" "curious_accounts_to_redcap_service" {
   content = templatefile("${path.module}/services/curious-accouts-to-redcap.service.tpl", {
-    user_group    = var.user_group
-    project_root  = local.workspace_dir
-    venv_path     = local.venv_full_path
-    log_directory = local.log_full_path
-    workspace     = terraform.workspace
+    user_group     = var.user_group
+    project_root   = local.workspace_dir
+    venv_path      = local.venv_full_path
+    log_directory  = local.log_full_path
+    workspace      = terraform.workspace
+    project_status = var.project_status
+    recovery_mode  = var.recovery_mode
   })
   filename   = "${path.module}/.generated/${local.services.curious_accounts_to_redcap}.service"
   depends_on = [null_resource.ensure_user_group]
@@ -153,11 +163,13 @@ resource "local_file" "curious_accounts_to_redcap_service" {
 
 resource "local_file" "curious_data_to_redcap_service" {
   content = templatefile("${path.module}/services/curious-data-to-redcap.service.tpl", {
-    user_group    = var.user_group
-    project_root  = local.workspace_dir
-    venv_path     = local.venv_full_path
-    log_directory = local.log_full_path
-    workspace     = terraform.workspace
+    user_group     = var.user_group
+    project_root   = local.workspace_dir
+    venv_path      = local.venv_full_path
+    log_directory  = local.log_full_path
+    workspace      = terraform.workspace
+    project_status = var.project_status
+    recovery_mode  = var.recovery_mode
   })
   filename   = "${path.module}/.generated/${local.services.curious_data_to_redcap}.service"
   depends_on = [null_resource.ensure_user_group]
