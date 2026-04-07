@@ -613,7 +613,7 @@ today = str(_today)
 
 def yesterday_or_more_recent(date_str: str) -> bool:
     """Return truth value if a string date-time is yesterday or more recent."""
-    return datetime.fromisoformat(date_str).date() >= YESTERDAY_DATE
+    return datetime.fromisoformat(date_str).date() >= YESTERDAY_DATE.date()
 
 
 def create_tempory_file(extension: str = "csv") -> Path:
