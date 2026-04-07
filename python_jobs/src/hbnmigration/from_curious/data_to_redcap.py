@@ -2,6 +2,7 @@
 
 import csv
 from datetime import datetime
+import hashlib
 import logging
 import os
 from pathlib import Path
@@ -122,7 +123,42 @@ def format_for_redcap(
             # Create new NamedOutput with processed data
             filtered_outputs.append(NamedOutput(name=output.name, output=df_filtered))
         else:
-            filtered_outputs.append(output)
+            # No target_user_secret_id column - check record_id for _P suffix fallback
+            instrument_name = output.name
+            logger.warning(
+                "Instrument '%s' missing 'target_user_secret_id' column, "
+                "attempting fallback filter on 'record_id'",
+                instrument_name,
+            )
+
+            # Try to filter by record_id column if it exists
+            if "record_id" in df.columns:
+                with_p_records = df.filter(
+                    pl.col("record_id").cast(pl.Utf8).str.ends_with("_P")
+                )
+                df_filtered = df.filter(
+                    ~pl.col("record_id").cast(pl.Utf8).str.ends_with("_P")
+                )
+
+                if len(with_p_records) > 0:
+                    ignored_ids = with_p_records["record_id"].cast(pl.Utf8).to_list()
+                    logger.warning(
+                        "Filtered %d parent records by record_id in %s: %s",
+                        len(with_p_records),
+                        instrument_name,
+                        ", ".join(str(r) for r in ignored_ids),
+                    )
+                filtered_outputs.append(
+                    NamedOutput(name=output.name, output=df_filtered)
+                )
+            else:
+                # No suitable column found for _P filtering
+                logger.error(
+                    "Cannot filter parent records for '%s': "
+                    "missing both 'target_user_secret_id' and 'record_id' columns",
+                    instrument_name,
+                )
+                filtered_outputs.append(output)
 
     logger.info(
         "Data formatted for these instruments: %s",
@@ -695,25 +731,34 @@ def send_to_redcap(
     for instrument in to_send:
         instrument_key = instrument.stem
 
-        # Check cache to skip if already processed
-        if cache and cache.is_processed(instrument_key):
-            logger.info(
-                "Skipping %s (already processed in cache)",
-                instrument_key,
-            )
-            results.success += instrument_row_count.get(instrument.stem, 0)
-            continue
+        # Generate cache key based on file content hash (not just instrument name)
+        # This ensures we only skip if the exact same data was already sent
+        cache_key = instrument_key
+        if cache:
+            # Read file and create hash of content
+            file_hash = hashlib.md5(instrument.read_bytes()).hexdigest()
+            cache_key = f"{instrument_key}_{file_hash}"
+
+            # Check cache to skip if this exact data was already processed
+            if cache.is_processed(cache_key):
+                logger.info(
+                    "Skipping %s (exact data already processed in cache)",
+                    instrument_key,
+                )
+                results.success += instrument_row_count.get(instrument.stem, 0)
+                continue
 
         try:
             push_to_redcap(instrument)
             results.success += instrument_row_count.get(instrument.stem, 0)
 
-            # Mark as processed in cache
+            # Mark this specific data as processed in cache
             if cache:
                 cache.mark_processed(
-                    instrument_key,
+                    cache_key,
                     metadata={
-                        "row_count": instrument_row_count.get(instrument.stem, 0)
+                        "row_count": instrument_row_count.get(instrument.stem, 0),
+                        "file_hash": file_hash,
                     },
                 )
         except Exception:
