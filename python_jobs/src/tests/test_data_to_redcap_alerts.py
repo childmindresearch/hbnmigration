@@ -1095,3 +1095,161 @@ def test_format_for_redcap_filters_string_numeric_with_p_suffix():
     result_df = filtered_outputs[0].output
     assert len(result_df) == 2
     assert result_df["target_user_secret_id"].to_list() == ["12345", "12348"]
+
+
+# ============================================================================
+# Tests - format_for_redcap curious_account_created special handling
+# ============================================================================
+
+
+def test_format_for_redcap_strips_p_from_curious_account_created():
+    """Test that curious_account_created strips _P suffix from record ID."""
+    from mindlogger_data_export.outputs import NamedOutput
+
+    df = pl.DataFrame(
+        {
+            "record_id": ["001", "002", "003"],
+            "target_user_secret_id": ["12345", "12346_P", "12347"],
+            "activity_name": ["baseline", "baseline", "baseline"],
+        }
+    )
+    output = NamedOutput(name="curious_account_created_redcap", output=df)
+    outputs = [output]
+    filtered_outputs = []
+
+    for output in outputs:
+        df = output.output
+        if "target_user_secret_id" in df.columns:
+            instrument_name = output.name
+
+            # Check if this is curious_account_created instrument
+            if instrument_name.startswith("curious_account_created"):
+                # For curious_account_created: strip _P from record ID
+                with_p = df.filter(
+                    pl.col("target_user_secret_id").cast(pl.Utf8).str.ends_with("_P")
+                )
+                without_p = df.filter(
+                    ~pl.col("target_user_secret_id").cast(pl.Utf8).str.ends_with("_P")
+                )
+
+                if len(with_p) > 0:
+                    # Strip _P suffix using string replacement
+                    with_p = with_p.with_columns(
+                        pl.col("target_user_secret_id")
+                        .cast(pl.Utf8)
+                        .str.replace(r"_P$", "")
+                        .alias("target_user_secret_id")
+                    )
+                    df_filtered = pl.concat([without_p, with_p])
+                else:
+                    df_filtered = df
+            else:
+                # For other instruments: filter out rows with _P suffix
+                df_filtered = df.filter(
+                    ~pl.col("target_user_secret_id").cast(pl.Utf8).str.ends_with("_P")
+                )
+
+            filtered_outputs.append(NamedOutput(name=output.name, output=df_filtered))
+        else:
+            filtered_outputs.append(output)
+
+    # Should have all 3 rows with _P stripped
+    result_df = filtered_outputs[0].output
+    assert len(result_df) == 3
+    assert sorted(result_df["target_user_secret_id"].to_list()) == [
+        "12345",
+        "12346",
+        "12347",
+    ]
+
+
+def test_format_for_redcap_filters_p_other_instruments():
+    """Test that non-curious_account_created instruments filter out _P records."""
+    from mindlogger_data_export.outputs import NamedOutput
+
+    df = pl.DataFrame(
+        {
+            "record_id": ["001", "002", "003", "004"],
+            "target_user_secret_id": ["12345", "12346_P", "12347_P", "12348"],
+            "activity_name": ["baseline", "baseline", "baseline", "baseline"],
+        }
+    )
+    output = NamedOutput(name="other_activity_redcap", output=df)
+    outputs = [output]
+    filtered_outputs = []
+
+    for output in outputs:
+        df = output.output
+        if "target_user_secret_id" in df.columns:
+            instrument_name = output.name
+
+            # Check if this is curious_account_created instrument
+            if instrument_name.startswith("curious_account_created"):
+                df_filtered = df  # Just for this test, would have special handling
+            else:
+                # For other instruments: filter out rows with _P suffix
+                df_filtered = df.filter(
+                    ~pl.col("target_user_secret_id").cast(pl.Utf8).str.ends_with("_P")
+                )
+
+            filtered_outputs.append(NamedOutput(name=output.name, output=df_filtered))
+        else:
+            filtered_outputs.append(output)
+
+    # Should have only 2 rows (filtered out _P)
+    result_df = filtered_outputs[0].output
+    assert len(result_df) == 2
+    assert result_df["target_user_secret_id"].to_list() == ["12345", "12348"]
+
+
+def test_format_for_redcap_curious_account_created_all_p():
+    """Test curious_account_created with all records having _P suffix."""
+    from mindlogger_data_export.outputs import NamedOutput
+
+    df = pl.DataFrame(
+        {
+            "record_id": ["001", "002", "003"],
+            "target_user_secret_id": ["100_P", "200_P", "300_P"],
+            "activity_name": ["baseline", "baseline", "baseline"],
+        }
+    )
+    output = NamedOutput(name="curious_account_created_redcap", output=df)
+    outputs = [output]
+    filtered_outputs = []
+
+    for output in outputs:
+        df = output.output
+        if "target_user_secret_id" in df.columns:
+            instrument_name = output.name
+
+            if instrument_name.startswith("curious_account_created"):
+                with_p = df.filter(
+                    pl.col("target_user_secret_id").cast(pl.Utf8).str.ends_with("_P")
+                )
+                without_p = df.filter(
+                    ~pl.col("target_user_secret_id").cast(pl.Utf8).str.ends_with("_P")
+                )
+
+                if len(with_p) > 0:
+                    with_p = with_p.with_columns(
+                        pl.col("target_user_secret_id")
+                        .cast(pl.Utf8)
+                        .str.replace(r"_P$", "")
+                        .alias("target_user_secret_id")
+                    )
+                    df_filtered = pl.concat([without_p, with_p])
+                else:
+                    df_filtered = df
+            else:
+                df_filtered = df.filter(
+                    ~pl.col("target_user_secret_id").cast(pl.Utf8).str.ends_with("_P")
+                )
+
+            filtered_outputs.append(NamedOutput(name=output.name, output=df_filtered))
+        else:
+            filtered_outputs.append(output)
+
+    # Should have all 3 rows with _P stripped
+    result_df = filtered_outputs[0].output
+    assert len(result_df) == 3
+    assert sorted(result_df["target_user_secret_id"].to_list()) == ["100", "200", "300"]

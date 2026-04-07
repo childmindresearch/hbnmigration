@@ -64,23 +64,62 @@ def format_for_redcap(
         sys.exit(0)
     outputs = formatter.produce(ml_data)
 
-    # Filter out records where target subject is a parent (_P suffix)
+    # Process records where target subject is a parent (_P suffix)
+    # For curious_account_created: strip _P from record ID
+    # For other instruments: ignore records with _P suffix
     filtered_outputs = []
     for output in outputs:
         df = output.output
         if "target_user_secret_id" in df.columns:
-            # Only keep rows where target_user_secret_id does NOT end with "_P"
-            df_filtered = df.filter(
-                ~pl.col("target_user_secret_id").cast(pl.Utf8).str.ends_with("_P")
-            )
-            filtered_count = len(df) - len(df_filtered)
-            if filtered_count > 0:
-                logger.info(
-                    "Filtered %d rows from %s (target subject is parent)",
-                    filtered_count,
-                    output.name,
+            instrument_name = output.name
+
+            # Check if this is curious_account_created instrument
+            if instrument_name.startswith("curious_account_created"):
+                # For curious_account_created: strip _P from record ID
+                with_p = df.filter(
+                    pl.col("target_user_secret_id").cast(pl.Utf8).str.ends_with("_P")
                 )
-            # Create new NamedOutput with filtered data
+                without_p = df.filter(
+                    ~pl.col("target_user_secret_id").cast(pl.Utf8).str.ends_with("_P")
+                )
+
+                if len(with_p) > 0:
+                    # Strip _P suffix using string replacement
+                    with_p = with_p.with_columns(
+                        pl.col("target_user_secret_id")
+                        .cast(pl.Utf8)
+                        .str.replace(r"_P$", "")
+                        .alias("target_user_secret_id")
+                    )
+                    logger.info(
+                        "Stripped '_P' suffix from %d records in %s",
+                        len(with_p),
+                        instrument_name,
+                    )
+                    df_filtered = pl.concat([without_p, with_p])
+                else:
+                    df_filtered = df
+            else:
+                # For other instruments: filter out rows with _P suffix
+                with_p = df.filter(
+                    pl.col("target_user_secret_id").cast(pl.Utf8).str.ends_with("_P")
+                )
+                df_filtered = df.filter(
+                    ~pl.col("target_user_secret_id").cast(pl.Utf8).str.ends_with("_P")
+                )
+
+                if len(with_p) > 0:
+                    ignored_records = (
+                        with_p["target_user_secret_id"].cast(pl.Utf8).to_list()
+                    )
+                    logger.info(
+                        "Ignored %d records with '_P' suffix in %s: %s",
+                        len(with_p),
+                        instrument_name,
+                        ", ".join(str(r) for r in ignored_records),
+                    )
+
+            # Create new NamedOutput with processed data
             filtered_outputs.append(NamedOutput(name=output.name, output=df_filtered))
         else:
             filtered_outputs.append(output)
