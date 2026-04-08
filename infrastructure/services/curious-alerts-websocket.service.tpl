@@ -13,6 +13,11 @@ Environment="HBNMIGRATION_PROJECT_ROOT=${project_root}"
 Environment="HBNMIGRATION_LOG_ROOT=${log_directory}"
 Environment="HBNMIGRATION_PROJECT_STATUS=${project_status}"
 Environment="HBNMIGRATION_RECOVERY_MODE=${recovery_mode ? "1" : "0"}"
+
+# Timeouts
+TimeoutStartSec=60
+TimeoutStopSec=30
+
 Restart=always
 RestartSec=10
 
