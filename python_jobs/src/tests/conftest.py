@@ -1809,9 +1809,9 @@ def expected_transformed_data() -> pd.DataFrame:
             "field_name": ["participant_full_name", "permission_collab"] * 2,
             "value": [
                 "Alec Holland",
-                Values.PID744.permission_collab["No"],
+                Values.PID625.permission_collab["No"],
                 "Abby Arcane",
-                Values.PID744.permission_collab["Yes"],
+                Values.PID625.permission_collab["Yes"],
             ],
         }
     )

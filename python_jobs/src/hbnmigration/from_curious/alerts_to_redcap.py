@@ -34,7 +34,6 @@ from .utils import (
     call_curious_api,
     create_choice_lookup,
     fetch_alerts_metadata,
-    REDCAP_TOKEN,
 )
 
 initialize_logging()
@@ -45,7 +44,7 @@ REDCAP_ENDPOINTS = redcap_variables.Endpoints()
 # Constants
 # ============================================================================
 ALERT_FIELD_PATTERN = r"alerts_([^_]+(?:_[^_]+)?)_\d+"
-PID_625 = REDCAP_TOKEN  # Use token from alert_utils
+PID_625 = redcap_variables.Tokens.pid625
 
 # WebSocket configuration constants
 WS_RECONNECT_DELAY = 5  # seconds

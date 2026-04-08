@@ -719,7 +719,7 @@ class TestUpdateCompleteParentSecondGuardianConsent:
         assert rows.iloc[0]["record"] == "001"
         assert (
             rows.iloc[0]["value"]
-            == Values.PID744.complete_parent_second_guardian_consent[expected_label]
+            == Values.PID625.complete_parent_second_guardian_consent[expected_label]
         )
 
     @pytest.mark.parametrize(
@@ -752,7 +752,7 @@ class TestUpdateCompleteParentSecondGuardianConsent:
             ],
             values=[
                 Values.PID247.guardian2_consent[guardian_label],
-                Values.PID744.complete_parent_second_guardian_consent[initial_label],
+                Values.PID625.complete_parent_second_guardian_consent[initial_label],
             ],
         )
 
@@ -763,7 +763,7 @@ class TestUpdateCompleteParentSecondGuardianConsent:
         assert len(rows) == 1
         assert (
             rows.iloc[0]["value"]
-            == Values.PID744.complete_parent_second_guardian_consent[expected_label]
+            == Values.PID625.complete_parent_second_guardian_consent[expected_label]
         )
 
     def test_leaves_unmapped_records_unchanged(self) -> None:
@@ -799,11 +799,11 @@ class TestUpdateCompleteParentSecondGuardianConsent:
 
         assert (
             rows["001"]
-            == Values.PID744.complete_parent_second_guardian_consent["Not Required"]
+            == Values.PID625.complete_parent_second_guardian_consent["Not Required"]
         )
         assert (
             rows["002"]
-            == Values.PID744.complete_parent_second_guardian_consent[
+            == Values.PID625.complete_parent_second_guardian_consent[
                 "Not Applicable (Adult Participant)"
             ]
         )
@@ -857,5 +857,5 @@ class TestMainSecondGuardianConsentRegression:
             assert rows.iloc[0]["record"] == "001"
             assert (
                 rows.iloc[0]["value"]
-                == Values.PID744.complete_parent_second_guardian_consent["Not Required"]
+                == Values.PID625.complete_parent_second_guardian_consent["Not Required"]
             )

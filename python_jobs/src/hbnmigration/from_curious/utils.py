@@ -7,7 +7,6 @@ import pandas as pd
 import requests
 
 from .._config_variables import curious_variables, redcap_variables
-from ..config import Config
 from ..from_redcap.from_redcap import response_index_reverse_lookup
 from ..utility_functions import (
     CuriousActivity,
@@ -21,9 +20,7 @@ from ..utility_functions import (
 
 logger = logging.getLogger(__name__)
 
-REDCAP_TOKEN = getattr(
-    redcap_variables.Tokens, "pid625" if Config.PROJECT_STATUS == "prod" else "pid744"
-)
+REDCAP_TOKEN = redcap_variables.Tokens.pid625
 
 # Standard REDCap metadata fetch parameters
 METADATA_PARAMS = {

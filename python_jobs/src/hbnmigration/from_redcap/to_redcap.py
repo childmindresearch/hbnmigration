@@ -64,9 +64,9 @@ def update_complete_parent_second_guardian_consent(df: pd.DataFrame) -> pd.DataF
     """
     mapping = {
         Values.PID247.guardian2_consent[
-            _247
-        ]: Values.PID744.complete_parent_second_guardian_consent[_744]
-        for _247, _744 in [
+            _consent
+        ]: Values.PID625.complete_parent_second_guardian_consent[_operations]
+        for _consent, _operations in [
             ("No", "Not Required"),
             (
                 "Not Applicable (Adult Participant)",
@@ -126,11 +126,11 @@ def main() -> None:
         # get data from PID247
         data247 = fetch_data(
             redcap_variables.Tokens.pid247,
-            str(Fields.export_247.for_redcap744),
+            str(Fields.export_247.for_redcap_operations),
             Values.PID247.intake_ready.filter_logic("Ready to Send to Intake Redcap"),
         )
         data247["field_name"] = data247["field_name"].replace(
-            Fields.rename.redcap247_to_redcap744
+            Fields.rename.redcap_consent_to_redcap_operations
         )
         if data247.empty:
             raise NoData
@@ -150,40 +150,41 @@ def main() -> None:
             logger.info("All records already processed in cache.")
             return
 
-        # rename columns for PID744
+        # rename columns for consent project
         data247 = update_complete_parent_second_guardian_consent(data247)
         data247["field_name"] = data247["field_name"].replace(
-            Fields.rename.redcap247_to_redcap744
+            Fields.rename.redcap_consent_to_redcap_operations
         )
-        # format DataFrame for PID744
-        df_744 = data247.loc[
-            data247["field_name"].str.startswith(tuple(Fields.import_744))
+        # format DataFrame for operations project
+        df_operations = data247.loc[
+            data247["field_name"].str.startswith(tuple(Fields.import_625))
         ]
         record_ids: dict[int | str, int | str] = {
             row["record"]: row["value"]
-            for _, row in df_744[df_744["field_name"] == "mrn"].iterrows()
+            for _, row in df_operations[df_operations["field_name"] == "mrn"].iterrows()
         }
-        df_744["record"] = df_744["record"].replace(record_ids)
-        df_744.loc[df_744["field_name"] == "record_id", "value"] = df_744.loc[
-            df_744["field_name"] == "record_id", "record"
-        ]
-        assert isinstance(df_744, pd.DataFrame)
-        df_744 = (
-            df_744.sort_values("redcap_repeat_instance", ascending=False)
+        df_operations["record"] = df_operations["record"].replace(record_ids)
+        df_operations.loc[df_operations["field_name"] == "record_id", "value"] = (
+            df_operations.loc[df_operations["field_name"] == "record_id", "record"]
+        )
+        assert isinstance(df_operations, pd.DataFrame)
+        df_operations = (
+            df_operations.sort_values("redcap_repeat_instance", ascending=False)
             .drop_duplicates(subset=["record", "field_name"], keep="first")
             .drop(columns=["redcap_repeat_instrument", "redcap_repeat_instance"])
             .reset_index(drop=True)
         )
-        decrement_mask = df_744["field_name"] == "permission_collab"
+        decrement_mask = df_operations["field_name"] == "permission_collab"
         # Convert to numeric and decrement
         decremented = (
-            pd.to_numeric(df_744.loc[decrement_mask, "value"], errors="coerce") - 1
+            pd.to_numeric(df_operations.loc[decrement_mask, "value"], errors="coerce")
+            - 1
         )
         assert isinstance(decremented, pd.Series)
         # Convert back to string
-        df_744.loc[decrement_mask, "value"] = decremented.astype(str)
-        rows_imported_744 = redcap_api_push(
-            df=df_744,
+        df_operations.loc[decrement_mask, "value"] = decremented.astype(str)
+        rows_imported_operations = redcap_api_push(
+            df=df_operations,
             token=getattr(
                 redcap_variables.Tokens,
                 "pid625" if Config.PROJECT_STATUS == "prod" else "pid744",
@@ -191,20 +192,20 @@ def main() -> None:
             url=Endpoints.base_url,
             headers=redcap_variables.headers,
         )
-        if not rows_imported_744:
+        if not rows_imported_operations:
             raise NoData
 
         # Mark source records as processed in cache
         source_records = data247["record"].unique().tolist()
         cache.bulk_mark_processed(
             source_records,
-            metadata={"rows_imported": rows_imported_744},
+            metadata={"rows_imported": rows_imported_operations},
         )
 
-        rows_updated_274 = update_source(df_744, record_ids)
-        assert rows_imported_744 == rows_updated_274, (
-            f"rows imported to PID 744 ({rows_imported_744}) "
-            f"≠ rows updated in PID 274 ({rows_updated_274})."
+        rows_updated_274 = update_source(df_operations, record_ids)
+        assert rows_imported_operations == rows_updated_274, (
+            f"rows imported to REDCap operations ({rows_imported_operations}) "
+            f"≠ rows updated in REDCap consent ({rows_updated_274})."
         )
 
         # Log cache statistics
@@ -216,7 +217,10 @@ def main() -> None:
             cache_stats.get("last_activity", "never"),
         )
     except NoData:
-        logger.info("No data to transfer from PID 274 to PID 744.")
+        logger.info(
+            "No data to transfer from REDCap consent project to "
+            "REDCap operations project."
+        )
 
 
 if __name__ == "__main__":

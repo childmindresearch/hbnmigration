@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Timeouts to minute-by-minute transfers to avoid hanging on connection failures.
 
+### Changed
+
+- Curious data and alerts now go to prod REDCap project even in dev mode.
+
 ## 1.7.0
 
 ### Changed

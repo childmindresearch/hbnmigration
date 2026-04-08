@@ -9,7 +9,6 @@ from mindlogger_data_export.mindlogger import MindloggerData
 from mindlogger_data_export.outputs import NamedOutput, RedcapImportFormat
 
 from .._config_variables import curious_variables, redcap_variables
-from ..config import Config
 from ..from_redcap.config import Values as RedcapValues
 from ..utility_functions import (
     CuriousDecryptedAnswer,
@@ -94,7 +93,7 @@ def create_invitation_record(respondent: dict, applet_id: CuriousId) -> dict | N
         "source_secret_id": secret_id,
         "invite_status": invitation_statuses[respondent["status"]],
         "redcap_event_name": "curious_parent_arm_1",
-        "complete": RedcapValues.PID744.curious_account_created_complete["Incomplete"],
+        "complete": RedcapValues.PID625.curious_account_created_complete["Incomplete"],
         "respondent_id": detail["subjectId"],
     }
 
@@ -327,7 +326,7 @@ def format_for_redcap(
                 )
         if "curious_account_created_account_created_response" in result.output.columns:
             curious_account_created_account_created_response = (
-                RedcapValues.PID744.curious_account_created_account_created_response
+                RedcapValues.PID625.curious_account_created_account_created_response
             )
             context_columns.append(
                 pl.when(
@@ -340,12 +339,12 @@ def format_for_redcap(
                 )
                 .then(
                     pl.lit(
-                        RedcapValues.PID744.curious_account_created_complete["Complete"]
+                        RedcapValues.PID625.curious_account_created_complete["Complete"]
                     )
                 )
                 .otherwise(
                     pl.lit(
-                        RedcapValues.PID744.curious_account_created_complete[
+                        RedcapValues.PID625.curious_account_created_complete[
                             "Unverified"
                         ]
                     )
@@ -356,13 +355,13 @@ def format_for_redcap(
         elif redcap_context.get("invite_status") == "3":
             context_columns.append(
                 pl.lit(
-                    RedcapValues.PID744.curious_account_created_complete["Unverified"]
+                    RedcapValues.PID625.curious_account_created_complete["Unverified"]
                 ).alias("curious_account_created_complete")
             )
         else:
             context_columns.append(
                 pl.lit(
-                    RedcapValues.PID744.curious_account_created_complete["Incomplete"]
+                    RedcapValues.PID625.curious_account_created_complete["Incomplete"]
                 ).alias("curious_account_created_complete")
             )
         result.output = result.output.with_columns(context_columns)
@@ -406,9 +405,7 @@ def push_to_redcap(csv_data: str, cache: DataCache | None = None) -> int:
 
     """
     data = {
-        "token": redcap_variables.Tokens.pid744
-        if Config.PROJECT_STATUS == "dev"
-        else redcap_variables.Tokens.pid625,
+        "token": redcap_variables.Tokens.pid625,
         "content": "record",
         "action": "import",
         "format": "csv",
@@ -432,7 +429,7 @@ def update_already_completed(df: pl.DataFrame) -> pl.DataFrame:
         Endpoints.Redcap.base_url,
         redcap_variables.headers,
         {
-            "token": redcap_variables.Tokens.pid744,
+            "token": redcap_variables.Tokens.pid625,
             "content": "record",
             "action": "export",
             "format": "csv",
@@ -440,7 +437,7 @@ def update_already_completed(df: pl.DataFrame) -> pl.DataFrame:
             "csvDelimiter": "",
             "fields": "curious_account_created_complete",
             "filter"
-            "Logic": RedcapValues.PID744.curious_account_created_complete.filter_logic(
+            "Logic": RedcapValues.PID625.curious_account_created_complete.filter_logic(
                 "Complete"
             ),
             "rawOrLabel": "raw",
