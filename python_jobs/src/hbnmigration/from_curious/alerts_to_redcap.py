@@ -19,16 +19,20 @@ from websockets.exceptions import (
 
 from .._config_variables import curious_variables, redcap_variables
 from ..from_redcap.config import FieldList
-from ..from_redcap.from_redcap import fetch_data, response_index_reverse_lookup
+from ..from_redcap.from_redcap import fetch_data
 from ..utility_functions import (
     CuriousAlert,
+    CuriousAlertHttps,
+    CuriousAlertWebsocket,
     DataCache,
     initialize_logging,
     redcap_api_push,
-    setup_tsv_logger,
 )
 from .config import curious_authenticate
 from .utils import (
+    alert_websocket_to_https,
+    call_curious_api,
+    create_choice_lookup,
     fetch_alerts_metadata,
     REDCAP_TOKEN,
 )
@@ -102,7 +106,7 @@ def _parse_alert_message(message: str) -> tuple[str, str]:
 
     """
     _color, message_remainder = message.split(': "', 1)
-    answer, message_remainder = message_remainder.split('"', 1)
+    answer, message_remainder = message_remainder.split('" to', 1)
     message_remainder, item = message_remainder.rsplit(" ", 1)
     return answer, f"alerts_{item.lower()}"
 
@@ -114,13 +118,10 @@ def parse_alert(alert: CuriousAlert) -> pd.DataFrame:
     Note: 'record', 'value', and 'redcap_event_name' columns need further processing.
     """
     columns = ["record", "field_name", "value", "redcap_event_name"]
-    # Check for secretId FIRST
-    if "secretId" not in alert:
-        logger.info('Response: \n"""\n%s\n"""\ndoes not include "secretId"', alert)
-        tsv_logger = setup_tsv_logger("mrn_error_log", "mrn_error_log.tsv")
-        tsv_logger.error(str(alert), extra={"mrn": "", "attempt": "parse_alert"})
-        return pd.DataFrame(columns=columns)
+
+    alert = alert_websocket_to_https(alert)
     answer, item = _parse_alert_message(alert["message"])
+    # item = get_item(tokens, alert["activityId"], alert["activityItemId"])
     fields: list[tuple[str, Any]] = [("mrn", alert["secretId"]), (item, answer)]
     data: list[tuple[str, str, Any, Optional[str]]] = [
         (alert["secretId"], field_name, field_value, None)
@@ -134,26 +135,10 @@ def parse_alert(alert: CuriousAlert) -> pd.DataFrame:
 # ============================================================================
 
 
-def _create_choice_lookup(
-    alerts_instrument: pd.DataFrame,
-) -> dict[tuple[str, str], int | str]:
-    """Create lookup dictionary for mapping response values to REDCap indices."""
-    choice_lookup_tuples = [
-        lookup_tuple
-        for lookup_tuple in [
-            item
-            for _, row in alerts_instrument.iterrows()
-            for item in response_index_reverse_lookup(row)
-        ]
-        if lookup_tuple
-    ]
-    return {lookup_tuple[0:2]: lookup_tuple[2] for lookup_tuple in choice_lookup_tuples}
-
-
 def _map_mrns_to_records(
     redcap_alerts: pd.DataFrame,
     redcap_fields: pd.DataFrame,
-) -> tuple[pd.DataFrame, dict[str, int]]:
+) -> tuple[pd.DataFrame, dict[str, str]]:
     """
     Map MRNs to record IDs and prepare lookups.
 
@@ -167,16 +152,17 @@ def _map_mrns_to_records(
     """
     # Prepare data types
     redcap_alerts["record"] = (
-        redcap_alerts["record"].str.replace(r"\D", "", regex=True).astype(int)
+        redcap_alerts["record"].str.replace(r"\D", "", regex=True).astype(str)
     )
-    redcap_fields["record"] = redcap_fields["record"].astype(int)
+    redcap_fields["record"] = redcap_fields["record"].astype(str)
     # Create lookups
-    mrn_lookup = cast(
-        dict[str, int],
-        redcap_fields[redcap_fields["field_name"] == "mrn"]
+    mrn_lookup = {
+        str(k): str(v)
+        for k, v in redcap_fields[redcap_fields["field_name"] == "mrn"]
         .set_index("value")["record"]
-        .to_dict(),
-    )
+        .to_dict()
+        .items()
+    }
     record_events = cast(
         dict[str, str],
         redcap_fields.groupby("field_name")["redcap_event_name"].first().to_dict(),
@@ -228,15 +214,17 @@ def process_alerts_for_redcap(
     # Map MRNs to records
     result, mrn_lookup = _map_mrns_to_records(redcap_alerts, redcap_fields)
     # Map response values to indices
-    choice_lookup = _create_choice_lookup(alerts_instrument)
+    choice_lookup = create_choice_lookup(alerts_instrument)
     result["lookup_key"] = list(
         zip(result["field_name"], result["value"].str.strip().str.lower())
     )
     result["value"] = result["lookup_key"].map(choice_lookup).fillna(result["value"])
-    # Toggle alerts and set final record IDs
-    result = toggle_alerts(result.drop("lookup_key", axis=1))
+
+    # Map record IDs BEFORE toggle_alerts
     result["record"] = result["record"].map(mrn_lookup)
-    return result
+
+    # Toggle alerts (now working with record IDs, not MRNs)
+    return toggle_alerts(result.drop("lookup_key", axis=1))
 
 
 def push_alerts_to_redcap(result: pd.DataFrame) -> None:
@@ -262,7 +250,8 @@ def push_alerts_to_redcap(result: pd.DataFrame) -> None:
 
 
 def _process_single_alert(
-    alert: CuriousAlert, partial_redcap_landing: bool = False
+    alert: CuriousAlert,
+    partial_redcap_landing: bool = False,
 ) -> Optional[pd.DataFrame]:
     """
     Process a single alert and return result DataFrame or None if invalid.
@@ -305,14 +294,15 @@ def _handle_alert_errors(message: str, error: Exception) -> None:
 
 
 async def websocket_listener(
-    websocket: websockets.ClientConnection, partial_redcap_landing: bool = False
+    websocket: websockets.ClientConnection,
+    partial_redcap_landing: bool = False,
 ) -> None:
     """Listen to websocket messages and process alerts."""
     try:
         async for message in websocket:
             logger.info("Received alert: %s", message)
             try:
-                alert: CuriousAlert = json.loads(message)
+                alert: CuriousAlertWebsocket = json.loads(message)
                 result = _process_single_alert(alert, partial_redcap_landing)
                 if result is not None:
                     push_alerts_to_redcap(result)
@@ -329,7 +319,7 @@ async def websocket_listener(
 
 
 async def main_with_reconnect(
-    token: str,
+    tokens: curious_variables.Tokens,
     uri: str,
     partial_redcap_landing: bool = False,
     max_attempts: Optional[int] = WS_MAX_RECONNECT_ATTEMPTS,
@@ -339,8 +329,8 @@ async def main_with_reconnect(
 
     Parameters
     ----------
-    token
-        Authentication token for WebSocket connection
+    tokens
+        Authentication tokens for WebSocket connection
     uri
         WebSocket URI to connect to
     partial_redcap_landing
@@ -358,7 +348,7 @@ async def main_with_reconnect(
                     attempt,
                     f" of {max_attempts}" if max_attempts else "",
                 )
-            async with connect_to_websocket(token, uri) as websocket:
+            async with connect_to_websocket(tokens.access, uri) as websocket:
                 # Reset attempt counter on successful connection
                 if attempt > 0:
                     logger.info("Successfully reconnected to WebSocket")
@@ -424,7 +414,7 @@ async def main(
     tokens = curious_authenticate()
     endpoints = curious_variables.Endpoints(protocol="wss")
     await main_with_reconnect(
-        token=tokens.access,
+        tokens=tokens,
         uri=endpoints.alerts,
         partial_redcap_landing=partial_redcap_landing,
         max_attempts=max_attempts,
@@ -437,23 +427,18 @@ def synchronous_main(partial_redcap_landing: bool = False) -> None:
     cache = DataCache("curious_alerts_to_redcap", ttl_minutes=2)
 
     tokens = curious_authenticate()
-    response = requests.get(
-        tokens.endpoints.alerts,
-        headers=curious_variables.headers(tokens.access),
+    results = call_curious_api(
+        tokens.endpoints.alerts, tokens, return_type=list[CuriousAlertHttps]
     )
-    if response.status_code != requests.codes["okay"]:
-        response.raise_for_status()
-        return
-    results: list[CuriousAlert] = response.json()["result"]
 
     # Filter out alerts already processed
-    unprocessed_alerts = []
+    unprocessed_alerts: list[CuriousAlertHttps] = []
     for alert in results:
         alert_id = alert.get("id", "")
-        if not cache.is_processed(alert_id):
-            unprocessed_alerts.append(alert)
-        else:
-            logger.debug("Skipping already-processed alert: %s", alert_id)
+        # if not cache.is_processed(alert_id):
+        unprocessed_alerts.append(alert)
+        # else:
+        #     logger.debug("Skipping already-processed alert: %s", alert_id)
 
     if not unprocessed_alerts:
         logger.info("All alerts already processed in cache.")
@@ -469,6 +454,7 @@ def synchronous_main(partial_redcap_landing: bool = False) -> None:
     redcap_alerts = pd.concat([parse_alert(alert) for alert in unprocessed_alerts])
     # Process and push to REDCap
     result = process_alerts_for_redcap(redcap_alerts, partial_redcap_landing)
+
     push_alerts_to_redcap(result)
 
     # Mark alerts as processed in cache

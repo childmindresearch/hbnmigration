@@ -27,12 +27,16 @@ from .datatypes import (
     ApiProtocols,
     CliOptions,
     Credentials,
+    CuriousActivity,
     CuriousAlert,
+    CuriousAlertHttps,
+    CuriousAlertWebsocket,
     CuriousAnswer,
     CuriousAppletEncryption,
     CuriousDecryptedAnswer,
     CuriousEncryptedAnswer,
     CuriousId,
+    CuriousItem,
     Endpoints,
     FieldDescriptor,
     InstrumentRowCount,
@@ -43,7 +47,7 @@ from .datatypes import (
     ValueField,
 )
 from .logging import initialize_logging, setup_tsv_logger
-from .secrets import ImportWithFallback
+from .secrets import ImportWithFallback, T
 from .typescript import tsx
 
 __all__ = [
@@ -52,12 +56,16 @@ __all__ = [
     "ApiProtocols",
     "CliOptions",
     "Credentials",
+    "CuriousActivity",
     "CuriousAlert",
+    "CuriousAlertHttps",
+    "CuriousAlertWebsocket",
     "CuriousAnswer",
     "CuriousAppletEncryption",
     "CuriousDecryptedAnswer",
     "CuriousEncryptedAnswer",
     "CuriousId",
+    "CuriousItem",
     "DataCache",
     "Endpoints",
     "FieldDescriptor",
@@ -65,6 +73,7 @@ __all__ = [
     "InstrumentRowCount",
     "ProjectStatus",
     "Results",
+    "T",
     "Tokens",
     "ValueClass",
     "ValueField",

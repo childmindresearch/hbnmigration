@@ -1,6 +1,7 @@
 """Tests for alerts_to_redcap module."""
 
 import json
+from typing import cast
 from unittest.mock import AsyncMock, patch
 
 import pandas as pd
@@ -19,6 +20,11 @@ from hbnmigration.from_curious.alerts_to_redcap import (
     websocket_listener,
 )
 from hbnmigration.from_redcap.from_redcap import response_index_reverse_lookup
+from hbnmigration.utility_functions import (
+    CuriousAlert,
+    CuriousAlertHttps,
+    CuriousAlertWebsocket,
+)
 
 # Import shared utilities from conftest
 from .conftest import (
@@ -29,7 +35,6 @@ from .conftest import (
     setup_main_test_mocks,
     setup_reconnect_mocks,
     setup_standard_alert_mocks,
-    setup_sync_main_mocks,
 )
 
 # ============================================================================
@@ -111,38 +116,31 @@ def test_toggle_alerts_kevin_urgent_alert(kevin_alert):
 # ============================================================================
 
 
-def test_parse_alert_with_secret_id(sample_curious_alert):
+@pytest.mark.parametrize("sample_curious_alert", ["https", "wss"], indirect=True)
+def test_parse_alert_with_secret_id(
+    sample_curious_alert: CuriousAlert, request: pytest.FixtureRequest
+) -> None:
     """Test that parse_alert correctly parses an alert with secretId."""
-    # Update message to match the expected format: color: "answer" ... item
+    # Update message to match the expected format: color: "answer" to ... item
     alert = sample_curious_alert.copy()
-    alert["message"] = 'Red: "Yes" - Difficulty concentrating parent_baseline'
+    alert["message"] = 'Red: "Yes" to Question text parent_baseline'
     result = parse_alert(alert)
     assert not result.empty
     assert "record" in result.columns
     assert "field_name" in result.columns
     assert "value" in result.columns
-    assert sample_curious_alert["secretId"] in result["record"].values
-
-
-def test_parse_alert_without_secret_id(sample_curious_alert):
-    """Test that parse_alert returns empty DataFrame when secretId is missing."""
-    alert = sample_curious_alert.copy()
-    alert["message"] = 'Red: "Yes" - Difficulty concentrating parent_baseline'
-    del alert["secretId"]
-    result = parse_alert(alert)
-    assert result.empty
-    assert list(result.columns) == [
-        "record",
-        "field_name",
-        "value",
-        "redcap_event_name",
-    ]
+    if request.node.callspec.params["sample_curious_alert"] == "https":
+        sample_curious_alert = cast(CuriousAlertHttps, sample_curious_alert)
+        assert sample_curious_alert["secretId"] in result["record"].values
+    else:
+        sample_curious_alert = cast(CuriousAlertWebsocket, sample_curious_alert)
+        assert sample_curious_alert["secret_id"] in result["record"].values
 
 
 def test_parse_alert_extracts_mrn(sample_curious_alert):
     """Test that parse_alert extracts MRN correctly."""
     alert = sample_curious_alert.copy()
-    alert["message"] = 'Red: "Yes" - Difficulty concentrating parent_baseline'
+    alert["message"] = 'Red: "Yes" to Question text parent_baseline'
     result = parse_alert(alert)
     mrn_row = result[result["field_name"] == "mrn"]
     assert len(mrn_row) == 1
@@ -152,14 +150,12 @@ def test_parse_alert_extracts_mrn(sample_curious_alert):
 def test_parse_alert_converts_message_to_field_name(sample_curious_alert):
     """Test that parse_alert converts message to alert field name."""
     alert = sample_curious_alert.copy()
-    alert["message"] = 'Red: "Yes" - Difficulty concentrating parent_baseline'
+    alert["message"] = 'Red: "Yes" to Question text parent_baseline'
     result = parse_alert(alert)
     field_rows = result[result["field_name"] != "mrn"]
     assert len(field_rows) > 0
     assert field_rows["field_name"].iloc[0].startswith("alerts_")
 
-
-# ============================================================================
 
 # ============================================================================
 # Tests - process_alerts_for_redcap
@@ -238,6 +234,29 @@ def test_process_alerts_handles_missing_mrn(
     assert len(result) == 0 or result["record"].isna().all()
 
 
+def test_process_alerts_maps_records_before_toggle(mock_alerts_dependencies):
+    """Test that record IDs are mapped before toggle_alerts."""
+    metadata = pd.DataFrame(
+        {
+            "field_name": ["mrn", "alerts_parent_baseline_1"],
+            "field_type": ["text", "radio"],
+            "select_choices_or_calculations": ["", "0, No | 1, Yes"],
+        }
+    )
+    existing_data = create_alert_df(
+        ["001", "001"],
+        ["mrn", "alerts_parent_baseline_1"],
+        ["12345", "0"],
+        ["baseline_arm_1", "baseline_arm_1"],
+    )
+    setup_standard_alert_mocks(mock_alerts_dependencies, metadata, existing_data)
+    alert_df = create_alert_df(["12345"], ["alerts_parent_baseline_1"], ["yes"])
+    result = process_alerts_for_redcap(alert_df)
+    # Should have record ID, not MRN
+    assert "001" in result["record"].values
+    assert "12345" not in result["record"].values
+
+
 # ============================================================================
 # Tests - push_alerts_to_redcap
 # ============================================================================
@@ -296,10 +315,8 @@ async def test_websocket_listener_processes_messages(
 ):
     """Test that websocket_listener processes messages correctly."""
     setup_standard_alert_mocks(mock_alerts_dependencies, redcap_alerts_metadata)
-
     mock_websocket = AsyncMock()
     mock_websocket.__aiter__.return_value = [json.dumps(sample_curious_alert)]
-
     with patch("hbnmigration.from_curious.alerts_to_redcap.parse_alert") as mock_parse:
         mock_parse.return_value = create_alert_df(
             ["MRN12345"], ["alerts_parent_baseline_1"], ["yes"]
@@ -314,7 +331,6 @@ async def test_websocket_listener_handles_connection_closed_error():
     """Test that websocket_listener raises ConnectionClosedError."""
     mock_websocket = AsyncMock()
     mock_websocket.__aiter__.side_effect = ConnectionClosedError(None, None)
-
     with pytest.raises(ConnectionClosedError):
         await websocket_listener(mock_websocket)
 
@@ -325,7 +341,6 @@ async def test_websocket_listener_skips_non_answer_messages(mock_alerts_dependen
     mock_websocket = AsyncMock()
     non_answer = {"type": "heartbeat", "timestamp": "2024-01-01T00:00:00Z"}
     mock_websocket.__aiter__.return_value = [json.dumps(non_answer)]
-
     await websocket_listener(mock_websocket)
     assert not mock_alerts_dependencies["push"].called
 
@@ -341,12 +356,11 @@ async def test_main_with_reconnect_successful_connection(
 ):
     """Test that main_with_reconnect handles successful connection."""
     setup_standard_alert_mocks(mock_alerts_dependencies, redcap_alerts_metadata)
-
     with setup_reconnect_mocks() as mocks:
+        tokens = create_mock_tokens_ws()
         await main_with_reconnect(
-            token="test_token", uri="wss://test.com/alerts", max_attempts=1
+            tokens=tokens, uri="wss://test.com/alerts", max_attempts=1
         )
-
         assert mocks["ws"].called
         assert mocks["listener"].called
 
@@ -355,10 +369,10 @@ async def test_main_with_reconnect_successful_connection(
 async def test_main_with_reconnect_handles_connection_error(caplog):
     """Test that main_with_reconnect reconnects on ConnectionClosedError."""
     with setup_reconnect_mocks([ConnectionClosedError(None, None), None]) as mocks:
+        tokens = create_mock_tokens_ws()
         await main_with_reconnect(
-            token="test_token", uri="wss://test.com/alerts", max_attempts=2
+            tokens=tokens, uri="wss://test.com/alerts", max_attempts=2
         )
-
         assert mocks["listener"].call_count == 2
         assert "Reconnecting in" in caplog.text
         assert "Successfully reconnected" in caplog.text
@@ -368,11 +382,11 @@ async def test_main_with_reconnect_handles_connection_error(caplog):
 async def test_main_with_reconnect_max_attempts_exceeded():
     """Test that main_with_reconnect stops after max attempts."""
     with setup_reconnect_mocks(ConnectionClosedError(None, None)) as mocks:
+        tokens = create_mock_tokens_ws()
         with pytest.raises(ConnectionClosedError):
             await main_with_reconnect(
-                token="test_token", uri="wss://test.com/alerts", max_attempts=1
+                tokens=tokens, uri="wss://test.com/alerts", max_attempts=1
             )
-
         assert mocks["listener"].call_count == 1
 
 
@@ -387,12 +401,11 @@ async def test_main_with_reconnect_handles_auth_error(caplog):
     ):
         mock_ws.side_effect = create_mock_invalid_status(401)
         mock_sleep.return_value = None
-
+        tokens = create_mock_tokens_ws()
         with pytest.raises(InvalidStatus):
             await main_with_reconnect(
-                token="test_token", uri="wss://test.com/alerts", max_attempts=1
+                tokens=tokens, uri="wss://test.com/alerts", max_attempts=1
             )
-
         assert "Authentication failed" in caplog.text
 
 
@@ -400,12 +413,11 @@ async def test_main_with_reconnect_handles_auth_error(caplog):
 async def test_main_with_reconnect_infinite_retries():
     """Test that main_with_reconnect runs indefinitely with None max_attempts."""
     side_effects = [ConnectionClosedError(None, None)] * 5 + [None]
-
     with setup_reconnect_mocks(side_effects) as mocks:
+        tokens = create_mock_tokens_ws()
         await main_with_reconnect(
-            token="test_token", uri="wss://test.com/alerts", max_attempts=None
+            tokens=tokens, uri="wss://test.com/alerts", max_attempts=None
         )
-
         assert mocks["listener"].call_count == 6
         assert mocks["sleep"].call_count == 5
 
@@ -421,7 +433,6 @@ async def test_main_processes_websocket_messages(
 ):
     """Test that main() processes websocket messages."""
     setup_standard_alert_mocks(mock_alerts_dependencies, redcap_alerts_metadata)
-
     with setup_main_test_mocks(
         mock_alerts_dependencies,
         sample_alert=sample_curious_alert,
@@ -437,7 +448,7 @@ async def test_main_processes_websocket_messages(
             await main()
             assert mock_reconnect.called
             call_kwargs = mock_reconnect.call_args[1]
-            assert call_kwargs["token"] == "test_token"
+            assert "tokens" in call_kwargs
             assert "wss://" in call_kwargs["uri"]
 
 
@@ -454,9 +465,7 @@ async def test_main_passes_max_attempts():
     ):
         mock_auth.return_value = create_mock_tokens_ws()
         mock_reconnect.return_value = None
-
         await main(partial_redcap_landing=False, max_attempts=10)
-
         call_kwargs = mock_reconnect.call_args[1]
         assert call_kwargs["max_attempts"] == 10
 
@@ -496,21 +505,36 @@ def test_synchronous_main_fetches_alerts(
         create_alert_df(["MRN12345"], ["alerts_child_baseline_1"], ["sometimes"]),
         create_alert_df(["MRN67890"], ["alerts_parent_followup_1"], ["no"]),
     ]
-    with setup_sync_main_mocks(
-        mock_alerts_dependencies,
-        multiple_curious_alerts,
-        parse_returns,
-        metadata_return=redcap_alerts_metadata,
-    ) as test_mocks:
+    with (
+        patch(
+            "hbnmigration.from_curious.alerts_to_redcap.curious_authenticate"
+        ) as mock_auth,
+        patch(
+            "hbnmigration.from_curious.alerts_to_redcap.call_curious_api"
+        ) as mock_call,
+        patch("hbnmigration.from_curious.alerts_to_redcap.parse_alert") as mock_parse,
+    ):
+        mock_auth.return_value = create_mock_tokens_ws()
+        mock_call.return_value = multiple_curious_alerts
+        mock_parse.side_effect = parse_returns
         synchronous_main()
-        assert test_mocks["parse"].call_count == 3
+        assert mock_parse.call_count == 3
 
 
 def test_synchronous_main_handles_api_error(mock_alerts_dependencies):
     """Test that synchronous_main() handles API errors gracefully."""
-    with setup_sync_main_mocks(mock_alerts_dependencies, [], None, status_code=500):
-        synchronous_main()
-        assert not mock_alerts_dependencies["push"].called
+    with (
+        patch(
+            "hbnmigration.from_curious.alerts_to_redcap.curious_authenticate"
+        ) as mock_auth,
+        patch(
+            "hbnmigration.from_curious.alerts_to_redcap.call_curious_api"
+        ) as mock_call,
+    ):
+        mock_auth.return_value = create_mock_tokens_ws()
+        mock_call.side_effect = Exception("API Error")
+        with pytest.raises(Exception, match="API Error"):
+            synchronous_main()
 
 
 def test_synchronous_main_partial_mode(
@@ -518,25 +542,31 @@ def test_synchronous_main_partial_mode(
 ):
     """Test synchronous_main with partial_redcap_landing flag."""
     setup_standard_alert_mocks(mock_alerts_dependencies, redcap_alerts_metadata)
-
     alert = [
         {
             "type": "answer",
             "id": "alert_001",
             "activityItemId": "alerts_parent_baseline_1",
+            "secretId": "00001_P",
         }
     ]
     parse_return = [
         create_alert_df(["MRN12345"], ["alerts_parent_baseline_1"], ["yes"])
     ]
-    with setup_sync_main_mocks(
-        mock_alerts_dependencies,
-        alert,
-        parse_return,
-        metadata_return=redcap_alerts_metadata,
-    ) as test_mocks:
+    with (
+        patch(
+            "hbnmigration.from_curious.alerts_to_redcap.curious_authenticate"
+        ) as mock_auth,
+        patch(
+            "hbnmigration.from_curious.alerts_to_redcap.call_curious_api"
+        ) as mock_call,
+        patch("hbnmigration.from_curious.alerts_to_redcap.parse_alert") as mock_parse,
+    ):
+        mock_auth.return_value = create_mock_tokens_ws()
+        mock_call.return_value = alert
+        mock_parse.side_effect = parse_return
         synchronous_main(partial_redcap_landing=True)
-        assert test_mocks["parse"].called
+        assert mock_parse.called
 
 
 # ============================================================================
@@ -594,9 +624,9 @@ def test_cli_max_reconnect_attempts():
             "test_field",
             "0, No | 1, Yes | 2, Maybe",
             [
-                ("test_field", "no", 0),
-                ("test_field", "yes", 1),
-                ("test_field", "maybe", 2),
+                ("test_field", "no", "0"),
+                ("test_field", "yes", "1"),
+                ("test_field", "maybe", "2"),
             ],
         ),
         ("text_field", "", []),
@@ -605,15 +635,15 @@ def test_cli_max_reconnect_attempts():
             "alerts_parent_baseline_5",
             "0, Normal | 1, Concerning | 2, Urgent",
             [
-                ("alerts_parent_baseline_5", "normal", 0),
-                ("alerts_parent_baseline_5", "concerning", 1),
-                ("alerts_parent_baseline_5", "urgent", 2),
+                ("alerts_parent_baseline_5", "normal", "0"),
+                ("alerts_parent_baseline_5", "concerning", "1"),
+                ("alerts_parent_baseline_5", "urgent", "2"),
             ],
         ),
     ],
 )
 def test_response_index_reverse_lookup(field_name, choices, expected):
-    """Test response_index_reverse_lookup with various inputs - now returns a list."""
+    """Test response_index_reverse_lookup with various inputs."""
     row = pd.Series(
         {
             "field_name": field_name,
@@ -635,9 +665,7 @@ def test_fetch_alerts_metadata_called_in_process_alerts(
     """Test that fetch_alerts_metadata is called during alert processing."""
     setup_standard_alert_mocks(mock_alerts_dependencies, redcap_alerts_metadata)
     alert_df = create_alert_df(["MRN12345"], ["alerts_parent_baseline_1"], ["yes"])
-
     process_alerts_for_redcap(alert_df)
-
     # The fetch_alerts_metadata should be called (it's the imported function)
     assert mock_alerts_dependencies["fetch_metadata"].called
 
@@ -651,16 +679,16 @@ def test_fetch_alerts_metadata_called_in_process_alerts(
     "message,expected_item",
     [
         (
-            'Red: "Yes" - Difficulty concentrating parent_baseline',
-            "alerts_parent_baseline_difficulty_concentrating",
+            'Red: "Yes" to Difficulty concentrating parent_baseline',
+            "alerts_parent_baseline",
         ),
         (
-            'Yellow: "No" - Sleep issues child_followup',
-            "alerts_child_followup_sleep_issues",
+            'Yellow: "No" to Sleep issues child_followup',
+            "alerts_child_followup",
         ),
         (
-            'Green: "Sometimes" - Mood changes parent_followup',
-            "alerts_parent_followup_mood_changes",
+            'Green: "Sometimes" to Mood changes parent_followup',
+            "alerts_parent_followup",
         ),
     ],
     ids=["red_parent", "yellow_child", "green_parent"],
@@ -672,7 +700,6 @@ def test_parse_alert_various_colors_and_items(
     alert = sample_curious_alert.copy()
     alert["message"] = message
     result = parse_alert(alert)
-
     assert not result.empty
     assert sample_curious_alert["secretId"] in result["record"].values
     # Verify that an item field was created
@@ -711,9 +738,7 @@ def test_process_alerts_creates_summary_fields(
     """Test that process_alerts creates appropriate summary fields."""
     setup_standard_alert_mocks(mock_alerts_dependencies, redcap_alerts_metadata)
     alert_df = create_alert_df(records, field_names, ["yes"] * len(field_names))
-
     result = process_alerts_for_redcap(alert_df)
-
     # Should have summary field if metadata contains the instrument
     summary_rows = result[result["field_name"] == expected_summary]
     assert len(summary_rows) > 0
@@ -739,7 +764,6 @@ def test_push_alerts_various_values(mock_alerts_dependencies, records, values):
         records, ["alerts_parent_baseline_1"] * len(records), values
     )
     push_alerts_to_redcap(alert_df)
-
     push_mock = mock_alerts_dependencies["push"]
     assert push_mock.called
     pushed_data = push_mock.call_args[0][0]
