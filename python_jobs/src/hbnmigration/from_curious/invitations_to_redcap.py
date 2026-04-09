@@ -1,5 +1,6 @@
 """Monitor Curious account invitations and send updates to REDCap."""
 
+from io import StringIO
 import logging
 
 import polars as pl
@@ -20,6 +21,7 @@ from ..utility_functions import (
 )
 from .config import curious_authenticate, invitation_statuses
 from .decryption import decrypt_single, get_applet_encryption
+from .utils import deduplicate_dataframe
 
 initialize_logging()
 logger = logging.getLogger(__name__)
@@ -394,9 +396,16 @@ def pull_data_from_curious(token: str) -> pl.DataFrame:
     return invitation_df
 
 
-def push_to_redcap(csv_data: str, cache: DataCache | None = None) -> int:
+def push_to_redcap(data: pl.DataFrame | str, cache: DataCache | None = None) -> int:
     """
-    Push data to RedCap.
+    Push data to RedCap with deduplication.
+
+    Parameters
+    ----------
+    data : pl.DataFrame | str
+        DataFrame or CSV string to upload
+    cache : DataCache | None, optional
+        Cache for tracking processed records
 
     Returns
     -------
@@ -404,7 +413,32 @@ def push_to_redcap(csv_data: str, cache: DataCache | None = None) -> int:
         number of records updated
 
     """
-    data = {
+    # Handle both DataFrame and CSV string inputs for backward compatibility
+    if isinstance(data, str):
+        # Legacy path: parse CSV string to DataFrame
+        df = pl.read_csv(StringIO(data))
+    else:
+        df = data
+
+    # Deduplicate before pushing
+    df, num_duplicates = deduplicate_dataframe(
+        df,
+        redcap_variables.Tokens.pid625,
+        Endpoints.Redcap.base_url,
+        redcap_variables.headers,
+        "curious_account_created",
+    )
+
+    if df.is_empty():
+        logger.info("All invitation rows are duplicates, skipping upload")
+        return 0
+
+    if num_duplicates > 0:
+        logger.info("Removed %d duplicate invitation rows before push", num_duplicates)
+
+    csv_data = df.write_csv()
+
+    push_data = {
         "token": redcap_variables.Tokens.pid625,
         "content": "record",
         "action": "import",
@@ -416,7 +450,7 @@ def push_to_redcap(csv_data: str, cache: DataCache | None = None) -> int:
         "returnContent": "count",
         "returnFormat": "csv",
     }
-    r = requests.post(Endpoints.Redcap.base_url, data=data)
+    r = requests.post(Endpoints.Redcap.base_url, data=push_data)
     if r.status_code != requests.codes["okay"]:
         logger.exception("%s\n%s\nHTTP Status: %d", r.reason, r.text, r.status_code)
     r.raise_for_status()
@@ -454,16 +488,15 @@ def update_already_completed(df: pl.DataFrame) -> pl.DataFrame:
 
 def main() -> None:
     """Monitor Curious account invitations and send updates to REDCap."""
-    # Initialize cache for minute-by-minute transfers (TTL: 2 minutes)
     cache = DataCache("curious_invitations_to_redcap", ttl_minutes=2)
-
     auth = curious_authenticate()
     invitation_df = pull_data_from_curious(auth.access)
+
     if invitation_df.is_empty():
         logger.info("No invitations to update.")
         return
 
-    # Filter out records already processed by cache
+    # Cache filtering
     if cache:
         unprocessed_records = cache.get_unprocessed_records(
             invitation_df["record_id"].to_list()
@@ -488,12 +521,11 @@ def main() -> None:
         curious_variables.activity_ids["Curious Account Created"],
     ).unique(subset=["record_id"], keep="last")
 
-    n_records = push_to_redcap(invitation_df.write_csv(), cache)
+    n_records = push_to_redcap(invitation_df, cache)
     logger.info(
         "%d records updated in REDCap from Curious account creation.", n_records
     )
 
-    # Mark records as processed in cache
     if cache and n_records > 0:
         cache.bulk_mark_processed(
             invitation_df["record_id"].to_list(),
@@ -506,7 +538,6 @@ def main() -> None:
         )
         raise ValueError(msg)
 
-    # Log cache statistics
     cache_stats = cache.get_stats()
     logger.info(
         "Cache statistics: %d entries, file size: %d bytes, last activity: %s",
@@ -514,7 +545,6 @@ def main() -> None:
         cache_stats["file_size_bytes"],
         cache_stats.get("last_activity", "never"),
     )
-    return
 
 
 if __name__ == "__main__":

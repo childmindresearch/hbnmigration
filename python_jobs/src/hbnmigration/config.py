@@ -22,6 +22,9 @@ def _get_project_status() -> ProjectStatus:
 class Config:
     """Configuration loaded from environment variables."""
 
+    COLUMN_CHUNK_SIZE = int(os.environ.get("HBNMIGRATION_COLUMN_CHUNK_SIZE", "150"))
+    """Number of columns at which to split API requests into chunks."""
+
     PROJECT_ROOT = (
         Path(os.environ["HBNMIGRATION_PROJECT_ROOT"])
         if "HBNMIGRATION_PROJECT_ROOT" in os.environ

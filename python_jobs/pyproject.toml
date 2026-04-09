@@ -68,7 +68,7 @@ known-first-party = ["mindlogger_data_export"]
 
 [tool.ruff.lint.per-file-ignores]
 "src/hbnmigration/from_redcap/config.py" = ["N801"]
-"conftest.py" = ["PLR0913"]
+"conftest.py" = ["PLR0913", "PLR2004"]
 "test_*.py" = ["PLC0415", "PLR0913", "PLR2004"]
 
 [tool.mypy]
