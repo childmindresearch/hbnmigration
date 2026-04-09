@@ -12,6 +12,7 @@ from tempfile import TemporaryDirectory
 import time
 from typing import Literal
 
+import pandas as pd
 import polars as pl
 import requests
 
@@ -20,6 +21,8 @@ from mindlogger_data_export.outputs import NamedOutput, RedcapImportFormat
 
 from .._config_variables import curious_variables, redcap_variables
 from ..config import Config
+from ..from_redcap.config import FieldList
+from ..from_redcap.from_redcap import fetch_data
 from ..utility_functions import (
     CliOptions,
     DataCache,
@@ -35,12 +38,14 @@ from ..utility_functions import (
 )
 from .utils import (
     get_alert_field_event,
+    map_mrns_to_records,
     possible_alert_instruments,
     REDCAP_TOKEN,
 )
 
 initialize_logging()
 logger = logging.getLogger(__name__)
+
 ENDPOINTS: dict[Literal["Curious", "REDCap"], Endpoints] = {
     "Curious": curious_variables.Endpoints(),
     "REDCap": redcap_variables.Endpoints(),
@@ -64,7 +69,6 @@ def format_for_redcap(
         logger.info("No Curious data to export.")
         sys.exit(0)
     outputs = formatter.produce(ml_data)
-
     # Process records where target subject is a parent (_P suffix)
     # For curious_account_created: strip _P from record ID
     # For other instruments: ignore records with _P suffix
@@ -73,7 +77,6 @@ def format_for_redcap(
         df = output.output
         if "target_user_secret_id" in df.columns:
             instrument_name = output.name
-
             # Check if this is curious_account_created instrument
             if instrument_name.startswith("curious_account_created"):
                 # For curious_account_created: strip _P from record ID
@@ -83,7 +86,6 @@ def format_for_redcap(
                 without_p = df.filter(
                     ~pl.col("target_user_secret_id").cast(pl.Utf8).str.ends_with("_P")
                 )
-
                 if len(with_p) > 0:
                     # Strip _P suffix using string replacement
                     with_p = with_p.with_columns(
@@ -108,7 +110,6 @@ def format_for_redcap(
                 df_filtered = df.filter(
                     ~pl.col("target_user_secret_id").cast(pl.Utf8).str.ends_with("_P")
                 )
-
                 if len(with_p) > 0:
                     ignored_records = (
                         with_p["target_user_secret_id"].cast(pl.Utf8).to_list()
@@ -119,7 +120,6 @@ def format_for_redcap(
                         instrument_name,
                         ", ".join(str(r) for r in ignored_records),
                     )
-
             # Create new NamedOutput with processed data
             filtered_outputs.append(NamedOutput(name=output.name, output=df_filtered))
         else:
@@ -130,7 +130,6 @@ def format_for_redcap(
                 "attempting fallback filter on 'record_id'",
                 instrument_name,
             )
-
             # Try to filter by record_id column if it exists
             if "record_id" in df.columns:
                 with_p_records = df.filter(
@@ -139,7 +138,6 @@ def format_for_redcap(
                 df_filtered = df.filter(
                     ~pl.col("record_id").cast(pl.Utf8).str.ends_with("_P")
                 )
-
                 if len(with_p_records) > 0:
                     ignored_ids = with_p_records["record_id"].cast(pl.Utf8).to_list()
                     logger.warning(
@@ -159,7 +157,6 @@ def format_for_redcap(
                     instrument_name,
                 )
                 filtered_outputs.append(output)
-
     logger.info(
         "Data formatted for these instruments: %s",
         "".join([f"\n\t- {_.name[:-7]}" for _ in filtered_outputs]),
@@ -174,6 +171,183 @@ def get_curious_data(request_json: CliOptions) -> None:
         request_json.long.split(" "),
         parse_output=False,
     )
+
+
+def _validate_csv_structure(
+    df_polars: pl.DataFrame, csv_name: str
+) -> tuple[bool, list[str]]:
+    """
+    Validate CSV structure and return data fields.
+
+    Returns
+    -------
+    tuple[bool, list[str]]
+        (is_valid, data_fields)
+
+    """
+    # Check if record_id column exists
+    if "record_id" not in df_polars.columns:
+        logger.debug("No record_id column in %s, skipping MRN validation", csv_name)
+        return False, []
+
+    # Get all data columns (excluding REDCap metadata columns)
+    standard_fields = {
+        "record_id",
+        "redcap_event_name",
+        "redcap_repeat_instrument",
+        "redcap_repeat_instance",
+    }
+    data_fields = [col for col in df_polars.columns if col not in standard_fields]
+
+    if not data_fields:
+        logger.debug("No data fields found in %s", csv_name)
+        return False, []
+
+    return True, data_fields
+
+
+def _prepare_mrn_lookup_data(
+    df: pd.DataFrame, data_fields: list[str], csv_name: str
+) -> tuple[pd.DataFrame | None, pd.DataFrame | None]:
+    """
+    Prepare data for MRN lookup.
+
+    Returns
+    -------
+    tuple[pd.DataFrame | None, pd.DataFrame | None]
+        (prepared_df, redcap_fields) or (None, None) if preparation fails
+
+    """
+    # Create a temporary DataFrame in the format expected by map_mrns_to_records
+    temp_rows = []
+    for _, row in df.head(10).iterrows():  # Sample first 10 rows for validation
+        for field in data_fields[:5]:  # Sample first 5 fields
+            temp_rows.append(
+                {
+                    "record": str(row["record_id"]),
+                    "field_name": field,
+                    "value": str(row[field]) if pd.notna(row[field]) else "",
+                    "redcap_event_name": row.get("redcap_event_name", ""),
+                }
+            )
+
+    if not temp_rows:
+        return None, None
+
+    prepared_df = pd.DataFrame(temp_rows)
+
+    # Fetch existing REDCap data for these fields to get valid MRN mappings
+    try:
+        # Include 'mrn' field to ensure we get the MRN lookup
+        fields_to_fetch = list({*data_fields[:10], "mrn"})
+        redcap_fields = fetch_data(
+            REDCAP_TOKEN, str(FieldList(fields_to_fetch)), all_or_any="any"
+        )
+
+        if redcap_fields.empty:
+            logger.debug("No existing REDCap data found for fields in %s", csv_name)
+            return None, None
+
+        return prepared_df, redcap_fields
+
+    except Exception as e:
+        logger.warning("Could not fetch REDCap data for MRN validation: %s", e)
+        return None, None
+
+
+def _apply_mrn_mapping(
+    df: pd.DataFrame,
+    prepared_df: pd.DataFrame,
+    redcap_fields: pd.DataFrame,
+    csv_path: Path,
+) -> bool:
+    """
+    Apply MRN mapping to the dataframe and save.
+
+    Returns
+    -------
+    bool
+        True if mapping was applied, False otherwise
+
+    """
+    try:
+        _, mrn_lookup = map_mrns_to_records(prepared_df, redcap_fields)
+
+        if not mrn_lookup:
+            logger.debug("No MRN lookup data available for %s", csv_path.name)
+            return False
+
+        # Check if any MRNs need to be mapped
+        original_records = set(df["record_id"].astype(str).unique())
+        mappable_mrns = original_records & set(mrn_lookup.keys())
+
+        if not mappable_mrns:
+            logger.debug("No MRNs found that need mapping in %s", csv_path.name)
+            return False
+
+        # Apply the mapping
+        df["record_id"] = (
+            df["record_id"].astype(str).map(lambda x: mrn_lookup.get(str(x), x))
+        )
+
+        # Convert back to polars and save
+        df_polars_updated = pl.from_pandas(df)
+        df_polars_updated.write_csv(csv_path)
+
+        logger.info(
+            "Mapped %d MRNs to record IDs in %s (out of %d total records)",
+            len(mappable_mrns),
+            csv_path.name,
+            len(original_records),
+        )
+        return True
+
+    except Exception as e:
+        logger.warning("Error during MRN mapping for %s: %s", csv_path.name, e)
+        return False
+
+
+def validate_and_map_mrns(csv_path: Path) -> bool:
+    """
+    Validate and map MRNs to record IDs if needed.
+
+    This function checks if the CSV contains MRN data that needs to be
+    mapped to record IDs, and performs the mapping using the shared
+    map_mrns_to_records utility.
+
+    Parameters
+    ----------
+    csv_path
+        Path to CSV file to validate and potentially update
+
+    Returns
+    -------
+    bool
+        True if MRN mapping was applied, False otherwise
+
+    """
+    # Read the CSV with polars first to check structure
+    df_polars = pl.read_csv(csv_path)
+
+    # Validate CSV structure
+    is_valid, data_fields = _validate_csv_structure(df_polars, csv_path.name)
+    if not is_valid:
+        return False
+
+    logger.info("Validating MRN mapping for %s", csv_path.name)
+
+    # Convert to pandas for compatibility with map_mrns_to_records
+    df = df_polars.to_pandas()
+
+    # Prepare lookup data
+    prepared_df, redcap_fields = _prepare_mrn_lookup_data(
+        df, data_fields, csv_path.name
+    )
+    if prepared_df is None or redcap_fields is None:
+        return False
+
+    # Apply MRN mapping
+    return _apply_mrn_mapping(df, prepared_df, redcap_fields, csv_path)
 
 
 def get_redcap_records_for_instrument(
@@ -253,60 +427,6 @@ def _determine_event_column(df: pl.DataFrame) -> str | None:
     return None
 
 
-def _determine_event_for_alert(
-    df: pl.DataFrame,
-    event_col: str | None,
-    instrument_name: str,
-    base_url: str,
-) -> str | None:
-    """Determine the REDCap event name for this instrument's alert field."""
-    if event_col and len(df) > 0:
-        # First try: use the event from the CSV data
-        return str(df[event_col][0])
-    return get_alert_field_event(base_url, instrument_name)
-
-
-def _build_alert_values(  # noqa: PLR0913
-    df: pl.DataFrame,
-    record_id_col: str,
-    event_col: str | None,
-    event: str | None,
-    alert_field: str,
-    existing_data: dict[str, dict[str, str]],
-) -> tuple[list[str], list[str | None], int, int]:
-    """
-    Build alert values based on existing REDCap data.
-
-    Returns
-    -------
-    tuple
-        (alert_values, event_values, records_with_alerts, records_setting_no)
-
-    """
-    alert_values = []
-    event_values = []
-    records_with_alerts = 0
-    records_setting_no = 0
-    for row in df.iter_rows(named=True):
-        record_id = str(row[record_id_col])
-        row_event = str(row[event_col]) if event_col else event
-        # Check if this record already has an alert set to "yes"
-        existing_record = existing_data.get(record_id, {})
-        existing_status = existing_record.get(alert_field, "").strip()
-        if existing_status == "yes":
-            # don't overwrite existing "yes"
-            # leave blank so REDCap keeps existing value
-            alert_values.append("")
-            records_with_alerts += 1
-            logger.debug("Preserving %s='yes' for record %s", alert_field, record_id)
-        else:
-            # Set to "no" since it's either empty or something other than "yes"
-            alert_values.append("no")
-            records_setting_no += 1
-        event_values.append(row_event)
-    return alert_values, event_values, records_with_alerts, records_setting_no
-
-
 def add_alert_fields_if_needed(csv_path: Path) -> None:
     """
     Add alert fields with 'no' value if they don't already exist as 'yes'.
@@ -316,6 +436,7 @@ def add_alert_fields_if_needed(csv_path: Path) -> None:
     2. Waits 15 seconds for any real-time websocket alerts to arrive
     3. Checks REDCap for existing alert status
     4. Only sets alert='no' if it's not already 'yes'
+
     This prevents race conditions with alerts_to_redcap.py which uses websockets
     to set alerts='yes' in real-time.
     """
@@ -465,7 +586,6 @@ def extract_invalid_category_errors(error_text: str) -> list[dict[str, str]]:
     pattern = (
         r'"([^"]+)","([^"]+)","([^"]*)","The value is not a valid category for ([^"]+)"'
     )
-
     for match in re.finditer(pattern, error_text):
         record_id, field_name, value, _ = match.groups()
         errors.append(
@@ -476,7 +596,6 @@ def extract_invalid_category_errors(error_text: str) -> list[dict[str, str]]:
                 "error_message": f"The value is not a valid category for {field_name}",
             }
         )
-
     return errors
 
 
@@ -503,11 +622,9 @@ def save_invalid_category_errors(
     # Create invalid_categories subdirectory in LOG_ROOT
     log_dir = Config.LOG_ROOT / "invalid_categories"
     log_dir.mkdir(parents=True, exist_ok=True)
-
     # Add timestamp to filename
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     error_log_path = log_dir / f"{csv_path.stem}_invalid_categories_{timestamp}.csv"
-
     # Write errors to CSV
     with error_log_path.open("w", newline="") as f:
         if errors:
@@ -516,7 +633,6 @@ def save_invalid_category_errors(
             )
             writer.writeheader()
             writer.writerows(errors)
-
     return error_log_path
 
 
@@ -541,7 +657,6 @@ def split_csv_by_fields(
 
     """
     df = pl.read_csv(csv_path)
-
     # Identify record identifier columns to keep in unfound file
     identifier_cols = []
     for col in [
@@ -552,33 +667,25 @@ def split_csv_by_fields(
     ]:
         if col in df.columns:
             identifier_cols.append(col)
-
     # Columns that exist in the dataframe and are in unfound list
     unfound_cols_present = [col for col in unfound_fields if col in df.columns]
-
     if not unfound_cols_present:
         logger.info("None of the unfound fields are present in the CSV")
         return csv_path, None
-
     # Create unfound fields dataframe (identifiers + unfound columns)
     unfound_df = df.select(identifier_cols + unfound_cols_present)
-
     # Create valid fields dataframe (all columns except unfound)
     valid_cols = [col for col in df.columns if col not in unfound_cols_present]
     valid_df = df.select(valid_cols)
-
     # Save valid fields to temp location (will be used immediately)
     valid_path = csv_path.with_stem(f"{csv_path.stem}_valid_fields")
     valid_df.write_csv(valid_path)
-
     log_dir = Config.LOG_ROOT / "unfound_fields"
     log_dir.mkdir(parents=True, exist_ok=True)
-
     # Add timestamp to filename for uniqueness
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     unfound_path = log_dir / f"{csv_path.stem}_unfound_fields_{timestamp}.csv"
     unfound_df.write_csv(unfound_path)
-
     logger.info(
         "Split %s into:\n\t- Valid fields (%d columns): %s\n"
         "\t- Unfound fields (%d columns): %s",
@@ -588,7 +695,6 @@ def split_csv_by_fields(
         len(unfound_cols_present),
         unfound_path,
     )
-
     return valid_path, unfound_path
 
 
@@ -608,6 +714,9 @@ def push_to_redcap(csv_path: Path, retry_on_field_error: bool = True) -> None:
         logger.info("Skipping empty file: %s", csv_path)
         return
 
+    # Validate and map MRNs if needed before adding alert fields
+    validate_and_map_mrns(csv_path)
+
     # Add alert fields if needed before pushing
     add_alert_fields_if_needed(csv_path)
 
@@ -625,12 +734,10 @@ def push_to_redcap(csv_path: Path, retry_on_field_error: bool = True) -> None:
             "returnFormat": "csv",
         }
         r = requests.post(ENDPOINTS["REDCap"].base_url, data=data)
-
         if r.status_code != requests.codes["okay"]:
             logger.error("Bad Request")
             logger.error(r.text)
             logger.error("HTTP Status: %d", r.status_code)
-
             # Check for invalid category errors
             invalid_cat_errors = extract_invalid_category_errors(r.text)
             if invalid_cat_errors:
@@ -644,7 +751,6 @@ def push_to_redcap(csv_path: Path, retry_on_field_error: bool = True) -> None:
                 )
                 # Still raise the error after logging
                 r.raise_for_status()
-
             # Check if this is a field not found error
             if (
                 retry_on_field_error
@@ -657,22 +763,18 @@ def push_to_redcap(csv_path: Path, retry_on_field_error: bool = True) -> None:
                         len(unfound_fields),
                         ", ".join(unfound_fields),
                     )
-
                     # Split the CSV
                     valid_path, unfound_path = split_csv_by_fields(
                         csv_path, unfound_fields
                     )
-
                     # Log the unfound fields data location
                     if unfound_path:
                         logger.warning("Unfound fields data saved to: %s", unfound_path)
-
                     # Retry with valid fields only
                     if valid_path != csv_path:
                         logger.info("Retrying upload with only valid fields...")
                         push_to_redcap(valid_path, retry_on_field_error=False)
                         return
-
             # If we get here, either it's not a field error or retry failed
             r.raise_for_status()
 
@@ -730,7 +832,6 @@ def send_to_redcap(
     )
     for instrument in to_send:
         instrument_key = instrument.stem
-
         # Generate cache key based on file content hash (not just instrument name)
         # This ensures we only skip if the exact same data was already sent
         cache_key = instrument_key
@@ -738,7 +839,6 @@ def send_to_redcap(
             # Read file and create hash of content
             file_hash = hashlib.md5(instrument.read_bytes()).hexdigest()
             cache_key = f"{instrument_key}_{file_hash}"
-
             # Check cache to skip if this exact data was already processed
             if cache.is_processed(cache_key):
                 logger.info(
@@ -747,11 +847,9 @@ def send_to_redcap(
                 )
                 results.success += instrument_row_count.get(instrument.stem, 0)
                 continue
-
         try:
             push_to_redcap(instrument)
             results.success += instrument_row_count.get(instrument.stem, 0)
-
             # Mark this specific data as processed in cache
             if cache:
                 cache.mark_processed(
@@ -775,17 +873,13 @@ def main() -> None:
     from_date, to_date = get_recent_time_window(
         minutes_back=2, allow_full_day_fallback=True
     )
-
     # Convert ISO datetime to date-only format for TypeScript (YYYY-MM-DD)
     # TypeScript's setDateParams will append T00:00:00 and T23:59:59
     from_date_only = from_date.split("T")[0]  # Extract YYYY-MM-DD
     to_date_only = to_date.split("T")[0]  # Extract YYYY-MM-DD
-
     request_json = CliOptions({"fromDate": from_date_only, "toDate": to_date_only})
-
     # Initialize cache for minute-by-minute transfers (TTL: 2 minutes)
     cache = DataCache("curious_data_to_redcap", ttl_minutes=2)
-
     with TemporaryDirectory() as curious_temp_data_dir:
         applet_credentials = curious_variables.AppletCredentials.hbn_mindlogger[
             "Healthy Brain Network Questionnaires"
@@ -809,7 +903,6 @@ def main() -> None:
         }
         save_for_redcap(outputs, data_dir_paths["redcap"])
         results = send_to_redcap(data_dir_paths["redcap"], instrument_row_count, cache)
-
         # Log cache statistics
         cache_stats = cache.get_stats()
         logger.info(
@@ -818,7 +911,6 @@ def main() -> None:
             cache_stats["file_size_bytes"],
             cache_stats.get("last_activity", "never"),
         )
-
         logger.info(results.report, YESTERDAY)
 
 

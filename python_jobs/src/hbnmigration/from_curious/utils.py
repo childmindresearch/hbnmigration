@@ -316,3 +316,54 @@ def alert_websocket_to_https(alert: CuriousAlert) -> CuriousAlertHttps:
             for key, value in alert.items()
         },
     )
+
+
+def map_mrns_to_records(
+    redcap_alerts: pd.DataFrame,
+    redcap_fields: pd.DataFrame,
+) -> tuple[pd.DataFrame, dict[str, str]]:
+    """
+    Map MRNs to record IDs and prepare lookups.
+
+    Parameters
+    ----------
+    redcap_alerts
+        DataFrame with alert data containing MRNs in 'record' column
+    redcap_fields
+        DataFrame with existing REDCap data for field validation
+
+    Returns
+    -------
+    tuple
+        (processed_alerts, mrn_lookup)
+        - processed_alerts: Filtered alert DataFrame with event names populated
+        - mrn_lookup: Maps MRN string to record ID integer
+
+    """
+    # Prepare data types
+    redcap_alerts["record"] = (
+        redcap_alerts["record"].str.replace(r"\D", "", regex=True).astype(str)
+    )
+    redcap_fields["record"] = redcap_fields["record"].astype(str)
+
+    # Create lookups
+    mrn_lookup = {
+        str(k): str(v)
+        for k, v in redcap_fields[redcap_fields["field_name"] == "mrn"]
+        .set_index("value")["record"]
+        .to_dict()
+        .items()
+    }
+    record_events = cast(
+        dict[str, str],
+        redcap_fields.groupby("field_name")["redcap_event_name"].first().to_dict(),
+    )
+
+    # Filter results
+    result = redcap_alerts.loc[redcap_alerts["field_name"] != "mrn"].copy()
+    result = result[result["field_name"].isin(redcap_fields["field_name"])]
+
+    # Map event names by field name
+    result["redcap_event_name"] = result["field_name"].map(record_events)
+
+    return result, mrn_lookup

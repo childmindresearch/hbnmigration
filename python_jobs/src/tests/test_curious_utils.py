@@ -683,3 +683,77 @@ def test_utils_compatible_with_data_to_redcap_workflow(
     for instrument in instruments:
         event = get_alert_field_event(base_url, instrument)
         assert event in ["admin_arm_1", "baseline_arm_1"]
+
+
+# ============================================================================
+# Tests - map_mrns_to_records
+# ============================================================================
+
+
+def test_map_mrns_to_records_maps_correctly():
+    """Test that map_mrns_to_records creates correct mapping."""
+    from hbnmigration.from_curious.utils import map_mrns_to_records
+
+    redcap_alerts = pd.DataFrame(
+        {
+            "record": ["MRN12345", "MRN67890"],
+            "field_name": ["alerts_parent_baseline_1", "alerts_parent_baseline_2"],
+            "value": ["yes", "no"],
+            "redcap_event_name": [None, None],
+        }
+    )
+
+    redcap_fields = pd.DataFrame(
+        {
+            "record": ["001", "001", "002", "002"],
+            "field_name": [
+                "mrn",
+                "alerts_parent_baseline_1",
+                "mrn",
+                "alerts_parent_baseline_2",
+            ],
+            "value": ["12345", "0", "67890", "1"],
+            "redcap_event_name": [
+                "baseline_arm_1",
+                "baseline_arm_1",
+                "baseline_arm_1",
+                "baseline_arm_1",
+            ],
+        }
+    )
+
+    result, mrn_lookup = map_mrns_to_records(redcap_alerts, redcap_fields)
+
+    assert "12345" in mrn_lookup
+    assert "67890" in mrn_lookup
+    assert mrn_lookup["12345"] == "001"
+    assert mrn_lookup["67890"] == "002"
+    assert "redcap_event_name" in result.columns
+
+
+def test_map_mrns_to_records_filters_mrn_field():
+    """Test that map_mrns_to_records filters out mrn field."""
+    from hbnmigration.from_curious.utils import map_mrns_to_records
+
+    redcap_alerts = pd.DataFrame(
+        {
+            "record": ["MRN12345", "MRN12345"],
+            "field_name": ["mrn", "alerts_parent_baseline_1"],
+            "value": ["12345", "yes"],
+            "redcap_event_name": [None, None],
+        }
+    )
+
+    redcap_fields = pd.DataFrame(
+        {
+            "record": ["001", "001"],
+            "field_name": ["mrn", "alerts_parent_baseline_1"],
+            "value": ["12345", "0"],
+            "redcap_event_name": ["baseline_arm_1", "baseline_arm_1"],
+        }
+    )
+
+    result, _ = map_mrns_to_records(redcap_alerts, redcap_fields)
+
+    assert "mrn" not in result["field_name"].values
+    assert "alerts_parent_baseline_1" in result["field_name"].values

@@ -34,6 +34,7 @@ from .utils import (
     call_curious_api,
     create_choice_lookup,
     fetch_alerts_metadata,
+    map_mrns_to_records,
 )
 
 initialize_logging()
@@ -134,46 +135,6 @@ def parse_alert(alert: CuriousAlert) -> pd.DataFrame:
 # ============================================================================
 
 
-def _map_mrns_to_records(
-    redcap_alerts: pd.DataFrame,
-    redcap_fields: pd.DataFrame,
-) -> tuple[pd.DataFrame, dict[str, str]]:
-    """
-    Map MRNs to record IDs and prepare lookups.
-
-    Returns
-    -------
-    tuple
-        (processed_alerts, mrn_lookup)
-        - processed_alerts: Filtered alert DataFrame with event names populated
-        - mrn_lookup: Maps MRN string to record ID integer
-
-    """
-    # Prepare data types
-    redcap_alerts["record"] = (
-        redcap_alerts["record"].str.replace(r"\D", "", regex=True).astype(str)
-    )
-    redcap_fields["record"] = redcap_fields["record"].astype(str)
-    # Create lookups
-    mrn_lookup = {
-        str(k): str(v)
-        for k, v in redcap_fields[redcap_fields["field_name"] == "mrn"]
-        .set_index("value")["record"]
-        .to_dict()
-        .items()
-    }
-    record_events = cast(
-        dict[str, str],
-        redcap_fields.groupby("field_name")["redcap_event_name"].first().to_dict(),
-    )
-    # Filter results
-    result = redcap_alerts.loc[redcap_alerts["field_name"] != "mrn"].copy()
-    result = result[result["field_name"].isin(redcap_fields["field_name"])]
-    # Map event names by field name
-    result["redcap_event_name"] = result["field_name"].map(record_events)
-    return result, mrn_lookup
-
-
 def toggle_alerts(result: pd.DataFrame) -> pd.DataFrame:
     """Add an `{instrument}_alerts` row for each relevant respondent + instrument."""
     respondent_instruments = result["field_name"].str.extract(
@@ -211,7 +172,7 @@ def process_alerts_for_redcap(
     # Fetch existing REDCap data
     redcap_fields = fetch_data(PID_625, str(FieldList(alert_fields)), all_or_any="any")
     # Map MRNs to records
-    result, mrn_lookup = _map_mrns_to_records(redcap_alerts, redcap_fields)
+    result, mrn_lookup = map_mrns_to_records(redcap_alerts, redcap_fields)
     # Map response values to indices
     choice_lookup = create_choice_lookup(alerts_instrument)
     result["lookup_key"] = list(
