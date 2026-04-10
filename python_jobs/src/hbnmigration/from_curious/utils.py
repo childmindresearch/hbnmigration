@@ -5,6 +5,7 @@ import hashlib
 import logging
 from typing import cast, Optional, overload
 
+from humps import camelize
 import pandas as pd
 import polars as pl
 import requests
@@ -571,13 +572,7 @@ def get_item(
 
 def alert_websocket_to_https(alert: CuriousAlert) -> CuriousAlertHttps:
     """Convert a `CuriousAlertWebsocket` to a `CuriousAlertHttps`."""
-    return cast(
-        CuriousAlertHttps,
-        {
-            "secretId" if key == "secret_id" else key: value
-            for key, value in alert.items()
-        },
-    )
+    return cast(CuriousAlertHttps, camelize(alert))
 
 
 def map_mrns_to_records(

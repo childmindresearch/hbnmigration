@@ -12,10 +12,14 @@ class Endpoints(EndpointsABC):
 headers: dict[str, str]
 
 class Tokens:
-    pid247: str
-    pid625: str
-    pid744: str
-    pid757: str
+    @property
+    def pid247(self) -> str: ...
+    @property
+    def pid625(self) -> str: ...
+    @property
+    def pid744(self) -> str: ...
+    @property
+    def pid757(self) -> str: ...
 
 redcap_import_file: Path
 redcap_update_file: Path

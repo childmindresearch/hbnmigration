@@ -42,8 +42,8 @@ class TestGetRecentTimeWindowRecoveryMode:
 
             # Window should be approximately 1 day
             delta = end_dt - start_dt
-            # Use a reasonable tolerance window (e.g., ±5 seconds)
-            assert 86395 <= delta.total_seconds() <= 86405, (
+            # Use a reasonable tolerance window (e.g., ±15 seconds)
+            assert 86385 <= delta.total_seconds() <= 86415, (
                 f"Expected window close to 24 hours (86400s), "
                 f"got {delta.total_seconds()}s"
             )

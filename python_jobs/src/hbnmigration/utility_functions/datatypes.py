@@ -122,49 +122,72 @@ SemanticVersion = Annotated[
 """Semver string."""
 
 
-class CuriousEncryption(TypedDict):
-    """Curious encryption data."""
+class _CuriousEncryption(TypedDict):
+    """Curious encryption data base format."""
 
     base: str
     prime: str
+
+
+class CuriousEncryption(_CuriousEncryption):
+    """Curious encryption data as returned by HTTPS API."""
+
     accountId: CuriousId
     publicKey: str
+
+
+class CuriousEncryptionWebsocket(_CuriousEncryption):
+    """Curious encryption data as returned by websocket API."""
+
+    account_id: CuriousId
+    public_key: str
 
 
 class _CuriousAlert(TypedDict):
     """Base API response from Curious alerts endpoint."""
 
     id: CuriousId
-    isWatched: bool
-    appletId: CuriousId
-    appletName: str
     version: SemanticVersion
-    activityId: CuriousId
-    activityItemId: CuriousId
     message: str
-    createdAt: Datetime
-    answerId: CuriousId
-    encryption: CuriousEncryption
     image: NotRequired[Optional[str]]
     workspace: str
-    respondentId: CuriousId
-    subjectId: CuriousId
     type: str
 
 
 class CuriousAlertHttps(_CuriousAlert):
     """API response from Curious alerts HTTPS endpoint."""
 
+    activityId: CuriousId
+    activityItemId: CuriousId
+    answerId: CuriousId
+    appletId: CuriousId
+    appletName: str
+    createdAt: Datetime
+    encryption: CuriousEncryption
+    isWatched: bool
+    respondentId: CuriousId
     secretId: str
+    subjectId: CuriousId
 
 
 class CuriousAlertWebsocket(_CuriousAlert):
     """API response from Curious alerts websocket endpoint."""
 
+    activity_id: CuriousId
+    activity_item_id: CuriousId
+    answer_id: CuriousId
+    applet_id: CuriousId
+    applet_name: str
+    created_at: Datetime
+    encryption: CuriousEncryptionWebsocket
+    is_watched: bool
+    respondent_id: CuriousId
     secret_id: str
+    subject_id: CuriousId
 
 
 CuriousAlert = CuriousAlertHttps | CuriousAlertWebsocket
+"""API response from Curious alerts from any connection type."""
 
 
 class CuriousItem(TypedDict):

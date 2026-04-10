@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## 1.8.0
 
+### Added
+
+- Alerts to Microsoft Teams on certain failures.
+
 ### Changed
 
 - Look up indices for options in REDCap instead of following `{Curious index} + 1` heuristic.
