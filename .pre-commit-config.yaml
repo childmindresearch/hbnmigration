@@ -35,7 +35,7 @@ repos:
     - id: terraform_checkov
       files: ^infrastructure/
 - repo: https://github.com/DavidAnson/markdownlint-cli2
-  rev: v0.21.0
+  rev: v0.22.0
   hooks:
   - id: markdownlint-cli2
 - repo: https://github.com/ninoseki/uv-sort
@@ -44,19 +44,19 @@ repos:
     - id: uv-sort
       files: pyproject.toml
 - repo: https://github.com/astral-sh/uv-pre-commit
-  rev: "0.10.8"
+  rev: "0.11.6"
   hooks:
     - id: uv-lock
       files: ^python_jobs/pyproject\.toml$
       args: [--project, python_jobs]
 - repo: https://github.com/astral-sh/ruff-pre-commit
-  rev: v0.15.5
+  rev: v0.15.10
   hooks:
     - id: ruff-check
       args: [ --fix ]
     - id: ruff-format
 - repo: https://github.com/pre-commit/mirrors-mypy
-  rev: v1.19.1
+  rev: v1.20.1
   hooks:
   - id: mypy
     exclude: \**/_config_variables/.*_variables/__init__\.py$
@@ -65,6 +65,7 @@ repos:
       - pandas-stubs
       - types-pytz
       - types-requests
+    language_version: python3.14
 - repo: local
   hooks:
   - id: sync-version

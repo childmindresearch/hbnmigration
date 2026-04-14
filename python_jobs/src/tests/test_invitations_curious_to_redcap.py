@@ -824,7 +824,7 @@ class TestMainFlow:
             with patch(f"{INVITATIONS_MOD}.deduplicate_dataframe") as mock_dedupe:
                 mock_dedupe.side_effect = lambda df, *args, **kwargs: (df, 0)
 
-                main()
+                main("Healthy Brain Network Questionnaires")
                 return (
                     mocks["pull_data_from_curious"],
                     mocks["check_activity_responses"],

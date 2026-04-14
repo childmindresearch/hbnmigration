@@ -54,7 +54,7 @@ def check_activity_response(
                 decrypted_answer = decrypt_single(
                     answer,
                     encryption,
-                    curious_variables.AppletCredentials.hbn_mindlogger[
+                    curious_variables.AppletCredentials()[
                         "Healthy Brain Network Questionnaires"
                     ]["applet_password"],
                 )
@@ -423,7 +423,7 @@ def push_to_redcap(data: pl.DataFrame | str, cache: DataCache | None = None) -> 
     # Deduplicate before pushing
     df, num_duplicates = deduplicate_dataframe(
         df,
-        redcap_variables.Tokens.pid625,
+        redcap_variables.Tokens().pid625,
         Endpoints.Redcap.base_url,
         redcap_variables.headers,
         "curious_account_created",
@@ -439,7 +439,7 @@ def push_to_redcap(data: pl.DataFrame | str, cache: DataCache | None = None) -> 
     csv_data = df.write_csv()
 
     push_data = {
-        "token": redcap_variables.Tokens.pid625,
+        "token": redcap_variables.Tokens().pid625,
         "content": "record",
         "action": "import",
         "format": "csv",
@@ -463,7 +463,7 @@ def update_already_completed(df: pl.DataFrame) -> pl.DataFrame:
         Endpoints.Redcap.base_url,
         redcap_variables.headers,
         {
-            "token": redcap_variables.Tokens.pid625,
+            "token": redcap_variables.Tokens().pid625,
             "content": "record",
             "action": "export",
             "format": "csv",
@@ -486,10 +486,10 @@ def update_already_completed(df: pl.DataFrame) -> pl.DataFrame:
     return df.filter(~pl.col("record_id").is_in(already_completed)).drop_nulls()
 
 
-def main() -> None:
+def main(applet_name: str) -> None:
     """Monitor Curious account invitations and send updates to REDCap."""
     cache = DataCache("curious_invitations_to_redcap", ttl_minutes=2)
-    auth = curious_authenticate()
+    auth = curious_authenticate(applet_name)
     invitation_df = pull_data_from_curious(auth.access)
 
     if invitation_df.is_empty():
@@ -517,8 +517,10 @@ def main() -> None:
     invitation_df = check_activity_responses(
         auth.access,
         invitation_df,
-        curious_variables.applet_ids["Healthy Brain Network Questionnaires"],
-        curious_variables.activity_ids["Curious Account Created"],
+        curious_variables.applets[applet_name].applet_id,
+        curious_variables.applets[applet_name]
+        .activities["Curious Account Created"]
+        .activity_id,
     ).unique(subset=["record_id"], keep="last")
 
     n_records = push_to_redcap(invitation_df, cache)
@@ -548,4 +550,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    main("Healthy Brain Network Questionnaires")

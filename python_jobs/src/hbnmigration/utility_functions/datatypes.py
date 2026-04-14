@@ -4,12 +4,36 @@ from abc import ABC
 from collections import UserDict
 from collections.abc import ItemsView, KeysView, ValuesView
 import json
-from typing import Annotated, Any, Iterator, Literal, NotRequired, Optional, TypedDict
+from typing import (
+    Annotated,
+    Any,
+    cast,
+    Iterator,
+    Literal,
+    NotRequired,
+    Optional,
+    TypedDict,
+    TypeVar,
+)
+from warnings import warn
 
 from pydantic.types import StringConstraints
 
 ApiProtocol = Literal["https", "wss"]
 ApiProtocols: list[ApiProtocol] = ["https", "wss"]
+
+T = TypeVar("T")
+
+
+def deprecated_module_level(version: str, replacement: str, value: T) -> T:
+    """Warn about module-level deprecation and return original value."""
+    warning_message = "Deprecated in %s. Use %s."
+    warn(
+        warning_message % (version, replacement),
+        category=DeprecationWarning,
+        stacklevel=3,
+    )
+    return value
 
 
 class CliOptions(UserDict):
@@ -49,6 +73,87 @@ class CuriousActivity(TypedDict):
     createdAt: "Datetime"
 
 
+class CuriousActivityInfo:
+    """Information about a Curious activity."""
+
+    def __init__(self, activity_id: "CuriousId", name: Optional[str] = None) -> None:
+        """Initialize Curious Activity Info."""
+        self.activity_id = activity_id
+        if name:
+            self.name = name
+
+    def __repr__(self) -> str:
+        """Return reproducible string representation of CuriousActivityInfo."""
+        return str(self)
+
+    def __str__(self) -> str:
+        """Return string representation of CuriousActivityInfo."""
+        return f'"{self.name}": CuriousActivityInfo({self.activity_id})'
+
+    @property
+    def name(self) -> str:
+        """Get applet name."""
+        return self._name
+
+    @name.setter
+    def name(self, name: str) -> None:
+        """Set applet name."""
+        self._name = name
+
+
+class CuriousAppletInfo:
+    """Information for a Curious applet."""
+
+    def __init__(
+        self,
+        applet_id: "CuriousId",
+        name: str,
+        activities: Optional[list[CuriousActivityInfo]] = None,
+    ) -> None:
+        """Initialize Curious applet."""
+        self.applet_id = applet_id
+        self.name = name
+        self._activities: dict[str, CuriousActivityInfo] = {}
+        if activities:
+            for activity in activities:
+                self._activities[activity.name] = activity
+
+    def __repr__(self) -> str:
+        """Return reproducible string representation of CuriousAppletInfo."""
+        return str(self)
+
+    def __str__(self) -> str:
+        """Return string representation of CuriousAppletInfo."""
+        return f"CuriousAppletInfo({self.applet_id}, {self.name}): {self.activities}"
+
+    @property
+    def activities(self) -> dict[str, CuriousActivityInfo]:
+        """Get dictionary of activities in a Curious applet, keyed by name."""
+        return self._activities
+
+    @activities.setter
+    def activities(
+        self, activities=CuriousActivityInfo | list[CuriousActivityInfo]
+    ) -> None:
+        """Set dictionary of activities in a Curious applet, keyed by name."""
+        activities_list = cast(
+            list[CuriousActivityInfo],
+            activities if isinstance(activities, list) else [activities],
+        )
+        for activity in activities_list:
+            self._activities[activity.name] = activity
+
+    @property
+    def name(self) -> str:
+        """Get applet name."""
+        return self._name
+
+    @name.setter
+    def name(self, name: str) -> None:
+        """Set applet name."""
+        self._name = name
+
+
 class CuriousAppletEncryption(TypedDict):
     """
     Encryption info for a Curious applet.
@@ -65,6 +170,47 @@ class CuriousAppletEncryption(TypedDict):
     base: str
     prime: str
     publicKey: str
+
+
+class CuriousApplets:
+    """Curious Applets keyed by name."""
+
+    def __init__(self) -> None:
+        """Initialize Curious applets."""
+        self._info: dict[str, CuriousAppletInfo] = {}
+
+    def __getitem__(self, key: str) -> CuriousAppletInfo:
+        """Get a Curious applet by name."""
+        return self.info[key]
+
+    def __setitem__(self, key: str, value: CuriousAppletInfo) -> None:
+        """Set a Curious applet by name."""
+        self.info[key] = value
+
+    def __repr__(self) -> str:
+        """Return reproducible string representation of Applets."""
+        return str(self)
+
+    def __str__(self) -> str:
+        """Return string representation of Applets."""
+        return str(set(self.info.values()))
+
+    def keys(self) -> KeysView[str]:
+        """Get defined names of applets."""
+        return self.info.keys()
+
+    @property
+    def info(self) -> dict[str, CuriousAppletInfo]:
+        """Get dictionary of Curious applets keyed by name."""
+        return self._info
+
+    @info.setter
+    def info(self, applet: CuriousAppletInfo | list[CuriousAppletInfo]) -> None:
+        """Set dictionary of Curious applets keyed by name."""
+        if not isinstance(applet, list):
+            applet = [applet]
+        for info in applet:
+            self._info[info.name] = info
 
 
 class CuriousAnswer(TypedDict):
@@ -207,7 +353,7 @@ class CuriousItem(TypedDict):
 class Endpoints(ABC):
     """Class to store endpoints."""
 
-    _base_url: str | property = NotImplemented
+    _base_url: property | str = NotImplemented
     """Base URL."""
     host: str = NotImplemented
     """Host address."""

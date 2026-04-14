@@ -16,11 +16,11 @@ invitation_statuses: dict[Literal["not_invited", "pending", "invited"], int] = {
 }
 
 
-def curious_authenticate() -> curious_variables.Tokens:
+def curious_authenticate(applet_name: str) -> curious_variables.Tokens:
     """Authenticate to Curious."""
     endpoints = curious_variables.Endpoints()
     tokens = curious_variables.Tokens(
-        endpoints, curious_variables.Credentials.hbn_mindlogger
+        endpoints, curious_variables.AppletCredentials()[applet_name]
     )
     if not tokens:
         msg = f"Could not authenticate to {endpoints.host}"

@@ -1,8 +1,15 @@
 """Curious variables. Put secrets in `./curious_variables.py`."""
 
-from ...utility_functions import CuriousId, ImportWithFallback
+from ...utility_functions import (
+    Credentials as CredentialsABC,
+    CuriousApplets,
+    CuriousId,
+    Endpoints as EndpointsType,
+    ImportWithFallback,
+    Tokens as TokensType,
+)
 
-AppletCredentials = ImportWithFallback.module(
+AppletCredentials: type[CredentialsABC] = ImportWithFallback.module(
     ".curious_variables",
     "AppletCredentials",
     "...utility_functions.datatypes",
@@ -10,19 +17,28 @@ AppletCredentials = ImportWithFallback.module(
 )
 """Applet credentials for decryption."""
 
-Credentials = ImportWithFallback.module(
+applets: CuriousApplets = ImportWithFallback.literal(
+    ".curious_variables", "applets", CuriousApplets()
+)
+
+
+Credentials: type[CredentialsABC] = ImportWithFallback.module(
     ".curious_variables", "Credentials", "...utility_functions.datatypes"
 )
-"""Curious credentials."""
+"""Curious credentials.
 
-Endpoints = ImportWithFallback.module(
+.. version-deprecated:: 1.9.0
+   Use `AppletCredentials`.
+"""
+
+Endpoints: type[EndpointsType] = ImportWithFallback.module(
     ".curious_variables", "Endpoints", "...utility_functions.datatypes"
 )
 """Curious endpoints."""
 
 try:
     from .curious_variables import headers
-except (ImportError, ModuleNotFoundError):
+except ImportError, ModuleNotFoundError:
 
     def headers(token: str) -> dict[str, str]:
         """Curious headers."""
@@ -44,7 +60,7 @@ activity_ids: dict[str, CuriousId] = ImportWithFallback.literal(
 )
 """Curious activity IDs."""
 
-Tokens = ImportWithFallback.module(
+Tokens: type[TokensType] = ImportWithFallback.module(
     ".curious_variables", "Tokens", "...utility_functions", "Tokens"
 )
 """Curious tokens."""

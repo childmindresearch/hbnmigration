@@ -934,7 +934,10 @@ def validate_fields_against_metadata(
 
     """
     # Get all valid field names from metadata
-    valid_fields = set(metadata["field_name"].tolist())
+    valid_fields: set[str] = {
+        *metadata["field_name"].tolist(),
+        f"{instrument_name.lower()}_complete",
+    }
 
     # Get fields from dataframe (excluding record_id and redcap_event_name)
     df_fields = set(df.columns) - {"record_id", "redcap_event_name"}
@@ -1076,120 +1079,6 @@ def _upload_csv_to_redcap(csv_path: Path, retry_on_field_error: bool = True) -> 
                         return
             # If we get here, either it's not a field error or retry failed
             r.raise_for_status()
-
-
-def _get_required_columns(df: pl.DataFrame) -> list[str]:
-    """Extract required REDCap columns from dataframe."""
-    required_cols = ["record_id"]
-    for col in [
-        "redcap_event_name",
-        "redcap_repeat_instrument",
-        "redcap_repeat_instance",
-    ]:
-        if col in df.columns:
-            required_cols.append(col)
-    return required_cols
-
-
-def _validate_and_filter_fields(
-    df: pl.DataFrame,
-    csv_path: Path,
-    required_cols: list[str],
-) -> pl.DataFrame:
-    """
-    Validate fields against REDCap metadata and filter out invalid ones.
-
-    Returns
-    -------
-    pl.DataFrame
-        DataFrame with only valid fields
-
-    """
-    instrument_name = csv_path.stem
-
-    try:
-        metadata = fetch_api_data(
-            ENDPOINTS["REDCap"].base_url,
-            redcap_variables.headers,
-            {
-                "token": REDCAP_TOKEN,
-                "content": "metadata",
-                "format": "csv",
-            },
-        )
-
-        if metadata.empty:
-            logger.warning("Empty metadata returned, proceeding without validation")
-            return df
-
-        # Convert polars to pandas for validation
-        df_pandas = df.to_pandas()
-        valid_fields, invalid_fields = validate_fields_against_metadata(
-            df_pandas, metadata, instrument_name
-        )
-
-        if not invalid_fields:
-            return df
-
-        # Save unfound fields immediately
-        unfound_path = split_csv_by_fields(csv_path, invalid_fields)[1]
-        if unfound_path:
-            logger.warning(
-                "Pre-upload validation: saved %d unfound fields to %s",
-                len(invalid_fields),
-                unfound_path,
-            )
-
-        # Filter dataframe to only valid fields
-        valid_cols = required_cols + [
-            f for f in valid_fields if f in df.columns and f not in required_cols
-        ]
-        df_filtered = df.select(valid_cols)
-
-        logger.info(
-            "Proceeding with upload of %d valid columns (removed %d invalid)",
-            len(df_filtered.columns),
-            len(invalid_fields),
-        )
-        return df_filtered
-
-    except Exception as e:
-        logger.warning("Could not perform pre-upload validation: %s", e)
-        logger.info("Proceeding with upload anyway...")
-        return df
-
-
-def _upload_chunked_data(
-    df: pl.DataFrame,
-    csv_path: Path,
-    required_cols: list[str],
-    retry_on_field_error: bool,
-) -> None:
-    """Upload data in chunks to avoid timeouts."""
-    logger.info(
-        "Large dataset detected (%d columns), chunking into smaller uploads...",
-        len(df.columns),
-    )
-    chunks = chunk_dataframe_by_columns(
-        df, max_columns=100, required_columns=required_cols
-    )
-    logger.info("Split into %d chunks for upload", len(chunks))
-
-    for i, chunk in enumerate(chunks, 1):
-        chunk_path = csv_path.with_stem(f"{csv_path.stem}_chunk_{i}")
-        chunk.write_csv(chunk_path)
-        logger.info(
-            "Uploading chunk %d/%d (%d columns)...",
-            i,
-            len(chunks),
-            len(chunk.columns),
-        )
-        try:
-            _upload_csv_to_redcap(chunk_path, retry_on_field_error)
-            logger.info("Successfully uploaded chunk %d/%d", i, len(chunks))
-        finally:
-            if chunk_path.exists():
-                chunk_path.unlink()
 
 
 def push_to_redcap(
@@ -1361,6 +1250,7 @@ def send_to_redcap(
         # Generate cache key based on file content hash (not just instrument name)
         # This ensures we only skip if the exact same data was already sent
         cache_key = instrument_key
+        file_hash: str = ""
         if cache:
             # Read file and create hash of content
             file_hash = hashlib.md5(instrument.read_bytes()).hexdigest()
@@ -1391,25 +1281,12 @@ def send_to_redcap(
     return results
 
 
-def main() -> None:
-    """Send Curious data to REDCap."""
-    # Use 2-minute window for minute-by-minute transfers
-    # Auto-fallback to full-day on downtime (2+ hours without activity)
-    # Recovery mode is logged by get_recent_time_window()
-    from_date, to_date = get_recent_time_window(
-        minutes_back=2, allow_full_day_fallback=True
-    )
-    # Convert ISO datetime to date-only format for TypeScript (YYYY-MM-DD)
-    # TypeScript's setDateParams will append T00:00:00 and T23:59:59
-    from_date_only = from_date.split("T")[0]  # Extract YYYY-MM-DD
-    to_date_only = to_date.split("T")[0]  # Extract YYYY-MM-DD
-    request_json = CliOptions({"fromDate": from_date_only, "toDate": to_date_only})
-    # Initialize cache for minute-by-minute transfers (TTL: 2 minutes)
-    cache = DataCache("curious_data_to_redcap", ttl_minutes=2)
+def data_to_redcap(
+    applet_name: str, request_json: CliOptions, cache: DataCache
+) -> None:
+    """Send Curious data to REDCap for `applet_name`."""
     with TemporaryDirectory() as curious_temp_data_dir:
-        applet_credentials = curious_variables.AppletCredentials.hbn_mindlogger[
-            "Healthy Brain Network Questionnaires"
-        ]
+        applet_credentials = curious_variables.AppletCredentials()[applet_name]
         os.environ.update(
             {key.upper(): value for key, value in applet_credentials.items()}
         )
@@ -1441,6 +1318,25 @@ def main() -> None:
             cache_stats.get("last_activity", "never"),
         )
         logger.info(results.report, YESTERDAY)
+
+
+def main() -> None:
+    """Send Curious data to REDCap."""
+    # Use 2-minute window for minute-by-minute transfers
+    # Auto-fallback to full-day on downtime (2+ hours without activity)
+    # Recovery mode is logged by get_recent_time_window()
+    from_date, to_date = get_recent_time_window(
+        minutes_back=2, allow_full_day_fallback=True
+    )
+    # Convert ISO datetime to date-only format for TypeScript (YYYY-MM-DD)
+    # TypeScript's setDateParams will append T00:00:00 and T23:59:59
+    from_date_only = from_date.split("T")[0]  # Extract YYYY-MM-DD
+    to_date_only = to_date.split("T")[0]  # Extract YYYY-MM-DD
+    request_json = CliOptions({"fromDate": from_date_only, "toDate": to_date_only})
+    # Initialize cache for minute-by-minute transfers (TTL: 2 minutes)
+    cache = DataCache("curious_data_to_redcap", ttl_minutes=2)
+    for project in curious_variables.applets.keys():
+        data_to_redcap(project, request_json, cache)
 
 
 if __name__ == "__main__":

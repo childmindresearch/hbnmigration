@@ -445,7 +445,7 @@ async def test_main_processes_websocket_messages(
             "hbnmigration.from_curious.alerts_to_redcap.main_with_reconnect"
         ) as mock_reconnect:
             mock_reconnect.return_value = None
-            await main()
+            await main(applet_names=["Healthy Brain Network Questionnaires"])
             assert mock_reconnect.called
             call_kwargs = mock_reconnect.call_args[1]
             assert "tokens" in call_kwargs
@@ -465,7 +465,11 @@ async def test_main_passes_max_attempts():
     ):
         mock_auth.return_value = create_mock_tokens_ws()
         mock_reconnect.return_value = None
-        await main(partial_redcap_landing=False, max_attempts=10)
+        await main(
+            applet_names=["Healthy Brain Network Questionnaires"],
+            partial_redcap_landing=False,
+            max_attempts=10,
+        )
         call_kwargs = mock_reconnect.call_args[1]
         assert call_kwargs["max_attempts"] == 10
 
@@ -479,7 +483,7 @@ async def test_main_skips_non_answer_messages(mock_alerts_dependencies):
             "hbnmigration.from_curious.alerts_to_redcap.main_with_reconnect"
         ) as mock_reconnect:
             mock_reconnect.return_value = None
-            await main()
+            await main(applet_names=["Healthy Brain Network Questionnaires"])
             assert not mock_alerts_dependencies["push"].called
 
 
@@ -517,7 +521,7 @@ def test_synchronous_main_fetches_alerts(
         mock_auth.return_value = create_mock_tokens_ws()
         mock_call.return_value = multiple_curious_alerts
         mock_parse.side_effect = parse_returns
-        synchronous_main()
+        synchronous_main(applet_names=["Healthy Brain Network Questionnaires"])
         assert mock_parse.call_count == 3
 
 
@@ -534,7 +538,7 @@ def test_synchronous_main_handles_api_error(mock_alerts_dependencies):
         mock_auth.return_value = create_mock_tokens_ws()
         mock_call.side_effect = Exception("API Error")
         with pytest.raises(Exception, match="API Error"):
-            synchronous_main()
+            synchronous_main(applet_names=["Healthy Brain Network Questionnaires"])
 
 
 def test_synchronous_main_partial_mode(
@@ -565,7 +569,10 @@ def test_synchronous_main_partial_mode(
         mock_auth.return_value = create_mock_tokens_ws()
         mock_call.return_value = alert
         mock_parse.side_effect = parse_return
-        synchronous_main(partial_redcap_landing=True)
+        synchronous_main(
+            applet_names=["Healthy Brain Network Questionnaires"],
+            partial_redcap_landing=True,
+        )
         assert mock_parse.called
 
 
@@ -599,7 +606,7 @@ def test_cli_partial_mode():
     ) as mocks:
         cli()
         assert mocks["sync"].called
-        assert mocks["sync"].call_args[0][0] is True
+        assert mocks["sync"].call_args[0][1] is True
         assert not mocks["run"].called
 
 

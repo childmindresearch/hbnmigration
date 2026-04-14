@@ -23,7 +23,7 @@ from ..utility_functions import (
 )
 
 logger = logging.getLogger(__name__)
-REDCAP_TOKEN = redcap_variables.Tokens.pid625
+REDCAP_TOKEN = redcap_variables.Tokens().pid625
 
 # Standard REDCap metadata fetch parameters
 METADATA_PARAMS = {
