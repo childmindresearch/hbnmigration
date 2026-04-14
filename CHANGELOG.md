@@ -10,10 +10,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Split parent-report and self-report into separate Curious applets.
+- Updated mappings for REDCap PID 247 to PID 625.
 
 ### Upgraded
 
 - Python@3.14
+
+### Deprecated
+
+- `._config_variables.curious_variables.curious_variables.activity_ids`
+- `._config_variables.curious_variables.curious_variables.applet_ids`
+- `._config_variables.curious_variables.curious_variables.Credentials`
+- `._config_variables.curious_variables.curious_variables.AppletCredentials.hbn_mindlogger`
 
 ## 1.8.0
 
