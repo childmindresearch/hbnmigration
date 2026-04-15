@@ -48,6 +48,9 @@ from .utils import (
 initialize_logging()
 logger = logging.getLogger(__name__)
 
+APPLET_CREDENTIALS = curious_variables.AppletCredentials()
+"""Initialized credentials."""
+
 ENDPOINTS: dict[Literal["Curious", "REDCap"], Endpoints] = {
     "Curious": curious_variables.Endpoints(),
     "REDCap": redcap_variables.Endpoints(),
@@ -1286,7 +1289,7 @@ def data_to_redcap(
 ) -> None:
     """Send Curious data to REDCap for `applet_name`."""
     with TemporaryDirectory() as curious_temp_data_dir:
-        applet_credentials = curious_variables.AppletCredentials()[applet_name]
+        applet_credentials = APPLET_CREDENTIALS[applet_name]
         os.environ.update(
             {key.upper(): value for key, value in applet_credentials.items()}
         )

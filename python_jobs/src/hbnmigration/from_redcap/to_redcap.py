@@ -207,7 +207,7 @@ def get_data_for_responder_tracking() -> pd.DataFrame:
     data247 = fetch_data(
         Tokens.pid247,
         str(Fields.export_247.for_redcap_responder_tracking),
-        # Values.PID247.intake_ready.filter_logic("Ready to Send to Intake Redcap"),
+        Values.PID247.intake_ready.filter_logic("Ready to Send to Intake Redcap"),
     )
     if data247.empty:
         raise NoData
