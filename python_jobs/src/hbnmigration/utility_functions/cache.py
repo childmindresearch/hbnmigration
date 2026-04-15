@@ -8,8 +8,6 @@ import os
 from pathlib import Path
 from typing import Any, Optional, Sequence
 
-from ..config import Config
-
 logger = logging.getLogger(__name__)
 
 YESTERDAY_DATE = datetime.now() - timedelta(days=1)
@@ -61,6 +59,8 @@ def get_recent_time_window(
 
     """
     # Check for manual recovery override
+    from ..config import Config  # noqa: PLC0415
+
     if Config.RECOVERY_MODE:
         logger.warning("Recovery mode enabled - pulling full day's data")
         now = datetime.now()
@@ -167,7 +167,7 @@ class DataCache:
             entry_time = datetime.fromisoformat(timestamp)
             expiry_time = entry_time + timedelta(minutes=self.ttl_minutes)
             return datetime.now() > expiry_time
-        except (ValueError, TypeError):
+        except ValueError, TypeError:
             return True
 
     def is_processed(self, record_id: str | int, data: Optional[Any] = None) -> bool:
@@ -351,7 +351,7 @@ class DataCache:
                     latest_timestamp = max(
                         str(ts) for ts in timestamps if ts is not None
                     )
-                except (TypeError, ValueError):
+                except TypeError, ValueError:
                     latest_timestamp = None
 
         return {
