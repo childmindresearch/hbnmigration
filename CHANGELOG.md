@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Split parent-report and self-report into separate Curious applets.
 - Updated mappings for REDCap PID 247 to PID 625.
+- Moved `enrollment_complete` from PID 247 to PID 625.
 
 ### Upgraded
 

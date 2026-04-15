@@ -59,7 +59,7 @@ target-version = "py314"
 
 [tool.ruff.lint]
 extend-select = ["A", "B904", "C4", "D", "E", "EM", "F541", "G", "I", "ICN", "LOG007", "N", "NPY", "PL", "RET", "RSE", "RUF", "Q", "T20", "TRY002", "TRY201", "TRY400", "TRY401", "UP032", "W"]
-ignore = ["D203", "D212"]
+ignore = ["D203", "D212", "RUF002"]
 
 [tool.ruff.lint.isort]
 combine-as-imports = true

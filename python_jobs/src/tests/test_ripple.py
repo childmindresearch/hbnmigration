@@ -1,6 +1,6 @@
 """Tests for Ripple sourced data migration."""
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pandas as pd
 import pytest
@@ -33,12 +33,12 @@ class TestGetRedcapSubjectsToUpdate:
         mock_redcap_existing_subjects,
     ):
         """Test subjects are correctly split into update vs new."""
-        mock_vars.Tokens.pid247 = "prod_token"
+        mock_tokens = MagicMock()
+        mock_tokens.pid247 = "prod_token"
+        mock_vars.Tokens.return_value = mock_tokens
         mock_vars.headers = {"Content-Type": "application/json"}
         mock_fetch.return_value = mock_redcap_existing_subjects
-
         to_update, new_subjects = get_redcap_subjects_to_update(incoming_subjects_mixed)
-
         assert len(to_update) == 2
         assert len(new_subjects) == 1
         assert 99001 in new_subjects["mrn"].values
@@ -55,16 +55,15 @@ class TestGetRedcapSubjectsToUpdate:
         mock_redcap_existing_subjects,
     ):
         """Test that existing subjects get their REDCap record_id correctly merged."""
-        mock_vars.Tokens.pid247 = "prod_token"
+        mock_tokens = MagicMock()
+        mock_tokens.pid247 = "prod_token"
+        mock_vars.Tokens.return_value = mock_tokens
         mock_vars.headers = {"Content-Type": "application/json"}
         mock_fetch.return_value = mock_redcap_existing_subjects
-
         to_update, _ = get_redcap_subjects_to_update(incoming_subjects_mixed)
-
         # Check that record_ids from REDCap are correctly assigned
         alec_row = to_update[to_update["mrn"] == 12345]
         assert alec_row["record_id"].iloc[0] == 1
-
         abby_row = to_update[to_update["mrn"] == 67890]
         assert abby_row["record_id"].iloc[0] == 2
 
@@ -78,24 +77,24 @@ class TestGetRedcapSubjectsToUpdate:
         mock_redcap_existing_subjects,
     ):
         """Test to_update DataFrame has correct column order."""
-        mock_vars.Tokens.pid247 = "prod_token"
+        mock_tokens = MagicMock()
+        mock_tokens.pid247 = "prod_token"
+        mock_vars.Tokens.return_value = mock_tokens
         mock_vars.headers = {"Content-Type": "application/json"}
         mock_fetch.return_value = mock_redcap_existing_subjects
-
         to_update, _ = get_redcap_subjects_to_update(incoming_subjects_mixed)
-
         assert list(to_update.columns) == ["record_id", "mrn", "email_consent"]
 
     @patch("hbnmigration.from_ripple.to_redcap.fetch_api_data")
     @patch("hbnmigration.from_ripple.to_redcap.redcap_variables")
     def test_all_subjects_are_new(self, mock_vars, mock_fetch, incoming_subjects_mixed):
         """Test when no subjects exist in REDCap."""
-        mock_vars.Tokens.pid247 = "prod_token"
+        mock_tokens = MagicMock()
+        mock_tokens.pid247 = "prod_token"
+        mock_vars.Tokens.return_value = mock_tokens
         mock_vars.headers = {"Content-Type": "application/json"}
         mock_fetch.return_value = pd.DataFrame({"mrn": [], "record_id": []})
-
         to_update, new_subjects = get_redcap_subjects_to_update(incoming_subjects_mixed)
-
         assert len(to_update) == 0
         assert len(new_subjects) == 3
 
@@ -103,7 +102,9 @@ class TestGetRedcapSubjectsToUpdate:
     @patch("hbnmigration.from_ripple.to_redcap.redcap_variables")
     def test_all_subjects_exist(self, mock_vars, mock_fetch, incoming_subjects_mixed):
         """Test when all subjects already exist in REDCap."""
-        mock_vars.Tokens.pid247 = "prod_token"
+        mock_tokens = MagicMock()
+        mock_tokens.pid247 = "prod_token"
+        mock_vars.Tokens.return_value = mock_tokens
         mock_vars.headers = {"Content-Type": "application/json"}
         mock_fetch.return_value = pd.DataFrame(
             {
@@ -111,9 +112,7 @@ class TestGetRedcapSubjectsToUpdate:
                 "record_id": [1, 2, 3],
             }
         )
-
         to_update, new_subjects = get_redcap_subjects_to_update(incoming_subjects_mixed)
-
         assert len(to_update) == 3
         assert len(new_subjects) == 0
 
@@ -123,12 +122,12 @@ class TestGetRedcapSubjectsToUpdate:
         self, mock_vars, mock_fetch, incoming_subjects_mixed
     ):
         """Test that correct parameters are sent to REDCap API."""
-        mock_vars.Tokens.pid247 = "prod_token_gardener"
+        mock_tokens = MagicMock()
+        mock_tokens.pid247 = "prod_token_gardener"
+        mock_vars.Tokens.return_value = mock_tokens
         mock_vars.headers = {"Content-Type": "application/json"}
         mock_fetch.return_value = pd.DataFrame({"mrn": [], "record_id": []})
-
         get_redcap_subjects_to_update(incoming_subjects_mixed)
-
         # Check fetch_api_data was called with correct params
         call_args = mock_fetch.call_args
         assert call_args[0][2]["token"] == "prod_token_gardener"
@@ -812,17 +811,18 @@ class TestMain:
         token_value,
     ):
         """Test workflow for different project statuses."""
-        setattr(mock_vars.Tokens, token_attr, token_value)
+        mock_tokens = MagicMock()
+        setattr(mock_tokens, token_attr, token_value)
+        mock_vars.Tokens.return_value = mock_tokens
+
         mock_df = pd.DataFrame({"globalId": ["ST001"]})
         mock_request.return_value = mock_df
         mock_prep_ripple.return_value = {"HBN - Main": str(temp_excel_file)}
-
         main(project_status=project_status)
-
         mock_request.assert_called_once()
         mock_prep_redcap.assert_called_once()
         mock_prep_ripple.assert_called_once()
-        mock_push.assert_called_once_with(token_value)  # Remove the None parameter
+        mock_push.assert_called_once_with(token_value)
         mock_status.assert_called_once()
         assert_cleanup_called(mock_cleanup)
 
@@ -831,11 +831,11 @@ class TestMain:
     @patch("hbnmigration.from_ripple.to_redcap.request_potential_participants")
     def test_no_data_calls_cleanup(self, mock_request, mock_cleanup, mock_redcap_vars):
         """Test cleanup is called even when NoData is raised."""
-        mock_redcap_vars.Tokens.pid757 = "dev_token"
+        mock_tokens = MagicMock()
+        mock_tokens.pid757 = "dev_token"
+        mock_redcap_vars.Tokens.return_value = mock_tokens
         mock_request.side_effect = NoData
-
         main(project_status="dev")
-
         assert_cleanup_called(mock_cleanup)
 
     @patch("hbnmigration.from_ripple.to_redcap.cleanup")
@@ -856,13 +856,14 @@ class TestMain:
         mock_cleanup,
     ):
         """Test when prepare_ripple_to_ripple returns empty dict."""
-        mock_vars.Tokens.pid757 = "dev_token"
+        mock_tokens = MagicMock()
+        mock_tokens.pid757 = "dev_token"
+        mock_vars.Tokens.return_value = mock_tokens
+
         mock_df = pd.DataFrame({"globalId": ["EMPT001"]})
         mock_request.return_value = mock_df
         mock_prep_ripple.return_value = {}
-
         main(project_status="dev")
-
         mock_push.assert_called_once()
         mock_status.assert_not_called()
         assert_cleanup_called(mock_cleanup)
@@ -895,17 +896,17 @@ class TestMain:
         exception_type,
     ):
         """Test cleanup is called when any function in the workflow fails."""
-        mock_vars.Tokens.pid757 = "dev_token"
+        mock_tokens = MagicMock()
+        mock_tokens.pid757 = "dev_token"
+        mock_vars.Tokens.return_value = mock_tokens
+
         mock_df = pd.DataFrame({"globalId": ["ERR001"]})
         mock_request.return_value = mock_df
         mock_prep_ripple.return_value = {}
-
         failing_mock = locals()[failing_function]
         failing_mock.side_effect = exception_type("Operation failed")
-
         with pytest.raises(exception_type):
             main(project_status="dev")
-
         assert_cleanup_called(mock_cleanup)
 
     @patch("hbnmigration.from_ripple.to_redcap.cleanup")
@@ -927,27 +928,25 @@ class TestMain:
         temp_excel_file,
     ):
         """Test when one Ripple update succeeds but another fails."""
-        mock_vars.Tokens.pid757 = "dev_token"
+        mock_tokens = MagicMock()
+        mock_tokens.pid757 = "dev_token"
+        mock_vars.Tokens.return_value = mock_tokens
+
         mock_df = pd.DataFrame({"globalId": ["PRT001", "PRT002"]})
         mock_request.return_value = mock_df
-
         excel_file_2 = temp_excel_file.parent / "ripple_waitlist.xlsx"
         df2 = pd.DataFrame({"globalId": ["PRT002"]})
         df2.to_excel(excel_file_2, index=False)
-
         mock_prep_ripple.return_value = {
             "HBN - Main": str(temp_excel_file),
             "HBN - Waitlist": str(excel_file_2),
         }
-
         mock_status.side_effect = [
             None,
             requests.exceptions.RequestException("Second update failed"),
         ]
-
         with pytest.raises(requests.exceptions.RequestException):
             main(project_status="dev")
-
         assert_cleanup_called(mock_cleanup)
 
     @patch("hbnmigration.from_ripple.to_redcap.cleanup")
@@ -969,7 +968,10 @@ class TestMain:
         temp_excel_file,
     ):
         """Test workflow with multiple studies requiring Ripple updates."""
-        mock_vars.Tokens.pid757 = "dev_token_parliament"
+        mock_tokens = MagicMock()
+        mock_tokens.pid757 = "dev_token_parliament"
+        mock_vars.Tokens.return_value = mock_tokens
+
         mock_df = pd.DataFrame(
             {
                 "globalId": ["WND001", "GRS001"],
@@ -977,18 +979,14 @@ class TestMain:
             }
         )
         mock_request.return_value = mock_df
-
         excel_file_2 = temp_excel_file.parent / "ripple_waitlist.xlsx"
         df2 = pd.DataFrame({"globalId": ["GRS001"]})
         df2.to_excel(excel_file_2, index=False)
-
         mock_prep_ripple.return_value = {
             "HBN - Main": str(temp_excel_file),
             "HBN - Waitlist": str(excel_file_2),
         }
-
         main(project_status="dev")
-
         assert mock_status.call_count == 2
         assert_cleanup_called(mock_cleanup)
 
@@ -1011,21 +1009,20 @@ class TestMain:
         temp_excel_file,
     ):
         """Test cleanup is called with correct list of Ripple files."""
-        mock_vars.Tokens.pid757 = "dev_token"
+        mock_tokens = MagicMock()
+        mock_tokens.pid757 = "dev_token"
+        mock_vars.Tokens.return_value = mock_tokens
+
         mock_df = pd.DataFrame({"globalId": ["BG001"]})
         mock_request.return_value = mock_df
-
         excel_file_2 = temp_excel_file.parent / "ripple_waitlist.xlsx"
         df2 = pd.DataFrame({"globalId": ["BG001"]})
         df2.to_excel(excel_file_2, index=False)
-
         mock_prep_ripple.return_value = {
             "HBN - Main": str(temp_excel_file),
             "HBN - Waitlist": str(excel_file_2),
         }
-
         main(project_status="dev")
-
         cleanup_call_args = mock_cleanup.call_args[0][0]
         assert str(temp_excel_file) in cleanup_call_args
         assert str(excel_file_2) in cleanup_call_args

@@ -2,8 +2,9 @@
 
 from collections import UserList
 from typing import Final
+from warnings import deprecated
 
-from ..utility_functions import FieldDescriptor, ValueClass
+from ..utility_functions import FieldDescriptor, ValueClass, ValueField
 
 RedcapComplete = FieldDescriptor(
     {"Incomplete": "0", "Unverified": "1", "Complete": "2"}
@@ -27,7 +28,6 @@ class Fields:
 
         for_curious: Final[FieldList] = FieldList(
             [
-                "enrollment_complete",
                 "record_id",
                 "mrn",
                 "adult_enrollment_form_complete",
@@ -151,6 +151,33 @@ class Fields:
             ]
         )
         """Fields to export from REDCap PID 247 for import into REDCap PID 625."""
+        for_redcap_responder_tracking: Final[FieldList] = FieldList(
+            [
+                "additional",
+                "additional_1821",
+                "consent1",
+                "consent1_1821",
+                "dob",
+                "dob_1821",
+                "email",
+                "email_2",
+                "email_2_1821",
+                "email_1821",
+                "mrn",
+                "parentfirstname",
+                "parentfirstname_2",
+                "parentfirstname_2_1821",
+                "parentfirstname_1821",
+                "parent_last_name",
+                "parent_last_name_2",
+                "parent_last_name_2_1821",
+                "parent_last_name_1821",
+                "phone",
+                "phone_2_1821",
+                "phone_1821",
+            ]
+        )
+        """Fields to export from REDCap PID 247 for import into REDCap PID 879."""
 
     class import_curious:
         """Fields to import into Curious."""
@@ -271,6 +298,55 @@ class Fields:
             }
             """Columns to rename for parent accounts from REDCap PID 247 to Curious."""
 
+        class redcap_consent_to_redcap_responder_tracking:
+            """Columns to rename for REDCap PID 247 to PID 879."""
+
+            child: Final[dict[str, str]] = {
+                "dob": "child_dob",
+                "consent1": "child_fname",
+                "mrn": "mrn",
+            }
+            """Columns for child participant."""
+
+            adult_participant: Final[dict[str, str]] = {
+                "dob_1821": "child_dob",
+                "consent1_1821": "child_fname",
+                "mrn": "mrn",
+            }
+            """Columns for adult participant."""
+
+            responder: Final[dict[str, str]] = {
+                "email": "resp_email",
+                "parentfirstname": "resp_fname",
+                "parent_last_name": "resp_lname",
+                "phone": "resp_phone",
+            }
+            """Columns for parent / responder 1 of child participant."""
+
+            responder2: Final[dict[str, str]] = {
+                "email_2": "resp_email",
+                "parentfirstname_2": "resp_fname",
+                "parent_last_name_2": "resp_lname",
+                "phone_2": "resp_phone",
+            }
+            """Columns for parent / responder 2 of child participant"""
+
+            responder_adult1: Final[dict[str, str]] = {
+                "email_1821": "resp_email",
+                "parentfirstname_1821": "resp_fname",
+                "parent_last_name_1821": "resp_lname",
+                "phone_1821": "resp_phone",
+            }
+            """Columns for parent / responder 1 of adult participant."""
+
+            responder_adult2: Final[dict[str, str]] = {
+                "email_2_1821": "resp_email",
+                "parentfirstname_2_1821": "resp_fname",
+                "parent_last_name_2_1821": "resp_lname",
+                "phone_2_1821": "resp_phone",
+            }
+            """Columns for parent / responder 2 of adult participant."""
+
         redcap_consent_to_redcap_operations: Final[dict[str, str]] = {
             "additional_1821": "additional",
             "address1_1821": "address1",
@@ -331,10 +407,10 @@ class Fields:
 class Values:
     """Values for REDCap fields."""
 
-    class PID247(ValueClass):
-        """Values for PID 247 ― Healthy Brain Network Study Consent (IRB Approved)."""
+    class _PID247Meta(type):
+        """Metaclass for deprecating `PID247` attribute."""
 
-        enrollment_complete = FieldDescriptor(
+        _enrollment_complete = FieldDescriptor(
             {
                 "Not Sent": "0",
                 "Ready to Send to Curious": "1",
@@ -342,6 +418,17 @@ class Values:
             }
         )
         """Is enrollment complete and we can create parent and participant profiles in Curious?"""  # noqa: E501
+
+        @property
+        @deprecated("Deprecated in v1.9.0. Use `Values.PID625.enrollment_complete`.")
+        def enrollment_complete(cls) -> ValueField:
+            """Is enrollment complete and we can create parent and participant profiles in Curious?"""  # noqa: D400,E501
+            _ = cls._enrollment_complete
+            _._field_name = "enrollment_complete"
+            return _
+
+    class PID247(ValueClass, metaclass=_PID247Meta):
+        """Values for PID 247 ― Healthy Brain Network Study Consent (IRB Approved)."""
 
         guardian2_consent = FieldDescriptor(
             {
@@ -397,6 +484,15 @@ class Values:
 
         curious_account_created_complete = RedcapComplete
         """Form status: Complete?"""
+
+        enrollment_complete = FieldDescriptor(
+            {
+                "Not Sent": "0",
+                "Ready to Send to Curious": "1",
+                "Parent and Participant information already sent to Curious": "2",
+            }
+        )
+        """Is enrollment complete and we can create parent and participant profiles in Curious?"""  # noqa: E501
 
         permission_collab = FieldDescriptor({"Yes": "0", "No": "1"})
         """Permission to share your child's records with partnering scientific institution(s)."""  # noqa: E501

@@ -1,9 +1,11 @@
 """
 Transfer data from REDCap to Curious.
 
-For each subject in PID 247, if `enrollment_complete` == 1,
+For each subject in PID 625, if `enrollment_complete` == 1,
 prepares and copies the reviewed and approved participants by the RAs to Curious.
 """
+
+from typing import Literal
 
 import numpy as np
 import pandas as pd
@@ -11,7 +13,7 @@ import requests
 
 from .._config_variables import curious_variables, redcap_variables
 from ..exceptions import NoData
-from ..from_curious.config import account_types, AccountType
+from ..from_curious.config import AccountType
 from ..utility_functions import (
     DataCache,
     initialize_logging,
@@ -19,11 +21,13 @@ from ..utility_functions import (
     redcap_api_push,
 )
 from .config import Fields, Values
-from .from_redcap import fetch_data
+from .from_redcap import fetch_data, get_responder_ids
 
 logger = initialize_logging(__name__)
 
-_REDCAP_TOKEN = redcap_variables.Tokens.pid247
+INDIVIDUALS: list[Literal["child", "parent"]] = ["parent", "child"]
+
+_REDCAP_TOKENS = redcap_variables.Tokens()
 _REDCAP_PID = 247
 
 
@@ -47,66 +51,94 @@ def _check_for_data_to_process(df: pd.DataFrame, account_type: AccountType) -> N
         )
 
 
-def format_redcap_data_for_curious(redcap_data: pd.DataFrame) -> pd.DataFrame:
-    """Format REDCap export data for Curious import."""
-    curious_participant_data: list[pd.DataFrame] = []
+def _format_redcap_data_for_curious(
+    redcap_data: pd.DataFrame, individual: Literal["child", "parent"]
+) -> pd.DataFrame:
+    """For a class of individual, format REDCap data for Curious."""
     record_set: set[int | str] = set()
-    for individual in ["parent", "child"]:
-        df_temp = pd.DataFrame(redcap_data[["record", "field_name", "value"]]).copy()
-        df_temp["field_name"] = df_temp["field_name"].replace(
-            getattr(Fields.rename.redcap247_to_curious, individual)
-        )
-
-        # Filter to relevant fields
-        individual_fields: dict[str, int | str | None] = getattr(
-            Fields.import_curious, individual
-        )
-        relevant_fields = list(individual_fields.keys())
-        df_temp = df_temp[df_temp["field_name"].isin(relevant_fields)]
-        df_temp = (
-            df_temp.groupby(["record", "field_name"])["value"]
-            .apply(lambda x: set(x) if len(x) > 1 else x.iloc[0])
-            .reset_index()
-        )
-
-        # Pivot
-        df_pivoted = df_temp.pivot(index="record", columns="field_name", values="value")
-        record_set = {*record_set, *df_pivoted.index.tolist()}
-        # Add missing columns with defaults
-        for field, default_value in individual_fields.items():
-            if field not in df_pivoted.columns:
-                df_pivoted[field] = default_value
-
-        # For parent, modify secretUserId column
-        if individual == "parent" and "secretUserId" in df_pivoted.columns:
-            df_pivoted["secretUserId"] = df_pivoted["secretUserId"].astype(str) + "_P"
-        curious_participant_data.append(pd.DataFrame(df_pivoted[relevant_fields]))
-    df_curious_participant_data = pd.concat(curious_participant_data).reset_index(
-        drop=True
+    df_temp = pd.DataFrame(redcap_data[["record", "field_name", "value"]]).copy()
+    df_temp["field_name"] = df_temp["field_name"].replace(
+        getattr(Fields.rename.redcap247_to_curious, individual)
     )
-    df_curious_participant_data = df_curious_participant_data.where(
-        pd.notna(df_curious_participant_data), np.nan
+
+    # Filter to relevant fields
+    individual_fields: dict[str, int | str | None] = getattr(
+        Fields.import_curious, individual
     )
-    if "adult_enrollment_form_complete" in df_curious_participant_data.columns:
-        # Check for `parent_involvement___1`
-        df_curious_participant_data = pd.DataFrame(
-            df_curious_participant_data[
-                (df_curious_participant_data["parent_involvement"].apply(_in_set))
-                | ~df_curious_participant_data["adult_enrollment_form_complete"]
+    relevant_fields = list(individual_fields.keys())
+    df_temp = df_temp[df_temp["field_name"].isin(relevant_fields)]
+    df_temp = (
+        df_temp.groupby(["record", "field_name"])["value"]
+        .apply(lambda x: set(x) if len(x) > 1 else x.iloc[0])
+        .reset_index()
+    )
+
+    # Pivot
+    df_pivoted = df_temp.pivot(index="record", columns="field_name", values="value")
+    record_set = {*record_set, *df_pivoted.index.tolist()}
+    # Add missing columns with defaults
+    for field, default_value in individual_fields.items():
+        if field not in df_pivoted.columns:
+            df_pivoted[field] = default_value
+
+    # For parent, modify secretUserId column
+    if individual == "parent" and "secretUserId" in df_pivoted.columns:
+        _r_lookups = redcap_data.copy()
+        for responder in [
+            "responder",
+            "responder2",
+            "responder_adult1",
+            "responder_adult2",
+        ]:
+            _r_lookups["field_name"] = _r_lookups["field_name"].replace(
+                getattr(
+                    Fields.rename.redcap_consent_to_redcap_responder_tracking, responder
+                )
+            )
+        _responder_ids = get_responder_ids(_r_lookups)
+        df_pivoted["secretUserId"] = (
+            df_pivoted["email"]
+            .str.lower()
+            .replace(
+                dict(
+                    zip(
+                        _responder_ids["resp_email"].str.lower(),
+                        _responder_ids["record"],
+                    )
+                )
+            )
+        )
+    df = df_pivoted.reset_index(drop=True)
+    return df.where(pd.notna(df), np.nan)
+
+
+def format_redcap_data_for_curious(
+    redcap_data: pd.DataFrame,
+) -> dict[Literal["child", "parent"], pd.DataFrame]:
+    """Format REDCap export data for Curious import."""
+    curious_participant_data: dict[Literal["child", "parent"], pd.DataFrame] = {
+        individual: _format_redcap_data_for_curious(redcap_data, individual)
+        for individual in INDIVIDUALS
+    }
+    if "parent_involvement" in curious_participant_data["child"].columns:
+        curious_participant_data["child"] = pd.DataFrame(
+            curious_participant_data["child"][
+                curious_participant_data["child"]["parent_involvement"].apply(_in_set)
+                | curious_participant_data["child"]["parent_involvement"].isna()
             ]
         ).dropna(axis=1, how="all")
 
     # Now drop `parent_involvement` column before we push to Curious.
-    df_curious_participant_data = df_curious_participant_data.drop(
+    curious_participant_data["child"] = curious_participant_data["child"].drop(
         columns=["parent_involvement", "adult_enrollment_form_complete"],
         errors="ignore",
     )
 
     # Pad `secretUserId` with leading zeros to make it 5 characters long
-    df_curious_participant_data["secretUserId"] = (
-        df_curious_participant_data["secretUserId"].astype(str).str.zfill(5)
+    curious_participant_data["child"]["secretUserId"] = (
+        curious_participant_data["child"]["secretUserId"].astype(str).str.zfill(5)
     )
-    return df_curious_participant_data
+    return curious_participant_data
 
 
 def send_to_curious(
@@ -125,7 +157,7 @@ def send_to_curious(
         for record in df.to_dict(orient="records")
     ]:
         secret_user_id = record.get("secretUserId", "")
-        mrn = str(int(secret_user_id.rstrip("_P"))) if secret_user_id else ""
+        mrn = stringify_secret_user_id(secret_user_id) if secret_user_id else ""
 
         # Check cache before sending
         if cache and cache.is_processed(mrn):
@@ -151,21 +183,27 @@ def send_to_curious(
     return failures
 
 
+def stringify_secret_user_id(secret_user_id: int | str) -> str:
+    """Return string with leading zeroes dropped."""
+    try:
+        return str(int(secret_user_id))
+    except TypeError, ValueError:
+        return str(secret_user_id)
+
+
 def update_redcap(
     redcap_df: pd.DataFrame, curious_df: pd.DataFrame, failures: list[str]
 ) -> None:
     """Update records in REDCap."""
     # get updated records
-    records = [
-        str(int(x)) for x in curious_df["secretUserId"] if not str(x).endswith("_P")
-    ]
+    records = [stringify_secret_user_id(x) for x in curious_df["secretUserId"]]
     df_update_redcap = redcap_df.query(
         f'field_name == "mrn" and value in {records}'
     ).copy()[["record", "field_name", "value"]]
 
     # Set updated `enrollment_complete`
     df_update_redcap["field_name"] = "enrollment_complete"
-    df_update_redcap["value"] = Values.PID247.enrollment_complete[
+    df_update_redcap["value"] = Values.PID625.enrollment_complete[
         "Parent and Participant information already sent to Curious"
     ]
     successes = set(
@@ -178,7 +216,7 @@ def update_redcap(
     try:
         rows_updated = redcap_api_push(
             df=df_update_redcap,
-            token=_REDCAP_TOKEN,
+            token=_REDCAP_TOKENS.pid625,
             url=redcap_variables.Endpoints().base_url,
             headers=redcap_variables.headers,
         )
@@ -196,11 +234,18 @@ def main() -> None:
     cache = DataCache("redcap_to_curious", ttl_minutes=2)
 
     try:
+        # get triggers from PID625
+        data625 = fetch_data(
+            _REDCAP_TOKENS.pid625,
+            "mrn",
+            Values.PID625.enrollment_complete.filter_logic("Ready to Send to Curious"),
+        )
+        mrn_filter_logic = " OR ".join([f"[mrn] = '{mrn}'" for mrn in data625["value"]])
         # get data from PID247
         data247 = fetch_data(
-            _REDCAP_TOKEN,
+            _REDCAP_TOKENS.pid247,
             str(Fields.export_247.for_curious),
-            Values.PID247.enrollment_complete.filter_logic("Ready to Send to Curious"),
+            mrn_filter_logic,
         )
         if data247.empty:
             logger.info(
@@ -213,41 +258,18 @@ def main() -> None:
 
     curious_data = format_redcap_data_for_curious(data247)
 
-    # Filter out records already sent to Curious
-    unprocessed_records = cache.get_unprocessed_records(
-        curious_data["secretUserId"].str.rstrip("_P").astype(int).astype(str).tolist()
-    )
-
-    if len(unprocessed_records) < len(curious_data):
-        logger.info(
-            "Skipping %d already-processed records (cache hit)",
-            len(curious_data) - len(unprocessed_records),
-        )
-        curious_data = curious_data[
-            curious_data["secretUserId"]
-            .str.rstrip("_P")
-            .astype(int)
-            .astype(str)
-            .isin(unprocessed_records)
-        ]
-
-    if curious_data.empty:
+    if curious_data["child"].empty and curious_data["parent"].empty:
         logger.info("All participants already sent to Curious")
         return
 
-    for account_type in account_types:
-        _check_for_data_to_process(curious_data, account_type)
-
     curious_endpoints = curious_variables.Endpoints()
-    curious_tokens = curious_variables.Tokens(
-        curious_endpoints, curious_variables.Credentials.hbn_mindlogger
-    )
-    failures = send_to_curious(
-        curious_data,
-        curious_tokens,
-        curious_variables.applet_ids["Healthy Brain Network Questionnaires"],
-        cache,
-    )
+    curious_credentials = curious_variables.AppletCredentials()
+    failures = [
+        *push_child_data(
+            curious_data["child"], curious_endpoints, curious_credentials, cache
+        ),
+        *push_parent_data(curious_data, curious_endpoints, curious_credentials, cache),
+    ]
 
     # Log cache statistics
     cache_stats = cache.get_stats()
@@ -258,7 +280,55 @@ def main() -> None:
         cache_stats.get("last_activity", "never"),
     )
 
-    update_redcap(data247, curious_data, failures)
+    update_redcap(data247, curious_data["child"], failures)
+
+
+def push_child_data(
+    curious_data: pd.DataFrame,
+    curious_endpoints: curious_variables.Endpoints,
+    curious_credentials: curious_variables.AppletCredentials,
+    cache: DataCache,
+) -> list[str]:
+    """Push parent data to Curious."""
+    applet_name = "CHILD-Healthy Brain Network Questionnaires"
+    curious_tokens = curious_variables.Tokens(
+        curious_endpoints, curious_credentials[applet_name]
+    )
+    child_data = curious_data.copy()
+    child_data["accountType"] = "full"
+    return send_to_curious(
+        child_data,
+        curious_tokens,
+        curious_variables.applets[applet_name].applet_id,
+        cache,
+    )
+
+
+def push_parent_data(
+    curious_data: dict[Literal["child", "parent"], pd.DataFrame],
+    curious_endpoints: curious_variables.Endpoints,
+    curious_credentials: curious_variables.AppletCredentials,
+    cache: DataCache,
+) -> list[str]:
+    """Push parent data to Curious."""
+    applet_name = "Healthy Brain Network Questionnaires"
+    curious_tokens = curious_variables.Tokens(
+        curious_endpoints, curious_credentials[applet_name]
+    )
+    return [
+        *send_to_curious(
+            curious_data["child"],
+            curious_tokens,
+            curious_variables.applets[applet_name].applet_id,
+            cache,
+        ),
+        *send_to_curious(
+            curious_data["parent"],
+            curious_tokens,
+            curious_variables.applets[applet_name].applet_id,
+            cache,
+        ),
+    ]
 
 
 if __name__ == "__main__":

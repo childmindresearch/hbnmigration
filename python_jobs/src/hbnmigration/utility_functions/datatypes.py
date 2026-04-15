@@ -475,9 +475,24 @@ class ValueField:
         value = self._value_dict[label]
         return f"[{self._field_name}] = '{value}'"
 
+    def __eq__(self, other: object) -> bool:
+        """Compare two ValueFields."""
+        if not isinstance(other, ValueField):
+            msg = f"Cannot compare {type[self]} and {type[other]}."
+            raise TypeError(msg)
+        return (
+            self._field_name == other._field_name
+            and self._value_dict == other._value_dict
+        )
+
     def __getitem__(self, key) -> str:
         """Allow dict-like access: `field['label']`."""
         return self._value_dict[key]
+
+    def __hash__(self) -> int:
+        """ValueField is not hashable."""
+        msg = f"unhashable type: '{type(self).__name__}'"
+        raise TypeError(msg)
 
     def __iter__(self) -> Iterator[str]:
         """Allow iteration over the dict."""
