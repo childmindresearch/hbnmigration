@@ -2,6 +2,7 @@
 
 from io import StringIO
 import logging
+from typing import Optional
 
 import polars as pl
 import requests
@@ -486,8 +487,10 @@ def update_already_completed(df: pl.DataFrame) -> pl.DataFrame:
     return df.filter(~pl.col("record_id").is_in(already_completed)).drop_nulls()
 
 
-def main(applet_name: str) -> None:
+def main(applet_name: Optional[str] = None) -> None:
     """Monitor Curious account invitations and send updates to REDCap."""
+    if not applet_name:
+        applet_name = "Healthy Brain Network Questionnaires"
     cache = DataCache("curious_invitations_to_redcap", ttl_minutes=2)
     auth = curious_authenticate(applet_name)
     invitation_df = pull_data_from_curious(auth.access)
@@ -550,4 +553,4 @@ def main(applet_name: str) -> None:
 
 
 if __name__ == "__main__":
-    main("Healthy Brain Network Questionnaires")
+    main()
