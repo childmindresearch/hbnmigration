@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 1.10.0
+
+### Added
+
+- REDCap &laquo;HBN - Responder Tracking (PID 879)&raquo; authentication.
+- Fields "r_id", "curious_email_child" and "curious_password_child" for PID 625 to Curious.
+
+### Changed
+
+- REDCap-to-Curious data now comes from PID 625.
+- Temporarily disabled connection to PID 879 in favor of manual `r_id` field in PID 625.
+- Handle more datetime options in `mindlogger-autoexport`.
+
+### Fixed
+
+- Send timestamps to Curious API in UTC.
+
+### Deprecated
+
+- `hbnmigration.from_redcap.config.Fields.export_247`
+
 ## 1.9.4
 
 ### Fixed

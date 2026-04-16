@@ -1,6 +1,6 @@
 """Data deduplication cache for minute-by-minute transfers."""
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, UTC
 import hashlib
 import json
 import logging
@@ -63,12 +63,12 @@ def get_recent_time_window(
 
     if Config.RECOVERY_MODE:
         logger.warning("Recovery mode enabled - pulling full day's data")
-        now = datetime.now()
-        return YESTERDAY, now.isoformat()
+        now = datetime.now(UTC)
+        return YESTERDAY.replace("+00:00", ""), now.isoformat().replace("+00:00", "")
 
     # Check if cache is stale (no activity in > 2 hours = downtime detected)
     if allow_full_day_fallback:
-        stale_threshold = datetime.now() - timedelta(hours=2)
+        stale_threshold = datetime.now(UTC) - timedelta(hours=2)
         cache_dir = get_cache_dir()
 
         if cache_dir.exists():
@@ -76,7 +76,9 @@ def get_recent_time_window(
             cache_files = list(cache_dir.glob("*_cache.json"))
             if cache_files:
                 most_recent = max(cache_files, key=lambda p: p.stat().st_mtime)
-                last_modified = datetime.fromtimestamp(most_recent.stat().st_mtime)
+                last_modified = datetime.fromtimestamp(
+                    most_recent.stat().st_mtime, tz=UTC
+                )
 
                 if last_modified < stale_threshold:
                     logger.warning(
@@ -84,13 +86,17 @@ def get_recent_time_window(
                         "pulling full day's data for recovery",
                         last_modified.isoformat(),
                     )
-                    now = datetime.now()
-                    return YESTERDAY, now.isoformat()
+                    now = datetime.now(UTC)
+                    return YESTERDAY.replace("+00:00", ""), now.isoformat().replace(
+                        "+00:00", ""
+                    )
 
     # Normal operation: use 2-minute window
-    now = datetime.now()
+    now = datetime.now(UTC)
     start = now - timedelta(minutes=minutes_back)
-    return start.isoformat(), now.isoformat()
+    return start.isoformat(timespec="seconds").replace("+00:00", ""), now.isoformat(
+        timespec="seconds"
+    ).replace("+00:00", "")
 
 
 class DataCache:

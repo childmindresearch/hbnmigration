@@ -183,32 +183,27 @@ def create_redcap_eav_df(
     records: list[str] | None = None,
     field_names: list[str] | None = None,
     values: list[str] | None = None,
-    repeat_instruments: list[str] | None = None,
-    repeat_instances: list[Any] | None = None,
     event_names: list[str] | None = None,
 ) -> pd.DataFrame:
-    """Create REDCap EAV format DataFrames with flexible defaults."""
-    if not any([records, field_names, values]):
-        return pd.DataFrame(
-            {
-                "record": pd.Series([], dtype=str),
-                "field_name": pd.Series([], dtype=str),
-                "value": pd.Series([], dtype=str),
-                "redcap_repeat_instrument": pd.Series([], dtype=str),
-                "redcap_repeat_instance": pd.Series([], dtype=str),
-            }
-        )
-    length = len(records or field_names or values or [0])
-    data: dict[str, Any] = {
-        "record": records or [""] * length,
-        "field_name": field_names or [""] * length,
-        "value": values or [""] * length,
-        "redcap_repeat_instrument": repeat_instruments or [""] * length,
-        "redcap_repeat_instance": repeat_instances or [""] * length,
-    }
-    if event_names is not None:
-        data["redcap_event_name"] = event_names
-    return pd.DataFrame(data)
+    """Create a test EAV DataFrame similar to REDCap API output."""
+    if records is None:
+        records = []
+    if field_names is None:
+        field_names = []
+    if values is None:
+        values = []
+    if event_names is None:
+        event_names = ["enrollment_arm_1"] * len(records)
+    return pd.DataFrame(
+        {
+            "record": records,
+            "field_name": field_names,
+            "value": values,
+            "redcap_repeat_instrument": [""] * len(records),
+            "redcap_event_name": event_names,
+            "redcap_repeat_instance": [""] * len(records),
+        }
+    )
 
 
 def create_curious_participant_df(

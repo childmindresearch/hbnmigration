@@ -5,7 +5,7 @@ For each subject in PID 625, if `enrollment_complete` == 1,
 prepares and copies the reviewed and approved participants by the RAs to Curious.
 """
 
-from typing import Literal
+from typing import cast, Literal
 
 import numpy as np
 import pandas as pd
@@ -21,14 +21,13 @@ from ..utility_functions import (
     redcap_api_push,
 )
 from .config import Fields, Values
-from .from_redcap import fetch_data, get_responder_ids
+from .from_redcap import fetch_data
 
 logger = initialize_logging(__name__)
 
 INDIVIDUALS: list[Literal["child", "parent"]] = ["parent", "child"]
-
 _REDCAP_TOKENS = redcap_variables.Tokens()
-_REDCAP_PID = 247
+_REDCAP_PID = 625
 
 
 def _in_set(x: set | int | str, required_value: int | str = 1) -> bool:
@@ -51,6 +50,24 @@ def _check_for_data_to_process(df: pd.DataFrame, account_type: AccountType) -> N
         )
 
 
+def event_map(redcap_data: pd.DataFrame) -> dict[str, str]:
+    """
+    Build a mapping from field_name to redcap_event_name.
+
+    In a longitudinal REDCap project, each field belongs to a specific event.
+    This extracts that pairing from the fetched data.
+
+    Returns a dict of {field_name: redcap_event_name}.
+    """
+    return cast(
+        dict[str, str],
+        redcap_data[["field_name", "redcap_event_name"]]
+        .drop_duplicates()
+        .set_index("field_name")["redcap_event_name"]
+        .to_dict(),
+    )
+
+
 def _format_redcap_data_for_curious(
     redcap_data: pd.DataFrame, individual: Literal["child", "parent"]
 ) -> pd.DataFrame:
@@ -58,9 +75,8 @@ def _format_redcap_data_for_curious(
     record_set: set[int | str] = set()
     df_temp = pd.DataFrame(redcap_data[["record", "field_name", "value"]]).copy()
     df_temp["field_name"] = df_temp["field_name"].replace(
-        getattr(Fields.rename.redcap247_to_curious, individual)
+        getattr(Fields.rename.redcap_operations_to_curious, individual)
     )
-
     # Filter to relevant fields
     individual_fields: dict[str, int | str | None] = getattr(
         Fields.import_curious, individual
@@ -72,7 +88,6 @@ def _format_redcap_data_for_curious(
         .apply(lambda x: set(x) if len(x) > 1 else x.iloc[0])
         .reset_index()
     )
-
     # Pivot
     df_pivoted = df_temp.pivot(index="record", columns="field_name", values="value")
     record_set = {*record_set, *df_pivoted.index.tolist()}
@@ -80,34 +95,6 @@ def _format_redcap_data_for_curious(
     for field, default_value in individual_fields.items():
         if field not in df_pivoted.columns:
             df_pivoted[field] = default_value
-
-    # For parent, modify secretUserId column
-    if individual == "parent" and "secretUserId" in df_pivoted.columns:
-        _r_lookups = redcap_data.copy()
-        for responder in [
-            "responder",
-            "responder2",
-            "responder_adult1",
-            "responder_adult2",
-        ]:
-            _r_lookups["field_name"] = _r_lookups["field_name"].replace(
-                getattr(
-                    Fields.rename.redcap_consent_to_redcap_responder_tracking, responder
-                )
-            )
-        _responder_ids = get_responder_ids(_r_lookups)
-        df_pivoted["secretUserId"] = (
-            df_pivoted["email"]
-            .str.lower()
-            .replace(
-                dict(
-                    zip(
-                        _responder_ids["resp_email"].str.lower(),
-                        _responder_ids["record"],
-                    )
-                )
-            )
-        )
     df = df_pivoted.reset_index(drop=True)
     return df.where(pd.notna(df), np.nan)
 
@@ -127,13 +114,11 @@ def format_redcap_data_for_curious(
                 | curious_participant_data["child"]["parent_involvement"].isna()
             ]
         ).dropna(axis=1, how="all")
-
     # Now drop `parent_involvement` column before we push to Curious.
     curious_participant_data["child"] = curious_participant_data["child"].drop(
         columns=["parent_involvement", "adult_enrollment_form_complete"],
         errors="ignore",
     )
-
     # Pad `secretUserId` with leading zeros to make it 5 characters long
     curious_participant_data["child"]["secretUserId"] = (
         curious_participant_data["child"]["secretUserId"].astype(str).str.zfill(5)
@@ -150,7 +135,6 @@ def send_to_curious(
     """Send new participants to Curious."""
     failures: list[str] = []
     headers = curious_variables.headers(tokens.access)
-
     # Loop through each REDCap transformed record and sent it to MindLogger
     for record in [
         {k: v for k, v in record.items() if v is not None}
@@ -158,7 +142,6 @@ def send_to_curious(
     ]:
         secret_user_id = record.get("secretUserId", "")
         mrn = stringify_secret_user_id(secret_user_id) if secret_user_id else ""
-
         # Check cache before sending
         if cache and cache.is_processed(mrn):
             logger.info(
@@ -166,7 +149,6 @@ def send_to_curious(
                 mrn,
             )
             continue
-
         try:
             logger.info(
                 "%s",
@@ -194,8 +176,13 @@ def stringify_secret_user_id(secret_user_id: int | str) -> str:
 def update_redcap(
     redcap_df: pd.DataFrame, curious_df: pd.DataFrame, failures: list[str]
 ) -> None:
-    """Update records in REDCap."""
-    # get updated records
+    """
+    Update records in REDCap.
+
+    Uses the field_name → redcap_event_name mapping from the original data so
+    that the enrollment_complete update is written to the correct event in PID 625.
+    """
+    # Get updated records
     records = [stringify_secret_user_id(x) for x in curious_df["secretUserId"]]
     df_update_redcap = redcap_df.query(
         f'field_name == "mrn" and value in {records}'
@@ -206,16 +193,32 @@ def update_redcap(
     df_update_redcap["value"] = Values.PID625.enrollment_complete[
         "Parent and Participant information already sent to Curious"
     ]
+
     successes = set(
         redcap_df[
             (redcap_df["field_name"] == "mrn") & (~redcap_df["value"].isin(failures))
         ]["record"]
     )
-    df_update_redcap = df_update_redcap[(df_update_redcap["record"].isin(successes))]
+    df_update_redcap = df_update_redcap[df_update_redcap["record"].isin(successes)]
+
+    # Look up the correct event for enrollment_complete
+    enrollment_event = event_map(redcap_df).get("enrollment_complete")
+    if enrollment_event is None:
+        logger.error(
+            "Could not determine redcap_event_name for 'enrollment_complete'. "
+            "Skipping REDCap update."
+        )
+        return
+
+    df_update_redcap["redcap_event_name"] = enrollment_event
+
+    if df_update_redcap.empty:
+        logger.info("No REDCap records to update.")
+        return
 
     try:
         rows_updated = redcap_api_push(
-            df=df_update_redcap,
+            df=df_update_redcap[["record", "redcap_event_name", "field_name", "value"]],
             token=_REDCAP_TOKENS.pid625,
             url=redcap_variables.Endpoints().base_url,
             headers=redcap_variables.headers,
@@ -232,38 +235,31 @@ def main() -> None:
     """Transfer data from REDCap to Curious."""
     # Initialize cache for minute-by-minute transfers (TTL: 2 minutes)
     cache = DataCache("redcap_to_curious", ttl_minutes=2)
-
     try:
-        # get triggers from PID625
-        data625 = fetch_data(
+        # get data from PID625
+        data_operations = fetch_data(
             _REDCAP_TOKENS.pid625,
-            "mrn",
+            str(Fields.export_operations.for_curious),
             Values.PID625.enrollment_complete.filter_logic("Ready to Send to Curious"),
         )
-        mrn_filter_logic = " OR ".join([f"[mrn] = '{mrn}'" for mrn in data625["value"]])
-        # get data from PID247
-        data247 = fetch_data(
-            _REDCAP_TOKENS.pid247,
-            str(Fields.export_247.for_curious),
-            mrn_filter_logic,
-        )
-        if data247.empty:
+        if data_operations.empty:
             logger.info(
-                "REDCap PID 247: No participants marked 'Ready to Send to Curious'."
+                "REDCap PID %s: No participants marked 'Ready to Send to Curious'.",
+                _REDCAP_PID,
             )
             raise NoData
     except NoData:
-        logger.info("No data to transfer from REDCap PID 247 to Curious.")
+        logger.info("No data to transfer from REDCap %s to Curious.", _REDCAP_PID)
         return
 
-    curious_data = format_redcap_data_for_curious(data247)
-
+    curious_data = format_redcap_data_for_curious(data_operations)
     if curious_data["child"].empty and curious_data["parent"].empty:
         logger.info("All participants already sent to Curious")
         return
 
     curious_endpoints = curious_variables.Endpoints()
     curious_credentials = curious_variables.AppletCredentials()
+
     failures = [
         *push_child_data(
             curious_data["child"], curious_endpoints, curious_credentials, cache
@@ -280,7 +276,8 @@ def main() -> None:
         cache_stats.get("last_activity", "never"),
     )
 
-    update_redcap(data247, curious_data["child"], failures)
+    # Pass the full redcap data (with redcap_event_name) to update_redcap
+    update_redcap(data_operations, curious_data["child"], failures)
 
 
 def push_child_data(
@@ -289,7 +286,7 @@ def push_child_data(
     curious_credentials: curious_variables.AppletCredentials,
     cache: DataCache,
 ) -> list[str]:
-    """Push parent data to Curious."""
+    """Push child data to Curious."""
     applet_name = "CHILD-Healthy Brain Network Questionnaires"
     curious_tokens = curious_variables.Tokens(
         curious_endpoints, curious_credentials[applet_name]

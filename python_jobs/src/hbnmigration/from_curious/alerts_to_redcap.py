@@ -146,6 +146,8 @@ def parse_alert(alert: CuriousAlert) -> pd.DataFrame:
 
 def toggle_alerts(result: pd.DataFrame) -> pd.DataFrame:
     """Add an `{instrument}_alerts` row for each relevant respondent + instrument."""
+    if result.empty:
+        return result
     respondent_instruments = result["field_name"].str.extract(
         ALERT_FIELD_PATTERN, expand=False
     )

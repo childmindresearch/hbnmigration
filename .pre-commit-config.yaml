@@ -44,7 +44,7 @@ repos:
     - id: uv-sort
       files: pyproject.toml
 - repo: https://github.com/astral-sh/uv-pre-commit
-  rev: "0.11.6"
+  rev: "0.11.7"
   hooks:
     - id: uv-lock
       files: ^python_jobs/pyproject\.toml$

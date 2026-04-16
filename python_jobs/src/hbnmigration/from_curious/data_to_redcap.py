@@ -21,6 +21,7 @@ from mindlogger_data_export.outputs import NamedOutput, RedcapImportFormat
 
 from .._config_variables import curious_variables, redcap_variables
 from ..config import Config
+from ..exceptions import NoData
 from ..from_redcap.config import FieldList
 from ..from_redcap.from_redcap import fetch_data
 from ..utility_functions import (
@@ -379,9 +380,9 @@ def format_for_redcap(
     # Process data
     try:
         ml_data = MindloggerData.create(curious_data_dir)
-    except pl.exceptions.NoDataError:
+    except pl.exceptions.NoDataError as no_data_error:
         logger.info("No Curious data to export.")
-        sys.exit(0)
+        raise NoData from no_data_error
 
     # Get initial outputs to identify needed fields
     initial_outputs = formatter_initial.produce(ml_data)
@@ -393,10 +394,10 @@ def format_for_redcap(
     redcap_metadata_pl = _fetch_redcap_metadata_for_fields(field_names)
 
     # Create formatter with metadata and re-process if we got metadata
+    formatter = RedcapImportFormat(
+        project=event_names, redcap_metadata=redcap_metadata_pl
+    )
     if redcap_metadata_pl is not None:
-        formatter = RedcapImportFormat(
-            project=event_names, redcap_metadata=redcap_metadata_pl
-        )
         outputs = formatter.produce(ml_data)
     else:
         # Use initial outputs if no metadata was fetched
@@ -1293,6 +1294,9 @@ def data_to_redcap(
         os.environ.update(
             {key.upper(): value for key, value in applet_credentials.items()}
         )
+        logger.info(
+            "%s", {key.upper(): value for key, value in applet_credentials.items()}
+        )
         root_temp_path = Path(curious_temp_data_dir)
         data_dir_paths = {
             source: root_temp_path / f"from_{source}"
@@ -1305,7 +1309,12 @@ def data_to_redcap(
         get_curious_data(request_json)
 
         # format_for_redcap now handles the REDCap metadata mapping internally
-        outputs, _instrument_row_count = format_for_redcap(data_dir_paths["curious"])
+        try:
+            outputs, _instrument_row_count = format_for_redcap(
+                data_dir_paths["curious"]
+            )
+        except NoData:
+            return
 
         instrument_row_count: dict[str, int] = {
             k: v for k, v in _instrument_row_count.items() if v is not None
@@ -1331,15 +1340,24 @@ def main() -> None:
     from_date, to_date = get_recent_time_window(
         minutes_back=2, allow_full_day_fallback=True
     )
-    # Convert ISO datetime to date-only format for TypeScript (YYYY-MM-DD)
-    # TypeScript's setDateParams will append T00:00:00 and T23:59:59
-    from_date_only = from_date.split("T")[0]  # Extract YYYY-MM-DD
-    to_date_only = to_date.split("T")[0]  # Extract YYYY-MM-DD
-    request_json = CliOptions({"fromDate": from_date_only, "toDate": to_date_only})
+    request_json = CliOptions({"fromDate": from_date, "toDate": to_date})
     # Initialize cache for minute-by-minute transfers (TTL: 2 minutes)
-    cache = DataCache("curious_data_to_redcap", ttl_minutes=2)
+    cache = DataCache("curious_data_to_redcap2", ttl_minutes=2)
+    exceptions = False
     for project in curious_variables.applets.keys():
-        data_to_redcap(project, request_json, cache)
+        try:
+            logger.info(
+                "\n=====\nTransferring %s from Curious to REDCap.\n=====\n", project
+            )
+            data_to_redcap(project, request_json, cache)
+        except NoData:
+            pass
+        except Exception:
+            logger.exception(
+                "Failed to transfer %s data from Curious to REDCap.", project
+            )
+            exceptions = True
+    sys.exit(bool(exceptions))
 
 
 if __name__ == "__main__":

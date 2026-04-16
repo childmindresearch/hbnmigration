@@ -45,6 +45,10 @@ class CliOptions(UserDict):
         return " ".join(f"--{key} {value}" for key, value in self.data.items())
 
 
+class ColumnRenameMapping:
+    """Base class for column rename mapping configurations."""
+
+
 class Credentials(ABC):
     """Class to store credentials."""
 

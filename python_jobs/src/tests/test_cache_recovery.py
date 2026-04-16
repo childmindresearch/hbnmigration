@@ -13,7 +13,7 @@ class TestGetRecentTimeWindowRecoveryMode:
 
     def test_normal_operation_returns_2_minute_window(self):
         """Should return 2-minute window during normal operation."""
-        with patch("hbnmigration.utility_functions.cache.Config") as mock_config:
+        with patch("hbnmigration.config.Config") as mock_config:
             mock_config.RECOVERY_MODE = False
 
             start, end = get_recent_time_window(
@@ -30,7 +30,7 @@ class TestGetRecentTimeWindowRecoveryMode:
 
     def test_recovery_mode_env_var_returns_full_day(self):
         """Should return full-day window when Config.RECOVERY_MODE is True."""
-        with patch("hbnmigration.utility_functions.cache.Config") as mock_config:
+        with patch("hbnmigration.config.Config") as mock_config:
             mock_config.RECOVERY_MODE = True
 
             start, end = get_recent_time_window(
@@ -40,17 +40,16 @@ class TestGetRecentTimeWindowRecoveryMode:
             start_dt = datetime.fromisoformat(start)
             end_dt = datetime.fromisoformat(end)
 
-            # Window should be approximately 1 day
+            # Window should be at least 1 day (YESTERDAY constant to now)
             delta = end_dt - start_dt
-            # Use a reasonable tolerance window (e.g., ±15 seconds)
-            assert 86385 <= delta.total_seconds() <= 86415, (
-                f"Expected window close to 24 hours (86400s), "
+            assert delta.total_seconds() >= 86400, (
+                f"Expected window at least 24 hours (86400s), "
                 f"got {delta.total_seconds()}s"
             )
 
     def test_recovery_mode_logs_warning(self, caplog):
         """Should log warning when recovery mode is enabled."""
-        with patch("hbnmigration.utility_functions.cache.Config") as mock_config:
+        with patch("hbnmigration.config.Config") as mock_config:
             mock_config.RECOVERY_MODE = True
 
             get_recent_time_window(minutes_back=2, allow_full_day_fallback=True)
@@ -77,7 +76,7 @@ class TestGetRecentTimeWindowRecoveryMode:
 
             os.utime(cache_file, (mtime, mtime))
 
-            with patch("hbnmigration.utility_functions.cache.Config") as mock_config:
+            with patch("hbnmigration.config.Config") as mock_config:
                 mock_config.RECOVERY_MODE = False
                 with patch(
                     "hbnmigration.utility_functions.cache.get_cache_dir"
@@ -112,7 +111,7 @@ class TestGetRecentTimeWindowRecoveryMode:
 
             os.utime(cache_file, (mtime, mtime))
 
-            with patch("hbnmigration.utility_functions.cache.Config") as mock_config:
+            with patch("hbnmigration.config.Config") as mock_config:
                 mock_config.RECOVERY_MODE = False
                 with patch(
                     "hbnmigration.utility_functions.cache.get_cache_dir"
@@ -144,7 +143,7 @@ class TestGetRecentTimeWindowRecoveryMode:
 
             os.utime(cache_file, (mtime, mtime))
 
-            with patch("hbnmigration.utility_functions.cache.Config") as mock_config:
+            with patch("hbnmigration.config.Config") as mock_config:
                 mock_config.RECOVERY_MODE = False
                 with patch(
                     "hbnmigration.utility_functions.cache.get_cache_dir"
@@ -164,7 +163,7 @@ class TestGetRecentTimeWindowRecoveryMode:
 
     def test_no_cache_dir_does_not_crash(self):
         """Should handle gracefully when cache directory doesn't exist."""
-        with patch("hbnmigration.utility_functions.cache.Config") as mock_config:
+        with patch("hbnmigration.config.Config") as mock_config:
             mock_config.RECOVERY_MODE = False
             with patch(
                 "hbnmigration.utility_functions.cache.get_cache_dir"
@@ -198,7 +197,7 @@ class TestGetRecentTimeWindowRecoveryMode:
 
             os.utime(cache_file, (mtime, mtime))
 
-            with patch("hbnmigration.utility_functions.cache.Config") as mock_config:
+            with patch("hbnmigration.config.Config") as mock_config:
                 mock_config.RECOVERY_MODE = False
                 with patch(
                     "hbnmigration.utility_functions.cache.get_cache_dir"
@@ -219,7 +218,7 @@ class TestGetRecentTimeWindowRecoveryMode:
 
     def test_custom_minutes_back_parameter(self):
         """Should respect custom minutes_back parameter."""
-        with patch("hbnmigration.utility_functions.cache.Config") as mock_config:
+        with patch("hbnmigration.config.Config") as mock_config:
             mock_config.RECOVERY_MODE = False
 
             start, end = get_recent_time_window(

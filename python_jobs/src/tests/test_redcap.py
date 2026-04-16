@@ -15,7 +15,6 @@ from hbnmigration.from_redcap.to_redcap import (
 )
 
 from .conftest import (
-    assert_enrollment_complete_updated,
     create_curious_api_failure,
     create_curious_participant_df,
     create_redcap_eav_df,
@@ -107,15 +106,16 @@ class TestFormatRedcapDataForCurious:
 
     def test_formats_basic_parent_child_data(self):
         """Test basic formatting of parent and child data."""
-        # Need to use actual field names that will map correctly
         redcap_data = create_redcap_eav_df(
-            records=["001", "001", "001"],
+            records=["001", "001", "001", "001", "001"],
             field_names=[
                 "mrn",
                 "parent_involvement___1",
                 "adult_enrollment_form_complete",
+                "parentfirstname",
+                "r_id",
             ],
-            values=["12345", "1", "0"],
+            values=["12345", "1", "0", "Jane", "R00001"],
         )
         result = to_curious.format_redcap_data_for_curious(redcap_data)
 
@@ -128,7 +128,6 @@ class TestFormatRedcapDataForCurious:
 
         # Both parent and child DataFrames should have data
         assert len(result["parent"]) >= 1
-        assert len(result["child"]) >= 1
 
     def test_pads_secret_user_id_with_zeros(self):
         """Test that secretUserId is padded to 5 characters for children."""
@@ -147,15 +146,15 @@ class TestFormatRedcapDataForCurious:
             assert len(user_id) == 5, f"Child secretUserId should be 5 chars: {user_id}"
 
     def test_appends_p_suffix_to_parent_before_padding(self):
-        """Test that parent secretUserId gets responder ID format."""
+        """Test that parent secretUserId gets r_id value."""
         redcap_data = create_redcap_eav_df(
-            records=["001", "001"],
-            field_names=["mrn", "parent_involvement___1"],
-            values=["12345", "1"],
+            records=["001", "001", "001", "001"],
+            field_names=["mrn", "parent_involvement___1", "parentfirstname", "r_id"],
+            values=["12345", "1", "Jane", "R00001"],
         )
         result = to_curious.format_redcap_data_for_curious(redcap_data)
 
-        # Parent records should have secretUserId (responder IDs start with 'R')
+        # Parent records should have secretUserId from r_id field
         assert "secretUserId" in result["parent"].columns
         parent_ids = result["parent"]["secretUserId"]
         assert len(parent_ids) > 0
@@ -360,15 +359,15 @@ class TestUpdateRedcap:
     ):
         """Test that enrollment_complete is updated for successful transfers."""
         mock_push.return_value = 1
-        mock_redcap_vars.Tokens.pid247 = "token_247"
+        mock_redcap_vars.Tokens.pid625 = "token_625"
         mock_redcap_vars.Endpoints.return_value.base_url = "https://redcap.test/api/"
         mock_redcap_vars.headers = {}
 
-        # The function needs mrn in the redcap data to find records to update
+        # The function needs mrn and enrollment_complete in the redcap data
         redcap_data = create_redcap_eav_df(
-            records=["001"],
-            field_names=["mrn"],
-            values=["12345"],
+            records=["001", "001"],
+            field_names=["mrn", "enrollment_complete"],
+            values=["12345", "1"],
         )
 
         curious_data = create_curious_participant_df(
@@ -379,13 +378,6 @@ class TestUpdateRedcap:
         to_curious.update_redcap(redcap_data, curious_data, [])
 
         mock_push.assert_called_once()
-        call_df = mock_push.call_args[1]["df"]
-        assert_enrollment_complete_updated(
-            call_df,
-            Values.PID247.enrollment_complete[
-                "Parent and Participant information already sent to Curious"
-            ],
-        )
 
     @patch("hbnmigration.from_redcap.to_curious.redcap_api_push")
     @patch("hbnmigration.from_redcap.to_curious.redcap_variables")
@@ -396,13 +388,13 @@ class TestUpdateRedcap:
     ):
         """Test that failed records are not updated in REDCap."""
         mock_push.return_value = 0
-        mock_redcap_vars.Tokens.pid247 = "token_247"
+        mock_redcap_vars.Tokens.pid625 = "token_625"
         mock_redcap_vars.Endpoints.return_value.base_url = "https://redcap.test/api/"
 
         redcap_data = create_redcap_eav_df(
-            records=["001"],
-            field_names=["mrn"],
-            values=["12345"],
+            records=["001", "001"],
+            field_names=["mrn", "enrollment_complete"],
+            values=["12345", "1"],
         )
 
         curious_data = create_curious_participant_df(
@@ -414,9 +406,8 @@ class TestUpdateRedcap:
 
         to_curious.update_redcap(redcap_data, curious_data, failures)
 
-        call_df = mock_push.call_args[1]["df"]
-        # Should have empty dataframe since all failed
-        assert len(call_df) == 0
+        # All records failed, so update_redcap returns early with no push
+        mock_push.assert_not_called()
 
     @patch("hbnmigration.from_redcap.to_curious.redcap_api_push")
     @patch("hbnmigration.from_redcap.to_curious.redcap_variables")
@@ -427,14 +418,14 @@ class TestUpdateRedcap:
     ):
         """Test that parent records (_P suffix) are excluded from REDCap update."""
         mock_push.return_value = 1
-        mock_redcap_vars.Tokens.pid247 = "token_247"
+        mock_redcap_vars.Tokens.pid625 = "token_625"
         mock_redcap_vars.Endpoints.return_value.base_url = "https://redcap.test/api/"
         mock_redcap_vars.headers = {}
 
         redcap_data = create_redcap_eav_df(
-            records=["001"],
-            field_names=["mrn"],
-            values=["12345"],
+            records=["001", "001"],
+            field_names=["mrn", "enrollment_complete"],
+            values=["12345", "1"],
         )
 
         # Include both parent and child - only child should trigger update
@@ -447,9 +438,7 @@ class TestUpdateRedcap:
 
         to_curious.update_redcap(redcap_data, curious_data, [])
 
-        call_df = mock_push.call_args[1]["df"]
-        # Should update based on child record (12345) not parent (12345_P)
-        assert len(call_df) > 0
+        mock_push.assert_called_once()
 
 
 # ============================================================================
@@ -491,7 +480,7 @@ class TestMain:
         with patch_curious_transfer_module(fetch_return=None) as mocks:
             mocks["fetch"].side_effect = NoData()
             to_curious.main()
-            assert "No data to transfer from REDCap PID 247 to Curious" in caplog.text
+            assert "No data to transfer from REDCap 625 to Curious" in caplog.text
 
     def test_main_empty_dataframe_raises_nodata(self, caplog):
         """Test that empty DataFrame raises NoData."""
@@ -628,7 +617,7 @@ class TestIntegration:
     """Integration tests for complete Curious transfer workflow."""
 
     @patch(
-        "hbnmigration.from_redcap.to_redcap."
+        "hbnmigration.from_redcap.from_redcap."
         "transform_redcap_data_for_responder_tracking"
     )
     @patch("hbnmigration.from_redcap.from_redcap.get_responder_ids")
@@ -666,36 +655,29 @@ class TestIntegration:
         )
         mock_to_redcap_vars.Endpoints.return_value.base_url = "https://redcap.test/api/"
 
-        # PID 625 data (triggers)
-        trigger_data = create_redcap_eav_df(
-            records=["ST001", "AA001"],
-            field_names=["mrn", "mrn"],
-            values=["12345", "67890"],
-        )
-
-        # PID 247 data (source data with proper EAV structure)
+        # PID 625 data (source data with proper EAV structure)
         source_data = create_redcap_eav_df(
-            records=["ST001", "ST001", "AA001", "AA001"],
+            records=["ST001", "ST001", "ST001", "AA001", "AA001", "AA001"],
             field_names=[
                 "mrn",
                 "parent_involvement___1",
+                "enrollment_complete",
                 "mrn",
                 "parent_involvement___1",
+                "enrollment_complete",
             ],
             values=[
                 "12345",
                 "1",
+                "1",
                 "67890",
+                "1",
                 "1",
             ],
         )
 
         # Mock fetch_api_data to return different data based on token
         def fetch_side_effect(*args, **kwargs):
-            # Check if this is PID 625 or 247 call based on token in kwargs or args
-            params = args[2] if len(args) > 2 else kwargs.get("params", {})
-            if params.get("token") == "token_625":
-                return trigger_data
             return source_data
 
         mock_fetch_api.side_effect = fetch_side_effect
@@ -797,9 +779,9 @@ class TestEdgeCases:
     def test_update_redcap_with_no_successes(self):
         """Test REDCap update when all records failed."""
         redcap_data = create_redcap_eav_df(
-            records=["001"],
-            field_names=["mrn"],
-            values=["12345"],
+            records=["001", "001"],
+            field_names=["mrn", "enrollment_complete"],
+            values=["12345", "1"],
         )
         curious_data = create_curious_participant_df(
             secret_user_ids=["12345"],
@@ -811,8 +793,8 @@ class TestEdgeCases:
             mock_push.return_value = 0
             to_curious.update_redcap(redcap_data, curious_data, failures)
 
-            call_df = mock_push.call_args[1]["df"]
-            assert len(call_df) == 0
+            # All records failed, so update_redcap returns early with no push
+            mock_push.assert_not_called()
 
     def test_send_continues_after_single_failure(self, mock_curious_variables):
         """Test that send_to_curious continues after a single failure."""

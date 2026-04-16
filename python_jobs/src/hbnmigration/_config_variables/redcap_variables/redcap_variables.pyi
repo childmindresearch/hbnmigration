@@ -12,14 +12,16 @@ class Endpoints(EndpointsABC):
 headers: dict[str, str]
 
 class Tokens:
-    @property
-    def pid247(self) -> str: ...
-    @property
-    def pid625(self) -> str: ...
-    @property
-    def pid744(self) -> str: ...
-    @property
-    def pid757(self) -> str: ...
+    pid247: str
+    """Healthy Brain Network Study Consent (IRB Approved) PID 247."""
+    pid625: str
+    """HBN - Operations and Data Collection PID 625"""
+    pid744: str
+    """HBN - Intake and Curious (TEMP for Transition) PID 744."""
+    pid757: str
+    """SANDBOX - Healthy Brain Network Study Consent (IRB Approved) PID 757."""
+    pid879: str
+    """HBN - Responder Tracking"""
 
 redcap_import_file: Path
 redcap_update_file: Path

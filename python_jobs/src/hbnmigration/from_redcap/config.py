@@ -4,7 +4,12 @@ from collections import UserList
 from typing import Final
 from warnings import deprecated
 
-from ..utility_functions import FieldDescriptor, ValueClass, ValueField
+from ..utility_functions import (
+    ColumnRenameMapping,
+    FieldDescriptor,
+    ValueClass,
+    ValueField,
+)
 
 RedcapComplete = FieldDescriptor(
     {"Incomplete": "0", "Unverified": "1", "Complete": "2"}
@@ -23,10 +28,10 @@ class FieldList(UserList):
 class Fields:
     """Return fields for REDCap API calls."""
 
-    class export_247:
-        """Fields to export from REDCap PID 247."""
+    class _ForCuriousMeta(type):
+        """Metaclass for deprecating `for_curious` attribute."""
 
-        for_curious: Final[FieldList] = FieldList(
+        _for_curious = FieldList(
             [
                 "record_id",
                 "mrn",
@@ -48,6 +53,18 @@ class Fields:
             ]
         )
         """Fields to export from REDCap PID 247 for import into Curious."""
+
+        @property
+        @deprecated(
+            "Deprecated in v1.10.0. Use `Fields.export_operations.for_curious`."
+        )
+        def for_curious(cls) -> FieldList:
+            """Fields to export from REDCap PID 247 for import into Curious."""
+            return cls._for_curious
+
+    class export_247(metaclass=_ForCuriousMeta):
+        """Fields to export from REDCap PID 247."""
+
         for_redcap_operations: Final[FieldList] = FieldList(
             [
                 "additional",
@@ -179,26 +196,83 @@ class Fields:
         )
         """Fields to export from REDCap PID 247 for import into REDCap PID 879."""
 
+    class export_operations:
+        """Fields to export from REDCap PID 625."""
+
+        for_curious: Final[FieldList] = FieldList(
+            [
+                "additional",
+                "address1",
+                "address_2",
+                "aptnumber1",
+                "aptnumber_2",
+                "city1",
+                "city_2",
+                "complete_parent_second_guardian_consent",
+                "curious_email_child",
+                "curious_password_child",
+                "dob",
+                "email",
+                "email_2",
+                "enrollment_complete",
+                "first_name",
+                "gender",
+                "gender_other",
+                "genderpronoun",
+                "genderpronoun_parent1",
+                "genderpronoun_parent2",
+                "genderpronounother",
+                "guardian_relation",
+                "guardian_relation_2",
+                "last_name",
+                "middlename_y",
+                "mrn",
+                "parent_involvement",
+                "parent_last_name_2",
+                "parentfirstname",
+                "parentfirstname_2",
+                "parentlastname",
+                "permission_audiovideo_participant",
+                "phone",
+                "phone_2",
+                "prefname",
+                "record_id",
+                "r_id",
+                "sex",
+                "sibling",
+                "siblingdob",
+                "siblingfirstname",
+                "siblinglastname",
+                "state1",
+                "state_2",
+                "zipcode1",
+                "zipcode_2",
+            ]
+        )
+        """Fields to export from REDCap PID 625 for import into Curious."""
+
     class import_curious:
         """Fields to import into Curious."""
 
         child: Final[dict[str, int | str | None]] = {
             "nickname": None,
             "role": "respondent",
-            "tag": "child",
+            "tag": "Child",
             "accountType": "limited",
+            "email": None,
             "firstName": None,
             "lastName": None,
             "secretUserId": None,
             "language": "en",
             "parent_involvement": None,
+            "password": None,
         }
         """Fields to import into Curious for child accounts."""
         parent: Final[dict[str, int | str | None]] = {
             "email": None,
             "nickname": None,
             "role": "respondent",
-            "tag": "parent",
+            "tag": "Parent",
             "accountType": "full",
             "firstName": None,
             "lastName": None,
@@ -275,7 +349,10 @@ class Fields:
     class rename:
         """Mappings to rename from one DataFrame to another."""
 
-        class redcap247_to_curious:
+        @deprecated(
+            "Deprecated in v1.10.0. Use `Fields.rename.redcap_operations_to_curious`"
+        )
+        class redcap247_to_curious(ColumnRenameMapping):
             """Columns to rename from REDCap PID 247 to Curious."""
 
             child: Final[dict[str, str]] = {
@@ -291,14 +368,34 @@ class Fields:
             parent: Final[dict[str, str]] = {
                 "email_1821": "email",
                 "parentfirstname": "firstName",
-                "parentfirstname_1821": "firstName",
                 "parent_last_name": "lastName",
                 "parent_last_name_1821": "lastName",
                 "mrn": "secretUserId",
             }
             """Columns to rename for parent accounts from REDCap PID 247 to Curious."""
 
-        class redcap_consent_to_redcap_responder_tracking:
+        class redcap_operations_to_curious(ColumnRenameMapping):
+            """Columns to rename from REDCap PID 625 to Curious."""
+
+            child: Final[dict[str, str]] = {
+                "curious_email_child": "email",
+                "email": "_parent_email",
+                "prefname": "nickname",
+                "first_name": "firstName",
+                "last_name": "lastName",
+                "curious_password_child": "password",
+                "mrn": "secretUserId",
+            }
+            """Columns to rename for child accounts from REDCap PID 625 to Curious."""
+            parent: Final[dict[str, str]] = {
+                "email_1821": "email",
+                "parentfirstname": "firstName",
+                "parentlastname": "lastName",
+                "r_id": "secretUserId",
+            }
+            """Columns to rename for parent accounts from REDCap PID 247 to Curious."""
+
+        class redcap_consent_to_redcap_responder_tracking(ColumnRenameMapping):
             """Columns to rename for REDCap PID 247 to PID 879."""
 
             child: Final[dict[str, str]] = {
@@ -332,7 +429,7 @@ class Fields:
             """Columns for parent / responder 2 of child participant"""
 
             responder_adult1: Final[dict[str, str]] = {
-                "email_1821": "resp_email",
+                "email_1821": "email",
                 "parentfirstname_1821": "resp_fname",
                 "parent_last_name_1821": "resp_lname",
                 "phone_1821": "resp_phone",
@@ -357,7 +454,7 @@ class Fields:
             "aptnumber_2_1821": "aptnumber_2",
             "city": "city1",
             "city_1821": "city1",
-            "city_2_1821": "city2",
+            "city_2_1821": "city_2",
             "parent_second_guardian_"
             "consent_complete": "complete_parent_second_guardian_consent",
             "dob_1821": "dob",
@@ -396,7 +493,7 @@ class Fields:
             "siblinglastname_1821": "siblinglastname",
             "state": "state1",
             "state_1821": "state1",
-            "state_2_1821": "state2",
+            "state_2_1821": "state_2",
             "zipcode": "zipcode1",
             "zipcode_1821": "zipcode1",
             "zipcode_2_1821": "zipcode_2",
