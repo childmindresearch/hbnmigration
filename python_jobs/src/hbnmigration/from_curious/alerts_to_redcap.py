@@ -388,7 +388,7 @@ async def websocket_listener(
 
 
 async def main_with_reconnect(
-    tokens: curious_variables.Tokens,
+    applet_name: str,
     uri: str,
     partial_redcap_landing: bool = False,
     max_attempts: Optional[int] = WS_MAX_RECONNECT_ATTEMPTS,
@@ -398,8 +398,8 @@ async def main_with_reconnect(
 
     Parameters
     ----------
-    tokens
-        Authentication tokens for WebSocket connection
+    applet_name
+        Name of applet to authenticate to
     uri
         WebSocket URI to connect to
     partial_redcap_landing
@@ -409,6 +409,8 @@ async def main_with_reconnect(
 
     """
     attempt = 0
+    tokens = curious_authenticate(applet_name)
+
     while max_attempts is None or attempt < max_attempts:
         try:
             if attempt > 0:
@@ -418,36 +420,43 @@ async def main_with_reconnect(
                     f" of {max_attempts}" if max_attempts else "",
                 )
             async with connect_to_websocket(tokens.access, uri) as websocket:
-                # Reset attempt counter on successful connection
                 if attempt > 0:
                     logger.info("Successfully reconnected to WebSocket")
                 attempt = 0
                 await websocket_listener(websocket, partial_redcap_landing)
                 logger.info("WebSocket listener completed normally")
                 break
+
         except ConnectionClosedError:
             attempt += 1
-            if max_attempts and attempt >= max_attempts:
+            if max_attempts is not None and attempt >= max_attempts:
                 logger.exception("Max reconnection attempts reached. Exiting.")
                 raise
             logger.warning(
                 "Connection lost. Reconnecting in %d seconds...", WS_RECONNECT_DELAY
             )
             await asyncio.sleep(WS_RECONNECT_DELAY)
+
         except InvalidStatus as e:
-            # Authentication or server errors
-            logger.exception(
-                "WebSocket connection failed with status %s", e.response.status_code
-            )
-            if e.response.status_code == requests.codes["unauthorized"]:
-                logger.exception(
-                    "Authentication failed. Token may be invalid or expired."
-                )
+            status = e.response.status_code
+            logger.exception("WebSocket connection failed with status %s", status)
+
+            if status == requests.codes["unauthorized"]:
+                # ── Re-authenticate ──
+                logger.warning("Token expired or invalid. Re-authenticating...")
+                try:
+                    tokens = curious_authenticate(applet_name)
+                    logger.info("Re-authentication successful")
+                except Exception:
+                    logger.exception("Re-authentication failed. Exiting.")
+                    raise
+
             attempt += 1
-            if max_attempts and attempt >= max_attempts:
+            if max_attempts is not None and attempt >= max_attempts:
                 logger.exception("Max reconnection attempts reached. Exiting.")
                 raise
             await asyncio.sleep(WS_RECONNECT_DELAY)
+
         except asyncio.CancelledError:
             logger.info("Operation cancelled")
             raise
@@ -485,10 +494,9 @@ async def main(
 
     """
     for applet_name in applet_names:
-        tokens = curious_authenticate(applet_name)
         endpoints = curious_variables.Endpoints(protocol="wss")
         await main_with_reconnect(
-            tokens=tokens,
+            applet_name=applet_name,
             uri=endpoints.alerts,
             partial_redcap_landing=partial_redcap_landing,
             max_attempts=max_attempts,

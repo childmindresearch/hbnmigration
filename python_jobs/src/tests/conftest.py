@@ -15,7 +15,6 @@ import pytest
 import requests
 from websockets.exceptions import InvalidStatus
 
-from hbnmigration._config_variables.curious_variables import Tokens
 from hbnmigration.from_curious.alerts_to_redcap import (
     parse_alert,
     synchronous_main,
@@ -698,16 +697,6 @@ def assert_pushed_data_contains_value(
     assert expected_value in pushed_data["value"].values
 
 
-def assert_reconnect_called_with_tokens_and_uri(
-    mock_reconnect: Mock, tokens: Tokens, uri_fragment: str
-) -> None:
-    """Assert reconnect was called with expected token and URI."""
-    assert mock_reconnect.called
-    call_kwargs = mock_reconnect.call_args[1]
-    assert call_kwargs["tokens"] == tokens
-    assert uri_fragment in call_kwargs["uri"]
-
-
 def assert_reconnect_called_with_max_attempts(
     mock_reconnect: Mock, expected_attempts: int
 ) -> None:
@@ -851,9 +840,13 @@ def setup_reconnect_mocks(
                     new_callable=AsyncMock,
                 )
             ),
+            "auth": stack.enter_context(
+                patch("hbnmigration.from_curious.alerts_to_redcap.curious_authenticate")
+            ),
         }
         mock_websocket = AsyncMock()
         mocks["ws"].return_value.__aenter__.return_value = mock_websocket
+        mocks["auth"].return_value = create_mock_tokens_ws()
         if listener_side_effect is not None:
             mocks["listener"].side_effect = listener_side_effect
         yield mocks

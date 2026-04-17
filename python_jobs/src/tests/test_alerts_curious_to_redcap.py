@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, patch
 
 import pandas as pd
 import pytest
+import requests
 from websockets.exceptions import ConnectionClosedError, InvalidStatus
 
 from hbnmigration.from_curious.alerts_to_redcap import (
@@ -345,6 +346,72 @@ async def test_websocket_listener_skips_non_answer_messages(mock_alerts_dependen
     assert not mock_alerts_dependencies["push"].called
 
 
+@pytest.mark.asyncio
+async def test_main_with_reconnect_reauths_on_401_then_succeeds(caplog):
+    """Test that main_with_reconnect re-authenticates on 401 and succeeds."""
+    with (
+        patch(
+            "hbnmigration.from_curious.alerts_to_redcap.connect_to_websocket"
+        ) as mock_ws,
+        patch(
+            "hbnmigration.from_curious.alerts_to_redcap.websocket_listener",
+            new_callable=AsyncMock,
+        ) as mock_listener,
+        patch(
+            "hbnmigration.from_curious.alerts_to_redcap.asyncio.sleep",
+            new_callable=AsyncMock,
+        ),
+        patch(
+            "hbnmigration.from_curious.alerts_to_redcap.curious_authenticate"
+        ) as mock_auth,
+    ):
+        mock_auth.return_value = create_mock_tokens_ws()
+        # First connect raises 401, second succeeds
+        mock_ctx = AsyncMock()
+        mock_ctx.__aenter__.return_value = AsyncMock()
+        mock_ws.side_effect = [
+            create_mock_invalid_status(requests.codes["unauthorized"]),
+            mock_ctx,
+        ]
+
+        await main_with_reconnect(
+            applet_name="test_applet", uri="wss://test.com/alerts", max_attempts=2
+        )
+        # Initial auth + re-auth on 401
+        assert mock_auth.call_count == 2
+        assert mock_listener.called
+        assert "Re-authentication successful" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_main_with_reconnect_reauth_failure_raises(caplog):
+    """Test that main_with_reconnect raises when re-authentication itself fails."""
+    with (
+        patch(
+            "hbnmigration.from_curious.alerts_to_redcap.connect_to_websocket"
+        ) as mock_ws,
+        patch(
+            "hbnmigration.from_curious.alerts_to_redcap.asyncio.sleep",
+            new_callable=AsyncMock,
+        ),
+        patch(
+            "hbnmigration.from_curious.alerts_to_redcap.curious_authenticate"
+        ) as mock_auth,
+    ):
+        # Initial auth succeeds, re-auth on 401 fails
+        mock_auth.side_effect = [
+            create_mock_tokens_ws(),
+            Exception("Auth server down"),
+        ]
+        mock_ws.side_effect = create_mock_invalid_status(requests.codes["unauthorized"])
+
+        with pytest.raises(Exception, match="Auth server down"):
+            await main_with_reconnect(
+                applet_name="test_applet", uri="wss://test.com/alerts", max_attempts=2
+            )
+        assert "Re-authentication failed" in caplog.text
+
+
 # ============================================================================
 # Tests - main_with_reconnect
 # ============================================================================
@@ -357,9 +424,8 @@ async def test_main_with_reconnect_successful_connection(
     """Test that main_with_reconnect handles successful connection."""
     setup_standard_alert_mocks(mock_alerts_dependencies, redcap_alerts_metadata)
     with setup_reconnect_mocks() as mocks:
-        tokens = create_mock_tokens_ws()
         await main_with_reconnect(
-            tokens=tokens, uri="wss://test.com/alerts", max_attempts=1
+            applet_name="test_applet", uri="wss://test.com/alerts", max_attempts=1
         )
         assert mocks["ws"].called
         assert mocks["listener"].called
@@ -369,9 +435,8 @@ async def test_main_with_reconnect_successful_connection(
 async def test_main_with_reconnect_handles_connection_error(caplog):
     """Test that main_with_reconnect reconnects on ConnectionClosedError."""
     with setup_reconnect_mocks([ConnectionClosedError(None, None), None]) as mocks:
-        tokens = create_mock_tokens_ws()
         await main_with_reconnect(
-            tokens=tokens, uri="wss://test.com/alerts", max_attempts=2
+            applet_name="test_applet", uri="wss://test.com/alerts", max_attempts=2
         )
         assert mocks["listener"].call_count == 2
         assert "Reconnecting in" in caplog.text
@@ -382,10 +447,9 @@ async def test_main_with_reconnect_handles_connection_error(caplog):
 async def test_main_with_reconnect_max_attempts_exceeded():
     """Test that main_with_reconnect stops after max attempts."""
     with setup_reconnect_mocks(ConnectionClosedError(None, None)) as mocks:
-        tokens = create_mock_tokens_ws()
         with pytest.raises(ConnectionClosedError):
             await main_with_reconnect(
-                tokens=tokens, uri="wss://test.com/alerts", max_attempts=1
+                applet_name="test_applet", uri="wss://test.com/alerts", max_attempts=1
             )
         assert mocks["listener"].call_count == 1
 
@@ -398,15 +462,25 @@ async def test_main_with_reconnect_handles_auth_error(caplog):
             "hbnmigration.from_curious.alerts_to_redcap.connect_to_websocket"
         ) as mock_ws,
         patch("hbnmigration.from_curious.alerts_to_redcap.asyncio.sleep") as mock_sleep,
+        patch(
+            "hbnmigration.from_curious.alerts_to_redcap.curious_authenticate"
+        ) as mock_auth,
     ):
-        mock_ws.side_effect = create_mock_invalid_status(401)
+        mock_ws.side_effect = create_mock_invalid_status(requests.codes["unauthorized"])
         mock_sleep.return_value = None
-        tokens = create_mock_tokens_ws()
+        # First call is the initial auth; second call is the re-auth on 401
+        mock_auth.side_effect = [
+            create_mock_tokens_ws(),
+            create_mock_tokens_ws(),
+        ]
         with pytest.raises(InvalidStatus):
             await main_with_reconnect(
-                tokens=tokens, uri="wss://test.com/alerts", max_attempts=1
+                applet_name="test_applet", uri="wss://test.com/alerts", max_attempts=1
             )
-        assert "Authentication failed" in caplog.text
+        assert (
+            "Token expired or invalid" in caplog.text
+            or "Authentication failed" in caplog.text
+        )
 
 
 @pytest.mark.asyncio
@@ -414,9 +488,8 @@ async def test_main_with_reconnect_infinite_retries():
     """Test that main_with_reconnect runs indefinitely with None max_attempts."""
     side_effects = [ConnectionClosedError(None, None)] * 5 + [None]
     with setup_reconnect_mocks(side_effects) as mocks:
-        tokens = create_mock_tokens_ws()
         await main_with_reconnect(
-            tokens=tokens, uri="wss://test.com/alerts", max_attempts=None
+            applet_name="test_applet", uri="wss://test.com/alerts", max_attempts=None
         )
         assert mocks["listener"].call_count == 6
         assert mocks["sleep"].call_count == 5
@@ -448,22 +521,16 @@ async def test_main_processes_websocket_messages(
             await main(applet_names=["Healthy Brain Network Questionnaires"])
             assert mock_reconnect.called
             call_kwargs = mock_reconnect.call_args[1]
-            assert "tokens" in call_kwargs
+            assert "applet_name" in call_kwargs
             assert "wss://" in call_kwargs["uri"]
 
 
 @pytest.mark.asyncio
 async def test_main_passes_max_attempts():
     """Test that main() passes max_attempts parameter."""
-    with (
-        patch(
-            "hbnmigration.from_curious.alerts_to_redcap.curious_authenticate"
-        ) as mock_auth,
-        patch(
-            "hbnmigration.from_curious.alerts_to_redcap.main_with_reconnect"
-        ) as mock_reconnect,
-    ):
-        mock_auth.return_value = create_mock_tokens_ws()
+    with patch(
+        "hbnmigration.from_curious.alerts_to_redcap.main_with_reconnect"
+    ) as mock_reconnect:
         mock_reconnect.return_value = None
         await main(
             applet_names=["Healthy Brain Network Questionnaires"],
