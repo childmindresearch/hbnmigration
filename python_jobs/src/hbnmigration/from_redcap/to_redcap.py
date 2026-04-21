@@ -1,8 +1,13 @@
 """
 Transfer data from one REDCap project to another via webhook triggers.
 
-When `ready_to_send_to_intake_redcap` field is set to 1 in REDCap,
-copies the approved participants to the Intake REDCap project.
+When ``ready_to_send_to_intake_redcap`` field is set to 1 in
+Healthy Brain Network Study Consent (IRB Approved) (PID 247),
+copies the approved participants to HBN - Operations and Data Collection (PID 625).
+
+Can also be run manually via CLI to process all pending records::
+
+    python -m hbnmigration.from_redcap.to_redcap
 """
 
 from typing import Annotated, Any, cast
@@ -11,20 +16,27 @@ from fastapi import BackgroundTasks, FastAPI, Form, Request
 from fastapi.responses import JSONResponse
 import pandas as pd
 from pydantic import BaseModel, Field
+import uvicorn
 
 from .._config_variables import redcap_variables
+from ..exceptions import NoData
 from ..utility_functions import initialize_logging, redcap_api_push
-from .config import Fields
+from .config import Fields, Values
 from .from_redcap import fetch_data
 
 logger = initialize_logging(__name__)
 
 _REDCAP_TOKENS = redcap_variables.Tokens()
+_REDCAP_ENDPOINTS = redcap_variables.Endpoints()
+_SOURCE_PID = 247
 _TARGET_PID = 625
 
 app = FastAPI(
     title="REDCap to REDCap Migration Service",
-    description="Handles REDCap Data Entry Triggers for pushing data to Intake REDCap",
+    description=(
+        "Handles REDCap Data Entry Triggers for pushing data "
+        "from Intake (PID 247) to Operations (PID 625)"
+    ),
 )
 
 
@@ -53,11 +65,14 @@ class RedcapTriggerPayload(BaseModel):
 
 def event_map(redcap_data: pd.DataFrame) -> dict[str, str]:
     """
-    Build a mapping from `field_name` to `redcap_event_name`.
+    Build a mapping from ``field_name`` to ``redcap_event_name``.
 
     In a longitudinal REDCap project, each field belongs to a specific event.
     This extracts that pairing from the fetched data.
-    Returns a dict of {field_name: redcap_event_name}.
+
+    Returns:
+        A dict of {field_name: redcap_event_name}.
+
     """
     return cast(
         dict[str, str],
@@ -68,9 +83,9 @@ def event_map(redcap_data: pd.DataFrame) -> dict[str, str]:
     )
 
 
-def format_data_for_intake(redcap_data: pd.DataFrame) -> pd.DataFrame:
+def format_data_for_redcap_operations(redcap_data: pd.DataFrame) -> pd.DataFrame:
     """
-    Format data from source REDCap for Intake REDCap.
+    Format data from intake (PID 247) for operations (PID 625).
 
     Parameters
     ----------
@@ -79,27 +94,21 @@ def format_data_for_intake(redcap_data: pd.DataFrame) -> pd.DataFrame:
 
     Returns
     -------
-    Formatted DataFrame ready for import to Intake REDCap.
+    Formatted DataFrame ready for import to Operations REDCap.
 
     """
-    # Apply any necessary field name mappings
     df = redcap_data.copy()
-
-    # Filter to only the fields needed for Intake
-    if hasattr(Fields, "export_operations") and hasattr(
-        Fields.export_operations, "for_intake"
+    if hasattr(Fields, "export_247") and hasattr(
+        Fields.export_247, "for_redcap_operations"
     ):
-        intake_fields = str(Fields.export_operations.for_intake).split(",")
+        intake_fields = str(Fields.export_247.for_redcap_operations).split(",")
         df = df[df["field_name"].isin(intake_fields)]
-
     return df
 
 
-def push_to_intake_redcap(
-    source_data: pd.DataFrame,
-) -> int:
+def push_to_intake_redcap(source_data: pd.DataFrame) -> int:
     """
-    Push data to Intake REDCap project.
+    Push data to operations (PID 625).
 
     Args:
         source_data: DataFrame with formatted data to push.
@@ -107,25 +116,24 @@ def push_to_intake_redcap(
     Returns:
         Number of rows successfully pushed.
 
-    Raises:
-        Exception: If push fails.
-
     """
     try:
         rows_updated = redcap_api_push(
             df=source_data,
-            token=_REDCAP_TOKENS.pid247,  # Intake REDCap token
-            url=redcap_variables.Endpoints().base_url,
+            token=_REDCAP_TOKENS.pid625,
+            url=_REDCAP_ENDPOINTS.base_url,
             headers=redcap_variables.headers,
         )
         logger.info(
-            "%d rows successfully pushed to Intake REDCap (PID %d).",
+            "%d rows successfully pushed to Operations REDCap (PID %d).",
             rows_updated,
             _TARGET_PID,
         )
         return rows_updated
     except Exception:
-        logger.exception("Failed to push data to Intake REDCap")
+        logger.exception(
+            "Failed to push data to Operations REDCap (PID %d)", _TARGET_PID
+        )
         raise
 
 
@@ -135,7 +143,7 @@ def update_source_redcap_status(
     event_name: str,
 ) -> None:
     """
-    Update the source REDCap with the push status.
+    Update Intake (PID 247) with the push status.
 
     Args:
         record_id: The record ID to update.
@@ -154,16 +162,16 @@ def update_source_redcap_status(
                 }
             ]
         )
-
         redcap_api_push(
             df=update_data,
-            token=_REDCAP_TOKENS.pid625,
-            url=redcap_variables.Endpoints().base_url,
+            token=_REDCAP_TOKENS.pid247,
+            url=_REDCAP_ENDPOINTS.base_url,
             headers=redcap_variables.headers,
         )
         logger.info(
-            "Updated status for record %s to '%s'",
+            "Updated status for record %s in PID %d to '%s'",
             record_id,
+            _SOURCE_PID,
             status_value,
         )
     except Exception:
@@ -175,39 +183,40 @@ def update_source_redcap_status(
 
 def clear_ready_flag(record_id: str) -> None:
     """
-    Clear the ready-to-send flag after successful push.
+    Clear the ready-to-send flag in Intake (PID 247).
 
     Args:
         record_id: The record ID to update.
 
     """
     try:
-        # Fetch just this record to get the event mapping
         data = fetch_data(
-            _REDCAP_TOKENS.pid625,
+            _REDCAP_TOKENS.pid247,
             "ready_to_send_to_intake_redcap",
             filter_logic=f"[record_id] = '{record_id}'",
         )
         if data.empty:
-            logger.warning("Could not find record %s to clear flag", record_id)
+            logger.warning(
+                "Could not find record %s in PID %d to clear flag",
+                record_id,
+                _SOURCE_PID,
+            )
             return
-
         event = event_map(data).get("ready_to_send_to_intake_redcap")
         if event is None:
-            logger.exception(
+            logger.error(
                 "Could not determine redcap_event_name for "
-                "'ready_to_send_to_intake_redcap'. Skipping flag clear for record %s.",
+                "'ready_to_send_to_intake_redcap'. "
+                "Skipping flag clear for record %s.",
                 record_id,
             )
             return
-
         update_source_redcap_status(record_id, "0", event)
-
     except Exception:
         logger.exception("Error clearing ready flag for record %s", record_id)
 
 
-def process_record_for_intake(record_id: str) -> dict[str, Any]:
+def process_record_for_redcap_operations(record_id: str) -> dict[str, Any]:
     """
     Process a single record triggered by REDCap webhook.
 
@@ -220,34 +229,29 @@ def process_record_for_intake(record_id: str) -> dict[str, Any]:
     """
     try:
         logger.info("Processing record %s for Intake REDCap push", record_id)
-
-        # Determine which fields to export
-        if hasattr(Fields, "export_operations") and hasattr(
-            Fields.export_operations, "for_intake"
+        if hasattr(Fields, "export_247") and hasattr(
+            Fields.export_247, "for_redcap_operations"
         ):
-            fields_to_export = str(Fields.export_operations.for_intake)
+            fields_to_export = str(Fields.export_247.for_redcap_operations)
         else:
-            # Export all fields if not specified
             fields_to_export = None
 
-        # Fetch data for this specific record
         source_data = fetch_data(
-            _REDCAP_TOKENS.pid625,
+            _REDCAP_TOKENS.pid247,
             fields_to_export,
             filter_logic=f"[record_id] = '{record_id}'",
         )
-
         if source_data.empty:
-            logger.warning("No data found for record %s", record_id)
+            logger.warning(
+                "No data found for record %s in PID %d", record_id, _SOURCE_PID
+            )
             return {
                 "status": "error",
                 "record_id": record_id,
-                "message": "No data found in source REDCap",
+                "message": f"No data found in Intake (PID {_SOURCE_PID})",
             }
 
-        # Format data for Intake
-        formatted_data = format_data_for_intake(source_data)
-
+        formatted_data = format_data_for_redcap_operations(source_data)
         if formatted_data.empty:
             logger.info("No processable data for record %s", record_id)
             return {
@@ -256,26 +260,27 @@ def process_record_for_intake(record_id: str) -> dict[str, Any]:
                 "message": "No processable data after formatting",
             }
 
-        # Push to Intake REDCap
         rows_pushed = push_to_intake_redcap(formatted_data)
-
-        # Clear the ready flag
         clear_ready_flag(record_id)
 
         return {
             "status": "success",
             "record_id": record_id,
-            "message": f"Successfully pushed {rows_pushed} row(s) to Intake REDCap",
+            "message": f"Pushed {rows_pushed} row(s) to Operations (PID {_TARGET_PID})",
             "rows_pushed": rows_pushed,
         }
-
     except Exception as e:
-        logger.exception("Error processing record %s for Intake REDCap", record_id)
+        logger.exception("Error processing record %s for Operations REDCap", record_id)
         return {
             "status": "error",
             "record_id": record_id,
             "message": str(e),
         }
+
+
+# ---------------------------------------------------------------------------
+# Webhook endpoints
+# ---------------------------------------------------------------------------
 
 
 @app.get("/")
@@ -291,31 +296,24 @@ async def health() -> dict[str, str]:
 
 
 @app.post("/webhook/redcap-to-intake")
-async def redcap_to_intake_webhook(  # noqa: PLR0913
+async def redcap_to_intake_webhook(
     background_tasks: BackgroundTasks,
-    project_id: Annotated[int, Form()],
     instrument: Annotated[str, Form()],
     record: Annotated[str, Form()],
-    redcap_event_name: Annotated[str | None, Form()] = None,
-    redcap_repeat_instance: Annotated[int | None, Form()] = None,
-    redcap_repeat_instrument: Annotated[str | None, Form()] = None,
-    redcap_data_access_group: Annotated[str | None, Form()] = None,
-    redcap_url: Annotated[str | None, Form()] = None,
-    project_url: Annotated[str | None, Form()] = None,
-    username: Annotated[str | None, Form()] = None,
     ready_to_send_to_intake_redcap: Annotated[str | None, Form()] = None,
 ) -> dict[str, Any]:
     """
     Handle REDCap Data Entry Trigger for Intake updates.
 
-    This endpoint should be configured in REDCap as a Data Entry Trigger.
-    When the 'ready_to_send_to_intake_redcap' field is set to '1', REDCap
-    will POST to this endpoint.
+    This endpoint should be configured as a Data Entry Trigger in
+    REDCap PID 247. When ``ready_to_send_to_intake_redcap`` is set to ``1``,
+    REDCap will POST to this endpoint.
 
     Configuration in REDCap:
-    1. Go to Project Setup -> Additional Customizations
+
+    1. Go to Project Setup → Additional Customizations
     2. Enable "Data Entry Trigger"
-    3. Set URL to: https://your-domain.com/webhook/redcap-to-intake
+    3. Set URL to: ``https://your-domain.com/webhook/redcap-to-intake``
 
     """
     logger.info(
@@ -323,8 +321,6 @@ async def redcap_to_intake_webhook(  # noqa: PLR0913
         record,
         instrument,
     )
-
-    # Check if the ready flag is set
     if ready_to_send_to_intake_redcap != "1":
         logger.debug("Ready flag not set for record %s, ignoring trigger", record)
         return {
@@ -332,12 +328,8 @@ async def redcap_to_intake_webhook(  # noqa: PLR0913
             "message": "Ready flag not set to '1', ignoring trigger",
             "record_id": record,
         }
-
-    # Process the push in the background
-    background_tasks.add_task(process_record_for_intake, record)
-
+    background_tasks.add_task(process_record_for_redcap_operations, record)
     logger.info("Queued record %s for Intake REDCap push", record)
-
     return {
         "status": "accepted",
         "message": f"Trigger accepted for record {record}",
@@ -355,7 +347,78 @@ async def global_exception_handler(request: Request, exc: Exception) -> JSONResp
     )
 
 
-if __name__ == "__main__":
-    import uvicorn
+# ---------------------------------------------------------------------------
+# CLI entry points
+# ---------------------------------------------------------------------------
 
-    uvicorn.run(app, host="0.0.0.0", port=8001)
+
+def main() -> None:
+    """
+    Process all pending 'Ready to Send to Intake Redcap' records (bulk/manual).
+
+    This is the batch-processing entry point. Run manually or via cron to
+    process every record currently flagged in REDCap PID 247.
+
+    Usage::
+
+        python -m hbnmigration.from_redcap.to_redcap
+
+    """
+    try:
+        if hasattr(Fields, "export_247") and hasattr(
+            Fields.export_247, "for_redcap_operations"
+        ):
+            fields_to_export = str(Fields.export_247.for_redcap_operations)
+        else:
+            fields_to_export = None
+
+        data_operations = fetch_data(
+            _REDCAP_TOKENS.pid247,
+            fields_to_export,
+            Values.PID247.intake_ready.filter_logic("Ready to Send to Intake Redcap"),
+        )
+        if data_operations.empty:
+            logger.info(
+                "REDCap PID %s: No participants marked "
+                "'Ready to Send to Intake Redcap'.",
+                _SOURCE_PID,
+            )
+            raise NoData
+    except NoData:
+        logger.info(
+            "No data to transfer from PID %s to PID %s.",
+            _SOURCE_PID,
+            _TARGET_PID,
+        )
+        return
+
+    formatted_data = format_data_for_redcap_operations(data_operations)
+    if formatted_data.empty:
+        logger.info("No data to push after formatting.")
+        return
+
+    try:
+        push_to_intake_redcap(formatted_data)
+    except Exception:
+        logger.exception("Batch push to Intake REDCap failed.")
+        return
+
+    pushed_records = set(formatted_data["record"].unique())
+    for record_id in pushed_records:
+        clear_ready_flag(str(record_id))
+
+
+def serve(host: str = "0.0.0.0", port: int = 8001) -> None:
+    """
+    Start the webhook server.
+
+    Args:
+        host: Bind address.
+        port: Bind port.
+
+    """
+    uvicorn.run(app, host=host, port=port)
+
+
+if __name__ == "__main__":
+    main()

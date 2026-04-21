@@ -3,6 +3,9 @@ Transfer data from REDCap to Curious via webhook triggers.
 
 When `ready_to_send_to_curious` field is set to 1 in REDCap,
 prepares and copies the reviewed and approved participants by the RAs to Curious.
+
+Can also be run manually via CLI to process all pending records:
+    python -m hbnmigration.from_redcap.to_curious
 """
 
 from typing import Annotated, Any, cast, Literal
@@ -13,8 +16,10 @@ import numpy as np
 import pandas as pd
 from pydantic import BaseModel, Field
 import requests
+import uvicorn
 
 from .._config_variables import curious_variables, redcap_variables
+from ..exceptions import NoData
 from ..from_curious.config import AccountType
 from ..utility_functions import (
     initialize_logging,
@@ -83,7 +88,10 @@ def event_map(redcap_data: pd.DataFrame) -> dict[str, str]:
 
     In a longitudinal REDCap project, each field belongs to a specific event.
     This extracts that pairing from the fetched data.
-    Returns a dict of {field_name: redcap_event_name}.
+
+    Returns:
+        A dict of {field_name: redcap_event_name}.
+
     """
     return cast(
         dict[str, str],
@@ -216,7 +224,7 @@ def update_redcap(
     # Look up the correct event for enrollment_complete
     enrollment_event = event_map(redcap_df).get("enrollment_complete")
     if enrollment_event is None:
-        logger.exception(
+        logger.error(
             "Could not determine redcap_event_name for 'enrollment_complete'. "
             "Skipping REDCap update."
         )
@@ -249,8 +257,6 @@ def clear_ready_flag(record_id: str) -> None:
 
     """
     try:
-        # Need to determine the correct event for ready_to_send_to_curious
-        # Fetch just this record to get the event mapping
         data = fetch_data(
             _REDCAP_TOKENS.pid625,
             "ready_to_send_to_curious",
@@ -259,16 +265,15 @@ def clear_ready_flag(record_id: str) -> None:
         if data.empty:
             logger.warning("Could not find record %s to clear flag", record_id)
             return
-
         event = event_map(data).get("ready_to_send_to_curious")
         if event is None:
-            logger.exception(
-                "Could not determine redcap_event_name for 'ready_to_send_to_curious'. "
+            logger.error(
+                "Could not determine redcap_event_name for "
+                "'ready_to_send_to_curious'. "
                 "Skipping flag clear for record %s.",
                 record_id,
             )
             return
-
         update_data = pd.DataFrame(
             [
                 {
@@ -279,7 +284,6 @@ def clear_ready_flag(record_id: str) -> None:
                 }
             ]
         )
-
         redcap_api_push(
             df=update_data,
             token=_REDCAP_TOKENS.pid625,
@@ -304,14 +308,11 @@ def process_record_for_curious(record_id: str) -> dict[str, Any]:
     """
     try:
         logger.info("Processing record %s for Curious push", record_id)
-
-        # Fetch data for this specific record
         data_operations = fetch_data(
             _REDCAP_TOKENS.pid625,
             str(Fields.export_operations.for_curious),
             filter_logic=f"[record_id] = '{record_id}'",
         )
-
         if data_operations.empty:
             logger.warning("No data found for record %s", record_id)
             return {
@@ -319,9 +320,7 @@ def process_record_for_curious(record_id: str) -> dict[str, Any]:
                 "record_id": record_id,
                 "message": "No data found in REDCap",
             }
-
         curious_data = format_redcap_data_for_curious(data_operations)
-
         if curious_data["child"].empty and curious_data["parent"].empty:
             logger.info("No processable data for record %s", record_id)
             return {
@@ -329,23 +328,16 @@ def process_record_for_curious(record_id: str) -> dict[str, Any]:
                 "record_id": record_id,
                 "message": "No processable data after formatting",
             }
-
         curious_endpoints = curious_variables.Endpoints()
         curious_credentials = curious_variables.AppletCredentials()
-
         failures = [
             *push_child_data(
                 curious_data["child"], curious_endpoints, curious_credentials
             ),
             *push_parent_data(curious_data, curious_endpoints, curious_credentials),
         ]
-
-        # Update REDCap with results
         update_redcap(data_operations, curious_data["child"], failures)
-
-        # Clear the ready flag
         clear_ready_flag(record_id)
-
         if failures:
             return {
                 "status": "partial",
@@ -353,13 +345,11 @@ def process_record_for_curious(record_id: str) -> dict[str, Any]:
                 "message": f"Processed with {len(failures)} failure(s)",
                 "failures": failures,
             }
-
         return {
             "status": "success",
             "record_id": record_id,
             "message": "Successfully pushed to Curious",
         }
-
     except Exception as e:
         logger.exception("Error processing record %s for Curious", record_id)
         return {
@@ -412,6 +402,11 @@ def push_parent_data(
     ]
 
 
+# ---------------------------------------------------------------------------
+# Webhook endpoints
+# ---------------------------------------------------------------------------
+
+
 @app.get("/")
 async def root() -> dict[str, str]:
     """Root endpoint."""
@@ -425,31 +420,32 @@ async def health() -> dict[str, str]:
 
 
 @app.post("/webhook/redcap-to-curious")
-async def redcap_to_curious_webhook(  # noqa: PLR0913
+async def redcap_to_curious_webhook(
     background_tasks: BackgroundTasks,
-    project_id: Annotated[int, Form()],
+    # project_id: Annotated[int, Form()],
     instrument: Annotated[str, Form()],
     record: Annotated[str, Form()],
-    redcap_event_name: Annotated[str | None, Form()] = None,
-    redcap_repeat_instance: Annotated[int | None, Form()] = None,
-    redcap_repeat_instrument: Annotated[str | None, Form()] = None,
-    redcap_data_access_group: Annotated[str | None, Form()] = None,
-    redcap_url: Annotated[str | None, Form()] = None,
-    project_url: Annotated[str | None, Form()] = None,
-    username: Annotated[str | None, Form()] = None,
+    # redcap_event_name: Annotated[str | None, Form()] = None,
+    # redcap_repeat_instance: Annotated[int | None, Form()] = None,
+    # redcap_repeat_instrument: Annotated[str | None, Form()] = None,
+    # redcap_data_access_group: Annotated[str | None, Form()] = None,
+    # redcap_url: Annotated[str | None, Form()] = None,
+    # project_url: Annotated[str | None, Form()] = None,
+    # username: Annotated[str | None, Form()] = None,
     ready_to_send_to_curious: Annotated[str | None, Form()] = None,
 ) -> dict[str, Any]:
     """
     Handle REDCap Data Entry Trigger for Curious updates.
 
     This endpoint should be configured in REDCap as a Data Entry Trigger.
-    When the 'ready_to_send_to_curious' field is set to '1', REDCap
+    When the ``ready_to_send_to_curious`` field is set to ``1``, REDCap
     will POST to this endpoint.
 
     Configuration in REDCap:
-    1. Go to Project Setup -> Additional Customizations
+
+    1. Go to Project Setup → Additional Customizations
     2. Enable "Data Entry Trigger"
-    3. Set URL to: https://your-domain.com/webhook/redcap-to-curious
+    3. Set URL to: ``https://your-domain.com/webhook/redcap-to-curious``
 
     """
     logger.info(
@@ -457,8 +453,6 @@ async def redcap_to_curious_webhook(  # noqa: PLR0913
         record,
         instrument,
     )
-
-    # Check if the ready flag is set
     if ready_to_send_to_curious != "1":
         logger.debug("Ready flag not set for record %s, ignoring trigger", record)
         return {
@@ -466,12 +460,8 @@ async def redcap_to_curious_webhook(  # noqa: PLR0913
             "message": "Ready flag not set to '1', ignoring trigger",
             "record_id": record,
         }
-
-    # Process the push in the background
     background_tasks.add_task(process_record_for_curious, record)
-
     logger.info("Queued record %s for Curious push", record)
-
     return {
         "status": "accepted",
         "message": f"Trigger accepted for record {record}",
@@ -489,7 +479,66 @@ async def global_exception_handler(request: Request, exc: Exception) -> JSONResp
     )
 
 
-if __name__ == "__main__":
-    import uvicorn
+# ---------------------------------------------------------------------------
+# CLI entry points
+# ---------------------------------------------------------------------------
 
-    uvicorn.run(app, host="0.0.0.0", port=8002)
+
+def main() -> None:
+    """
+    Process all pending 'Ready to Send to Curious' records (bulk/manual).
+
+    This is the original batch-processing entry point. Run manually or via
+    cron to process every record currently flagged in REDCap PID 625.
+
+    Usage::
+
+        python -m hbnmigration.from_redcap.to_curious
+
+    """
+    try:
+        data_operations = fetch_data(
+            _REDCAP_TOKENS.pid625,
+            str(Fields.export_operations.for_curious),
+            Values.PID625.enrollment_complete.filter_logic("Ready to Send to Curious"),
+        )
+        if data_operations.empty:
+            logger.info(
+                "REDCap PID %s: No participants marked 'Ready to Send to Curious'.",
+                _REDCAP_PID,
+            )
+            raise NoData
+    except NoData:
+        logger.info("No data to transfer from REDCap %s to Curious.", _REDCAP_PID)
+        return
+
+    curious_data = format_redcap_data_for_curious(data_operations)
+    if curious_data["child"].empty and curious_data["parent"].empty:
+        logger.info("All participants already sent to Curious")
+        return
+
+    curious_endpoints = curious_variables.Endpoints()
+    curious_credentials = curious_variables.AppletCredentials()
+
+    failures = [
+        *push_child_data(curious_data["child"], curious_endpoints, curious_credentials),
+        *push_parent_data(curious_data, curious_endpoints, curious_credentials),
+    ]
+
+    update_redcap(data_operations, curious_data["child"], failures)
+
+
+def serve(host: str = "0.0.0.0", port: int = 8002) -> None:
+    """
+    Start the webhook server.
+
+    Args:
+        host: Bind address.
+        port: Bind port.
+
+    """
+    uvicorn.run(app, host=host, port=port)
+
+
+if __name__ == "__main__":
+    main()

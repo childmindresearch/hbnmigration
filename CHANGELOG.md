@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## 1.10.1
 
+### Added
+
+- Endpoints to recieve REDCap Data Entry Triggers.
+
 ### Fixed
 
 - Websocket now gets a new token when the one it's trying expires.

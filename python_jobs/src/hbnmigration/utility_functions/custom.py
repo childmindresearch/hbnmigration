@@ -602,6 +602,7 @@ def new_curious_account(
         response.status_code == requests.codes["bad"]
         and response_body.get("result", [])[-1].get("message") == "Non-unique value."
     ):
+        breakpoint()
         return f"Account already exists for MRN {record.get('secretUserId')}"
     response.raise_for_status()
     return None
