@@ -224,7 +224,7 @@ def fetch_api_data(
     column: str | None = None,
     *,
     capture_invalid_fields: Literal[True],
-) -> pd.DataFrame | list[str]: ...
+) -> pd.DataFrame: ...
 
 
 @overload
@@ -549,7 +549,7 @@ def redcap_api_push(
     if response.status_code == requests.codes["okay"]:
         return int(response.text)
     if response.status_code == requests.codes["gateway_timeout"]:
-        logger.error("Failed to push data with shape %s", df.shape)
+        logger.exception("Failed to push data with shape %s", df.shape)
     try:
         response.raise_for_status()
     except requests.exceptions.HTTPError as http_error:
@@ -628,7 +628,7 @@ def get_redcap_event_names(
             "Failed to fetch data: %d - %s", response.status_code, response.text
         )
         tsv_logger = setup_tsv_logger("mrn_error_log", "mrn_error_log.tsv")
-        tsv_logger.error(
+        tsv_logger.exception(
             response.text, extra={"mrn": "", "attempt": "get_redcap_event_names"}
         )
         return {}

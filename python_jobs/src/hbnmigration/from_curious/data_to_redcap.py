@@ -313,7 +313,7 @@ def _filter_by_record_id_fallback(
     )
 
     if "record_id" not in df.columns:
-        logger.error(
+        logger.exception(
             "Cannot filter parent records for '%s': "
             "missing both 'target_user_secret_id' and 'record_id' columns",
             instrument_name,
@@ -1041,9 +1041,9 @@ def _upload_csv_to_redcap(csv_path: Path, retry_on_field_error: bool = True) -> 
             ENDPOINTS["REDCap"].base_url, data=data, timeout=180
         )  # 3 minute timeout
         if r.status_code != requests.codes["okay"]:
-            logger.error("Bad Request")
-            logger.error(r.text)
-            logger.error("HTTP Status: %d", r.status_code)
+            logger.exception("Bad Request")
+            logger.exception(r.text)
+            logger.exception("HTTP Status: %d", r.status_code)
             # Check for invalid category errors
             invalid_cat_errors = extract_invalid_category_errors(r.text)
             if invalid_cat_errors:

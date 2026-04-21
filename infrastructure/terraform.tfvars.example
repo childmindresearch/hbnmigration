@@ -1,9 +1,12 @@
 # Copy to terraform.tfvars and fill in your values
 
-log_directory      = "/logs"
-project_root       = "/home/hbnmigration"
+log_directory         = "/logs"
+project_root          = "/home/hbnmigration"
 sync_interval_minutes = 1
-user_group         = "hbnmigration"
-venv_path          = "python_jobs/.venv"
-project_status     = "prod"
-recovery_mode      = false
+user_group            = "hbnmigration"
+venv_path             = "python_jobs/.venv"
+project_status        = "prod"
+recovery_mode         = false
+environment           = "dev"
+webhook_allowed_cidrs = ["0.0.0.0/0"]
+ssh_allowed_cidrs     = ["0.0.0.0/0"]

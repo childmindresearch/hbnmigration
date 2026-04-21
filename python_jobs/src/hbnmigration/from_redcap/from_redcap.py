@@ -293,7 +293,7 @@ def transform_redcap_data_for_responder_tracking() -> tuple[
 
 def fetch_data(
     token: str,
-    export_fields: str,
+    export_fields: Optional[str] = None,
     filter_logic: Optional[str] = None,
     *,
     all_or_any: Literal["all", "any"] = "all",
@@ -327,7 +327,6 @@ def fetch_data(
         "format": "csv",
         "type": "flat" if flat else "eav",
         "csvDelimiter": "",
-        "fields": export_fields,
         "rawOrLabel": "raw",
         "rawOrLabelHeaders": "raw",
         "exportCheckboxLabel": "false",
@@ -335,8 +334,10 @@ def fetch_data(
         "exportDataAccessGroups": "false",
         "returnFormat": "csv",
     }
+    if export_fields:
+        redcap_participant_data["fields"] = export_fields
     orig_filter_logic = filter_logic
-    if all_or_any == "any":
+    if all_or_any == "any" and export_fields:
         filter_conditions = " OR ".join(
             [f"[{field}] != ''" for field in export_fields.split(",")]
         )
@@ -353,7 +354,7 @@ def fetch_data(
         redcap_participant_data,
         capture_invalid_fields=True,
     )
-    if isinstance(df_redcap_participant_consent_data, list):
+    if isinstance(df_redcap_participant_consent_data, list) and export_fields:
         export_list = [
             field
             for field in export_fields.split(",")

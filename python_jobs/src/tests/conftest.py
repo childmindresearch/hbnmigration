@@ -55,13 +55,9 @@ def isolated_cache(tmp_path: Path) -> Generator[None, None, None]:
     """Isolate cache directory per test to prevent cross-test pollution."""
     cache_dir = tmp_path / "cache"
     cache_dir.mkdir(parents=True, exist_ok=True)
-
     old_cache_dir = os.environ.get("HBNMIGRATION_CACHE_DIR")
     os.environ["HBNMIGRATION_CACHE_DIR"] = str(cache_dir)
-
     yield
-
-    # Restore original value
     if old_cache_dir is None:
         os.environ.pop("HBNMIGRATION_CACHE_DIR", None)
     else:
@@ -960,7 +956,7 @@ def create_sync_main_test_setup(
     mock_alerts_dependencies: dict[str, Mock],
     alerts: list[CuriousAlert | dict[str, Any]],
     parse_returns: list[pd.DataFrame] | None,
-    status_code: int = 200,
+    status_code: int = requests.codes["okay"],
     metadata: pd.DataFrame | None = None,
 ) -> ContextManager[dict[str, Mock]]:
     """
@@ -2203,7 +2199,6 @@ def patched_main_workflow() -> Generator[dict[str, Mock], None, None]:
 def patch_redcap_transfer_module(
     fetch_return: Any = None,
     push_return: Any = None,
-    update_return: Any = None,
 ) -> Generator[dict[str, Mock], None, None]:
     """Context manager for patching REDCap transfer module dependencies."""
     with ExitStack() as stack:
@@ -2214,26 +2209,19 @@ def patch_redcap_transfer_module(
             "push": stack.enter_context(
                 patch("hbnmigration.from_redcap.to_redcap.redcap_api_push")
             ),
-            "update": stack.enter_context(
-                patch("hbnmigration.from_redcap.to_redcap.update_source")
-            ),
             "redcap_vars": stack.enter_context(
                 patch("hbnmigration.from_redcap.to_redcap.redcap_variables")
             ),
-            "endpoints": stack.enter_context(
-                patch("hbnmigration.from_redcap.to_redcap.Endpoints")
-            ),
         }
-        mocks["redcap_vars"].Tokens.pid744 = "token_744"
+        mocks["redcap_vars"].Tokens.return_value.pid625 = "token_625"
+        mocks["redcap_vars"].Tokens.pid625 = "token_625"
         mocks["redcap_vars"].Tokens.pid247 = "token_247"
         mocks["redcap_vars"].headers = {}
-        mocks["endpoints"].return_value.base_url = DEFAULT_REDCAP_BASE_URL
+        mocks["redcap_vars"].Endpoints.return_value.base_url = DEFAULT_REDCAP_BASE_URL
         if fetch_return is not None:
             mocks["fetch"].return_value = fetch_return
         if push_return is not None:
             mocks["push"].return_value = push_return
-        if update_return is not None:
-            mocks["update"].return_value = update_return
         yield mocks
 
 

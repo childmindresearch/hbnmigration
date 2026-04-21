@@ -1,37 +1,28 @@
 [Unit]
-Description=REDCap to Curious Sync Service [${workspace}]
+Description=REDCap to Curious Webhook Service
 After=network.target
-PartOf=hbn-sync.service
+Wants=network-online.target
 
 [Service]
-Type=oneshot
-User=${user_group}
-Group=${user_group}
-WorkingDirectory=${project_root}
-ExecStart=${venv_path}/bin/redcap-to-curious
-Environment="WORKSPACE=${workspace}"
-Environment="HBNMIGRATION_PROJECT_ROOT=${project_root}"
-Environment="HBNMIGRATION_LOG_ROOT=${log_directory}"
-Environment="HBNMIGRATION_PROJECT_STATUS=${project_status}"
-Environment="HBNMIGRATION_RECOVERY_MODE=${recovery_mode ? "1" : "0"}"
+Type=simple
+User=${service_user}
+Group=${service_group}
+WorkingDirectory=${working_directory}
+Environment="PATH=${python_venv}/bin:/usr/local/bin:/usr/bin:/bin"
+Environment="PYTHONPATH=${working_directory}/python_jobs/src"
+ExecStart=${python_venv}/bin/uvicorn hbnmigration.from_redcap.to_curious:app --host 0.0.0.0 --port 8002 --workers 2
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=redcap-to-curious
 
-# Timeouts
-TimeoutStartSec=300
-TimeoutStopSec=30
-
-# Logging
-BindPaths=/data/logs/hbnmigration:/home/hbnmigration/hbnmigration/.hbnmigration_logs
-StandardOutput=append:${log_directory}/redcap-to-curious.log
-StandardError=append:${log_directory}/redcap-to-curious-error.log
-SyslogIdentifier=redcap-to-curious-${workspace}
-
-# Security hardening
+# Security settings
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
-ReadWritePaths=${project_root}
-ReadWritePaths=${log_directory}
-ReadWritePaths=${project_root}/.hbnmigration_cache
+ProtectHome=true
+ReadWritePaths=${working_directory} /var/log/hbnmigration /tmp/hbn_cache
 
 [Install]
-WantedBy=hbn-sync.timer
+WantedBy=multi-user.target

@@ -1,6 +1,6 @@
 """Utility functions."""
 
-from .cache import DataCache, get_cache_dir, get_recent_time_window, YESTERDAY
+from .cache import DataCache, get_recent_time_window, YESTERDAY
 from .custom import (
     create_tempory_file,
     execute_vars_file,
@@ -96,7 +96,6 @@ __all__ = [
     "fetch_api_data2",
     "fetch_api_data3",
     "flat_to_eav",
-    "get_cache_dir",
     "get_mindlogger_token",
     "get_recent_time_window",
     "get_redcap_event_names",

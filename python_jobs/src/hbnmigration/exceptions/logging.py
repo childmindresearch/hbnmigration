@@ -17,6 +17,6 @@ class TSVLoggedError(Exception):
         self.attempt = attempt
 
         # Log using logging library
-        self.logger.error(error_message, extra={"mrn": mrn, "attempt": attempt})
+        self.logger.exception(error_message, extra={"mrn": mrn, "attempt": attempt})
 
         super().__init__(f"MRN {mrn}: {error_message} (Attempt {attempt})")

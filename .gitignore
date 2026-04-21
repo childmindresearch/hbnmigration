@@ -26,6 +26,8 @@ terraform.rc
 # Generated files
 generated_*
 **/generated_*
+.generated_*
+**/.generated_*
 
 # Keep backups in git (they're important!)
 !backups/
