@@ -22,6 +22,8 @@ class Tokens:
     """SANDBOX - Healthy Brain Network Study Consent (IRB Approved) PID 757."""
     pid879: str
     """HBN - Responder Tracking"""
+    pid891 = None
+    """HBN - Curious outputs"""
 
 redcap_import_file: Path
 redcap_update_file: Path

@@ -445,48 +445,6 @@ def make_api_respondent(
     }
 
 
-def make_ml_data(**overrides: Any) -> CuriousDecryptedAnswer:
-    """
-    Build a minimal CuriousDecryptedAnswer with overrides.
-
-    Parameters
-    ----------
-    **overrides
-        Keys to override in the base dict.
-
-    Returns
-    -------
-    CuriousDecryptedAnswer
-
-    """
-    base: dict[str, Any] = {
-        "activityId": SAMPLE_ACTIVITY_ID,
-        "activityHistoryId": "hist1234-ab12-cd34-ef56-abcdef123456",
-        "answerId": "answ1234-ab12-cd34-ef56-abcdef123456",
-        "createdAt": "2024-06-01T12:00:00.000",
-        "endDatetime": "2024-06-01T12:05:00.000",
-        "flowHistoryId": None,
-        "id": "id001234-ab12-cd34-ef56-abcdef123456",
-        "identifier": None,
-        "itemIds": [],
-        "items": [],
-        "migratedData": None,
-        "reviewCount": {},
-        "sourceSubject": {},
-        "startDatetime": "2024-06-01T12:00:00.000",
-        "submitId": SAMPLE_SUBMIT_ID,
-        "subscaleSetting": None,
-        "version": "1.0.0",
-        "userPublicKey": "fake_public_key",
-        "answer": [],
-        "events": [],
-        "respondentSecretId": "00001_P",
-        "sourceSecretId": "00001_P",
-    }
-    base.update(overrides)
-    return cast(CuriousDecryptedAnswer, base)
-
-
 # ============================================================================
 # Mock Configuration Functions
 # ============================================================================
@@ -1491,6 +1449,28 @@ def sample_redcap_context() -> dict[str, Any]:
     }
 
 
+def make_ml_data(
+    items: list[dict] | None = None,
+    item_ids: list[str] | None = None,
+    answer: list[dict] | None = None,
+) -> CuriousDecryptedAnswer:
+    """Create a minimal CuriousDecryptedAnswer for testing."""
+    return cast(
+        CuriousDecryptedAnswer,
+        {
+            "submitId": "submit1234-ab12-cd34-ef56-abcdef123456",
+            "version": "1.0.0",
+            "startDatetime": "2024-01-01T12:00:00.000Z",
+            "endDatetime": "2024-01-01T12:05:00.000Z",
+            "respondentSecretId": "resp_123",
+            "sourceSecretId": "resp_123",
+            "items": items or [],
+            "itemIds": item_ids or [],
+            "answer": answer or [],
+        },
+    )
+
+
 @pytest.fixture
 def sample_decrypted_answer() -> CuriousDecryptedAnswer:
     """
@@ -1500,7 +1480,7 @@ def sample_decrypted_answer() -> CuriousDecryptedAnswer:
     strptime with format ``%Y-%m-%dT%H:%M:%S%.f`` which does not parse 'Z'.
     """
     return make_ml_data(
-        itemIds=["item1234-ab12-cd34-ef56-abcdef123456"],
+        item_ids=["item1234-ab12-cd34-ef56-abcdef123456"],
         items=[
             {
                 "id": "item1234-ab12-cd34-ef56-abcdef123456",
@@ -1547,91 +1527,6 @@ def sample_invitation_df() -> pl.DataFrame:
             ],
         }
     )
-
-
-# ============================================================================
-# Curious Invitation Context Managers
-# ============================================================================
-
-
-# conftest.py - Update patch_invitations_module
-
-
-@contextmanager
-def patch_invitations_module(
-    **overrides: str,
-) -> Generator[dict[str, Mock], None, None]:
-    """
-    Patch common dependencies in the invitations_to_redcap module.
-
-    Parameters
-    ----------
-    **overrides
-        Additional or replacement patch paths keyed by mock name.
-
-    Yields
-    ------
-    dict[str, Mock]
-        Dictionary of mock objects keyed by name.
-
-    """
-    default_patches = {
-        "curious_variables": f"{INVITATIONS_MOD}.curious_variables",
-        "redcap_variables": f"{INVITATIONS_MOD}.redcap_variables",
-        "requests_get": f"{INVITATIONS_MOD}.requests.get",
-        "requests_post": f"{INVITATIONS_MOD}.requests.post",
-        "fetch_api_data": f"{INVITATIONS_MOD}.fetch_api_data",
-        "get_applet_encryption": f"{INVITATIONS_MOD}.get_applet_encryption",
-        "decrypt_single": f"{INVITATIONS_MOD}.decrypt_single",
-        "endpoints": f"{INVITATIONS_MOD}.Endpoints",
-        "pull_data_from_curious": f"{INVITATIONS_MOD}.pull_data_from_curious",
-        "check_activity_responses": f"{INVITATIONS_MOD}.check_activity_responses",
-        "curious_authenticate": f"{INVITATIONS_MOD}.curious_authenticate",
-    }
-    default_patches.update(overrides)
-
-    with ExitStack() as stack:
-        mocks = {
-            name: stack.enter_context(patch(path))
-            for name, path in default_patches.items()
-        }
-
-        # Configure curious_variables
-        cv = mocks["curious_variables"]
-        cv.headers.return_value = {"Content-Type": "application/json"}
-        cv.applet_ids = {"Healthy Brain Network Questionnaires": SAMPLE_APPLET_ID}
-        cv.activity_ids = {"Curious Account Created": SAMPLE_ACTIVITY_ID}
-        cv.owner_ids = {
-            "Healthy Brain Network (HBN)": "owner123-ab12-cd34-ef56-abcdef123456"
-        }
-        cv.Credentials.hbn_mindlogger = {"username": "u", "password": "p"}
-        cv.AppletCredentials.hbn_mindlogger = {
-            "Healthy Brain Network Questionnaires": {"applet_password": "secret"}
-        }
-
-        # Configure endpoints
-        ep = mocks["endpoints"]
-        ep.Curious.invitation_statuses.return_value = (
-            "https://curious.test/api/invitations"
-        )
-        ep.Curious.applet.return_value = "https://curious.test/api/applet"
-        ep.Curious.applet_activity_answers_list.return_value = (
-            "https://curious.test/api/answers"
-        )
-        ep.Redcap.base_url = DEFAULT_REDCAP_BASE_URL
-
-        # Configure redcap_variables
-        rv = mocks["redcap_variables"]
-        rv.headers = {"Content-Type": "application/x-www-form-urlencoded"}
-        rv.Tokens.pid625 = "token_625"  # Changed from pid744
-        rv.Endpoints.return_value.base_url = DEFAULT_REDCAP_BASE_URL
-
-        # Configure curious_authenticate
-        mock_auth_tokens = Mock()
-        mock_auth_tokens.access = "test_token"
-        mocks["curious_authenticate"].return_value = mock_auth_tokens
-
-        yield mocks
 
 
 # ============================================================================

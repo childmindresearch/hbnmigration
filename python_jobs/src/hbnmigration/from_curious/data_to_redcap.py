@@ -268,6 +268,10 @@ def _filter_by_target_user_secret_id(
     """
     Filter parent records using target_user_secret_id column.
 
+    For curious_account_created_responder: keep all records as-is
+    For curious_account_created_child: exclude records with _P suffix
+    For other instruments: exclude records with _P suffix
+
     Parameters
     ----------
     df
@@ -281,9 +285,31 @@ def _filter_by_target_user_secret_id(
         Filtered DataFrame
 
     """
-    # Check if this is curious_account_created instrument
-    if instrument_name.startswith("curious_account_created"):
-        return _filter_parent_records_for_account_created(df)
+    # Responder accounts - keep all records (no _P filtering)
+    if instrument_name.startswith("curious_account_created_responder"):
+        logger.debug("Skipping _P filter for responder instrument: %s", instrument_name)
+        return df
+
+    # Child accounts - should not have _P suffix, but filter just in case
+    if instrument_name.startswith("curious_account_created_child"):
+        with_p = df.filter(
+            pl.col("target_user_secret_id").cast(pl.Utf8).str.ends_with("_P")
+        )
+        df_filtered = df.filter(
+            ~pl.col("target_user_secret_id").cast(pl.Utf8).str.ends_with("_P")
+        )
+        if len(with_p) > 0:
+            ignored_records = with_p["target_user_secret_id"].cast(pl.Utf8).to_list()
+            logger.warning(
+                "Filtered %d records with unexpected '_P' suffix in child instrument "
+                "%s: %s",
+                len(with_p),
+                instrument_name,
+                ", ".join(str(r) for r in ignored_records),
+            )
+        return df_filtered
+
+    # All other instruments - exclude _P records (legacy behavior)
     return _filter_parent_records_from_instrument(df, instrument_name)
 
 
@@ -320,6 +346,15 @@ def _filter_by_record_id_fallback(
         )
         return df
 
+    # Responder accounts - no filtering on record_id
+    if instrument_name.startswith("curious_account_created_responder"):
+        logger.debug(
+            "Skipping _P filter on record_id for responder instrument: %s",
+            instrument_name,
+        )
+        return df
+
+    # Other instruments - filter _P records
     with_p_records = df.filter(pl.col("record_id").cast(pl.Utf8).str.ends_with("_P"))
     df_filtered = df.filter(~pl.col("record_id").cast(pl.Utf8).str.ends_with("_P"))
 
@@ -339,7 +374,8 @@ def _filter_parent_records(output: NamedOutput) -> NamedOutput:
     """
     Filter parent records (_P suffix) from output data.
 
-    For curious_account_created: strip _P from record ID
+    For curious_account_created_responder: keep all records (no filtering)
+    For curious_account_created_child: exclude records with _P suffix
     For other instruments: exclude records with _P suffix
 
     Parameters
@@ -373,26 +409,20 @@ def format_for_redcap(
     event_names = get_redcap_event_names(
         ENDPOINTS["REDCap"].base_url, redcap_variables.headers, {"token": REDCAP_TOKEN}
     )
-
     # First pass: format without metadata to see what fields we have
     formatter_initial = RedcapImportFormat(project=event_names, redcap_metadata=None)
-
     # Process data
     try:
         ml_data = MindloggerData.create(curious_data_dir)
     except pl.exceptions.NoDataError as no_data_error:
         logger.info("No Curious data to export.")
         raise NoData from no_data_error
-
     # Get initial outputs to identify needed fields
     initial_outputs = formatter_initial.produce(ml_data)
-
     # Extract field names that need metadata
     field_names = _extract_field_names_from_outputs(initial_outputs)
-
     # Fetch metadata only for those specific fields
     redcap_metadata_pl = _fetch_redcap_metadata_for_fields(field_names)
-
     # Create formatter with metadata and re-process if we got metadata
     formatter = RedcapImportFormat(
         project=event_names, redcap_metadata=redcap_metadata_pl
@@ -403,15 +433,11 @@ def format_for_redcap(
         # Use initial outputs if no metadata was fetched
         outputs = initial_outputs
 
-    # Filter parent records from all outputs
-    filtered_outputs = [_filter_parent_records(output) for output in outputs]
-
     logger.info(
         "Data formatted for these instruments: %s",
-        "".join([f"\n\t- {_.name[:-7]}" for _ in filtered_outputs]),
+        "".join([f"\n\t- {_.name[:-7]}" for _ in outputs]),
     )
-
-    return filtered_outputs, formatter.get_instrument_row_counts()
+    return outputs, formatter.get_instrument_row_counts()
 
 
 def get_curious_data(request_json: CliOptions) -> None:

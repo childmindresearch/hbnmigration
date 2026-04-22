@@ -251,6 +251,15 @@ class Fields:
         )
         """Fields to export from REDCap PID 625 for import into Curious."""
 
+        for_mrn_lookup: Final[FieldList] = FieldList(
+            [
+                "record_id",
+                "mrn",
+                "r_id",
+            ]
+        )
+        """Fields to export from REDCap PID 625 for MRN lookup by r_id."""
+
     class import_curious:
         """Fields to import into Curious."""
 
@@ -581,6 +590,8 @@ class Values:
 
         curious_account_created_complete = RedcapComplete
         """Form status: Complete?"""
+        curious_account_created_responder_complete = RedcapComplete
+        curious_account_created_child_complete = RedcapComplete
 
         enrollment_complete = FieldDescriptor(
             {
