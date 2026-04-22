@@ -1,5 +1,6 @@
 """Tests for Ripple sourced data migration."""
 
+import math
 from unittest.mock import MagicMock, patch
 
 import pandas as pd
@@ -8,6 +9,8 @@ import requests
 
 from hbnmigration.exceptions import NoData
 from hbnmigration.from_ripple.to_redcap import (
+    create_ripple_record_cache_key,
+    extract_last_modified,
     get_redcap_subjects_to_update,
     main,
     prepare_redcap_data,
@@ -16,6 +19,7 @@ from hbnmigration.from_ripple.to_redcap import (
     set_redcap_columns,
     set_status_in_ripple,
 )
+from hbnmigration.utility_functions import DataCache
 
 from .conftest import assert_cleanup_called, assert_valid_redcap_columns
 
@@ -1163,8 +1167,6 @@ class TestRippleCacheKeys:
 
     def test_create_ripple_record_cache_key(self):
         """Test creating cache key for Ripple record."""
-        from hbnmigration.from_ripple.to_redcap import create_ripple_record_cache_key
-
         result = create_ripple_record_cache_key(
             "12345", "test@example.com", "2024-01-15T12:00:00"
         )
@@ -1175,8 +1177,6 @@ class TestRippleCacheKeys:
 
     def test_extract_last_modified(self):
         """Test extracting last modified timestamp."""
-        from hbnmigration.from_ripple.to_redcap import extract_last_modified
-
         df = pd.DataFrame(
             {
                 "mrn": [12345],
@@ -1189,9 +1189,6 @@ class TestRippleCacheKeys:
 
     def test_prepare_redcap_data_uses_cache_keys(self, tmp_path):
         """Test prepare_redcap_data uses composite cache keys."""
-        from hbnmigration.from_ripple.to_redcap import prepare_redcap_data
-        from hbnmigration.utility_functions import DataCache
-
         df = pd.DataFrame(
             {
                 "customId": [12345],
@@ -1233,3 +1230,471 @@ class TestRippleCacheKeys:
             # Verify cache has entries
             stats = cache.get_stats()
             assert stats["total_entries"] >= 1
+
+
+class TestEmailNanInsteadOfPdNA:
+    """Test that missing emails produce float NaN, not pd.NA."""
+
+    def test_no_email_produces_float_nan(self):
+        """When no email contact exists, email_consent should be float NaN."""
+        ripple_df = pd.DataFrame(
+            {
+                "customId": [11111],
+                "globalId": ["NOMAIL001"],
+                "firstName": ["NoEmail"],
+                "contact.1.infos.1.contactType": ["phone"],
+                "contact.1.infos.1.information": ["555-0000"],
+            }
+        )
+        result = set_redcap_columns(ripple_df)
+        value = result["email_consent"].iloc[0]
+        # Should be float NaN, not pd.NA
+        assert isinstance(value, float), (
+            f"Expected float('nan'), got {type(value).__name__}: {value!r}"
+        )
+        assert math.isnan(value)
+
+    def test_no_email_is_not_pd_na(self):
+        """Explicitly verify the value is not pd.NA."""
+        ripple_df = pd.DataFrame(
+            {
+                "customId": [22222],
+                "globalId": ["NOMAIL002"],
+                "contact.1.infos.1.contactType": ["fax"],
+                "contact.1.infos.1.information": ["555-9999"],
+            }
+        )
+        result = set_redcap_columns(ripple_df)
+        value = result["email_consent"].iloc[0]
+        assert value is not pd.NA
+
+    def test_nan_email_compatible_with_isna(self):
+        """float('nan') should still be detected by pd.isna."""
+        ripple_df = pd.DataFrame(
+            {
+                "customId": [33333],
+                "globalId": ["NOMAIL003"],
+                "contact.1.infos.1.contactType": ["phone"],
+                "contact.1.infos.1.information": ["555-1234"],
+            }
+        )
+        result = set_redcap_columns(ripple_df)
+        assert pd.isna(result["email_consent"].iloc[0])
+
+    def test_nan_email_does_not_poison_dtype(self):
+        """Mixed rows with and without email should not produce object-dtype issues."""
+        ripple_df = pd.DataFrame(
+            {
+                "customId": [10001, 10002],
+                "globalId": ["HAS_EMAIL", "NO_EMAIL"],
+                "firstName": ["Yes", "No"],
+                "contact.1.infos.1.contactType": ["email", "phone"],
+                "contact.1.infos.1.information": ["yes@test.com", "555-0000"],
+            }
+        )
+        result = set_redcap_columns(ripple_df)
+        assert result["email_consent"].iloc[0] == "yes@test.com"
+        assert pd.isna(result["email_consent"].iloc[1])
+
+    def test_multiple_rows_all_without_email(self):
+        """All rows missing email should all get float NaN."""
+        ripple_df = pd.DataFrame(
+            {
+                "customId": [40001, 40002, 40003],
+                "globalId": ["A", "B", "C"],
+                "contact.1.infos.1.contactType": ["phone", "fax", "phone"],
+                "contact.1.infos.1.information": ["111", "222", "333"],
+            }
+        )
+        result = set_redcap_columns(ripple_df)
+        for i in range(3):
+            val = result["email_consent"].iloc[i]
+            assert isinstance(val, float) and math.isnan(val)
+
+
+class TestLastModifiedFlowsThroughSetRedcapColumns:
+    """Test that lastModified is injected before transformation."""
+
+    @patch("hbnmigration.from_ripple.to_redcap.get_redcap_subjects_to_update")
+    @patch("hbnmigration.from_ripple.to_redcap.redcap_variables")
+    def test_last_modified_passed_to_set_redcap_columns(
+        self, mock_vars, mock_get_updates, temp_dir
+    ):
+        """LastModified should appear in the transformed df before being dropped."""
+        mock_vars.redcap_update_file = temp_dir / "update.csv"
+        mock_vars.redcap_import_file = temp_dir / "import.csv"
+
+        mock_get_updates.return_value = (
+            pd.DataFrame(columns=["record_id", "mrn", "email_consent"]),
+            pd.DataFrame(
+                {
+                    "record_id": [50001],
+                    "mrn": [50001],
+                    "email_consent": ["test@test.com"],
+                }
+            ),
+        )
+
+        input_df = pd.DataFrame(
+            {
+                "customId": [50001],
+                "globalId": ["LM001"],
+                "contact.1.infos.1.contactType": ["email"],
+                "contact.1.infos.1.information": ["test@test.com"],
+            }
+        )
+
+        prepare_redcap_data(input_df)
+
+        # get_redcap_subjects_to_update should NOT receive lastModified
+        call_args = mock_get_updates.call_args[0][0]
+        assert "lastModified" not in call_args.columns
+        assert "cache_key" not in call_args.columns
+
+    @patch("hbnmigration.from_ripple.to_redcap.get_redcap_subjects_to_update")
+    @patch("hbnmigration.from_ripple.to_redcap.redcap_variables")
+    def test_last_modified_not_in_output_csv(
+        self, mock_vars, mock_get_updates, temp_dir
+    ):
+        """Output CSV files should not contain lastModified or cache_key columns."""
+        mock_vars.redcap_update_file = temp_dir / "update.csv"
+        mock_vars.redcap_import_file = temp_dir / "import.csv"
+
+        new_df = pd.DataFrame(
+            {
+                "record_id": [60001],
+                "mrn": [60001],
+                "email_consent": ["out@test.com"],
+            }
+        )
+        mock_get_updates.return_value = (
+            pd.DataFrame(columns=["record_id", "mrn", "email_consent"]),
+            new_df,
+        )
+
+        input_df = pd.DataFrame(
+            {
+                "customId": [60001],
+                "globalId": ["LM002"],
+                "contact.1.infos.1.contactType": ["email"],
+                "contact.1.infos.1.information": ["out@test.com"],
+            }
+        )
+
+        prepare_redcap_data(input_df)
+
+        result = pd.read_csv(mock_vars.redcap_import_file)
+        assert "lastModified" not in result.columns
+        assert "cache_key" not in result.columns
+
+
+class TestHelperColumnsDroppedBeforeDownstream:
+    """Test columns are dropped before get_redcap_subjects_to_update."""
+
+    @patch("hbnmigration.from_ripple.to_redcap.get_redcap_subjects_to_update")
+    @patch("hbnmigration.from_ripple.to_redcap.set_redcap_columns")
+    @patch("hbnmigration.from_ripple.to_redcap.redcap_variables")
+    def test_cache_key_dropped_before_subject_split(
+        self, mock_vars, mock_set_columns, mock_get_updates, temp_dir
+    ):
+        """cache_key should not be passed to get_redcap_subjects_to_update."""
+        mock_vars.redcap_update_file = temp_dir / "update.csv"
+        mock_vars.redcap_import_file = temp_dir / "import.csv"
+
+        mock_set_columns.return_value = pd.DataFrame(
+            {
+                "record_id": [70001],
+                "mrn": [70001],
+                "email_consent": ["cached@test.com"],
+                "lastModified": ["2024-06-01T00:00:00"],
+            }
+        )
+        mock_get_updates.return_value = (
+            pd.DataFrame(columns=["record_id", "mrn", "email_consent"]),
+            pd.DataFrame(
+                {
+                    "record_id": [70001],
+                    "mrn": [70001],
+                    "email_consent": ["cached@test.com"],
+                }
+            ),
+        )
+
+        input_df = pd.DataFrame({"customId": [70001], "globalId": ["CK001"]})
+        prepare_redcap_data(input_df)
+
+        passed_df = mock_get_updates.call_args[0][0]
+        assert "cache_key" not in passed_df.columns
+        assert "lastModified" not in passed_df.columns
+
+    @patch("hbnmigration.from_ripple.to_redcap.get_redcap_subjects_to_update")
+    @patch("hbnmigration.from_ripple.to_redcap.set_redcap_columns")
+    @patch("hbnmigration.from_ripple.to_redcap.redcap_variables")
+    def test_working_df_has_only_expected_columns(
+        self, mock_vars, mock_set_columns, mock_get_updates, temp_dir
+    ):
+        """Test downstream columns."""
+        mock_vars.redcap_update_file = temp_dir / "update.csv"
+        mock_vars.redcap_import_file = temp_dir / "import.csv"
+
+        mock_set_columns.return_value = pd.DataFrame(
+            {
+                "record_id": [80001],
+                "mrn": [80001],
+                "email_consent": ["cols@test.com"],
+                "lastModified": ["2024-06-01T00:00:00"],
+            }
+        )
+        mock_get_updates.return_value = (
+            pd.DataFrame(columns=["record_id", "mrn", "email_consent"]),
+            pd.DataFrame(
+                {
+                    "record_id": [80001],
+                    "mrn": [80001],
+                    "email_consent": ["cols@test.com"],
+                }
+            ),
+        )
+
+        input_df = pd.DataFrame({"customId": [80001], "globalId": ["COL001"]})
+        prepare_redcap_data(input_df)
+
+        passed_df = mock_get_updates.call_args[0][0]
+        expected_cols = {"record_id", "mrn", "email_consent"}
+        assert set(passed_df.columns) == expected_cols
+
+
+class TestCacheIntegrationWithNewFlow:
+    """Test that caching still works correctly with the restructured flow."""
+
+    def test_cache_marks_processed_after_prepare(self, tmp_path):
+        """Cache should have entries after prepare_redcap_data completes."""
+        df = pd.DataFrame(
+            {
+                "customId": [12345],
+                "globalId": ["CACHE001"],
+                "contact.1.infos.1.contactType": ["email"],
+                "contact.1.infos.1.information": ["cache@test.com"],
+            }
+        )
+        cache = DataCache("test_ripple", ttl_minutes=5, cache_dir=str(tmp_path))
+
+        with (
+            patch("hbnmigration.from_ripple.to_redcap.set_redcap_columns") as mock_set,
+            patch(
+                "hbnmigration.from_ripple.to_redcap.get_redcap_subjects_to_update"
+            ) as mock_get,
+            patch("hbnmigration.from_ripple.to_redcap.redcap_variables") as mock_vars,
+        ):
+            mock_vars.redcap_update_file = tmp_path / "update.csv"
+            mock_vars.redcap_import_file = tmp_path / "import.csv"
+            mock_set.return_value = pd.DataFrame(
+                {
+                    "record_id": [12345],
+                    "mrn": [12345],
+                    "email_consent": ["cache@test.com"],
+                    "lastModified": ["2024-01-15T12:00:00"],
+                }
+            )
+            mock_get.return_value = (
+                pd.DataFrame(columns=["record_id", "mrn", "email_consent"]),
+                pd.DataFrame(
+                    {
+                        "record_id": [12345],
+                        "mrn": [12345],
+                        "email_consent": ["cache@test.com"],
+                    }
+                ),
+            )
+            prepare_redcap_data(df, cache)
+
+        stats = cache.get_stats()
+        assert stats["total_entries"] >= 1
+
+    def test_cached_records_skipped_on_second_run(self, tmp_path):
+        """Records already in cache should be filtered out on subsequent runs."""
+        cache = DataCache("test_ripple_skip", ttl_minutes=60, cache_dir=str(tmp_path))
+
+        df = pd.DataFrame(
+            {
+                "customId": [12345],
+                "globalId": ["SKIP001"],
+                "contact.1.infos.1.contactType": ["email"],
+                "contact.1.infos.1.information": ["skip@test.com"],
+            }
+        )
+
+        with (
+            patch("hbnmigration.from_ripple.to_redcap.set_redcap_columns") as mock_set,
+            patch(
+                "hbnmigration.from_ripple.to_redcap.get_redcap_subjects_to_update"
+            ) as mock_get,
+            patch("hbnmigration.from_ripple.to_redcap.redcap_variables") as mock_vars,
+        ):
+            mock_vars.redcap_update_file = tmp_path / "update.csv"
+            mock_vars.redcap_import_file = tmp_path / "import.csv"
+            transformed = pd.DataFrame(
+                {
+                    "record_id": [12345],
+                    "mrn": [12345],
+                    "email_consent": ["skip@test.com"],
+                    "lastModified": ["2024-01-15T12:00:00"],
+                }
+            )
+            mock_set.return_value = transformed
+            mock_get.return_value = (
+                pd.DataFrame(columns=["record_id", "mrn", "email_consent"]),
+                pd.DataFrame(
+                    {
+                        "record_id": [12345],
+                        "mrn": [12345],
+                        "email_consent": ["skip@test.com"],
+                    }
+                ),
+            )
+
+            # First run - should process
+            prepare_redcap_data(df, cache)
+            assert mock_get.call_count == 1
+
+            # Second run - should skip (all cached)
+            mock_set.return_value = transformed.copy()
+            prepare_redcap_data(df, cache)
+            # get_redcap_subjects_to_update should NOT be called again
+            # because all records were filtered out by cache
+            assert mock_get.call_count == 1
+
+
+class TestLastModifiedInjectionOnSourceDf:
+    """Test that lastModified is injected into source df, not patched after."""
+
+    @patch("hbnmigration.from_ripple.to_redcap.get_redcap_subjects_to_update")
+    @patch("hbnmigration.from_ripple.to_redcap.set_redcap_columns")
+    @patch("hbnmigration.from_ripple.to_redcap.extract_last_modified")
+    @patch("hbnmigration.from_ripple.to_redcap.redcap_variables")
+    def test_extract_last_modified_called_before_set_redcap_columns(
+        self, mock_vars, mock_extract, mock_set_columns, mock_get_updates, temp_dir
+    ):
+        """extract_last_modified should be called before set_redcap_columns."""
+        mock_vars.redcap_update_file = temp_dir / "update.csv"
+        mock_vars.redcap_import_file = temp_dir / "import.csv"
+
+        call_order = []
+
+        def track_extract(df):
+            call_order.append("extract")
+            return pd.Series(["2024-01-15T12:00:00"], index=df.index)
+
+        def track_set_columns(df, **kwargs):
+            call_order.append("set_columns")
+            # At this point, df should already have lastModified
+            assert "lastModified" in df.columns
+            return pd.DataFrame(
+                {
+                    "record_id": [90001],
+                    "mrn": [90001],
+                    "email_consent": ["order@test.com"],
+                    "lastModified": ["2024-01-15T12:00:00"],
+                }
+            )
+
+        mock_extract.side_effect = track_extract
+        mock_set_columns.side_effect = track_set_columns
+        mock_get_updates.return_value = (
+            pd.DataFrame(columns=["record_id", "mrn", "email_consent"]),
+            pd.DataFrame(
+                {
+                    "record_id": [90001],
+                    "mrn": [90001],
+                    "email_consent": ["order@test.com"],
+                }
+            ),
+        )
+
+        input_df = pd.DataFrame({"customId": [90001], "globalId": ["ORD001"]})
+        prepare_redcap_data(input_df)
+
+        assert call_order == ["extract", "set_columns"]
+
+    @patch("hbnmigration.from_ripple.to_redcap.get_redcap_subjects_to_update")
+    @patch("hbnmigration.from_ripple.to_redcap.set_redcap_columns")
+    @patch("hbnmigration.from_ripple.to_redcap.redcap_variables")
+    def test_existing_last_modified_not_overwritten(
+        self, mock_vars, mock_set_columns, mock_get_updates, temp_dir
+    ):
+        """If lastModified already exists in df, it should not be overwritten."""
+        mock_vars.redcap_update_file = temp_dir / "update.csv"
+        mock_vars.redcap_import_file = temp_dir / "import.csv"
+
+        original_timestamp = "2024-06-15T09:30:00"
+
+        def check_set_columns(df, **kwargs):
+            # The original lastModified should be preserved
+            assert df["lastModified"].iloc[0] == original_timestamp
+            return pd.DataFrame(
+                {
+                    "record_id": [95001],
+                    "mrn": [95001],
+                    "email_consent": ["exist@test.com"],
+                    "lastModified": [original_timestamp],
+                }
+            )
+
+        mock_set_columns.side_effect = check_set_columns
+        mock_get_updates.return_value = (
+            pd.DataFrame(columns=["record_id", "mrn", "email_consent"]),
+            pd.DataFrame(
+                {
+                    "record_id": [95001],
+                    "mrn": [95001],
+                    "email_consent": ["exist@test.com"],
+                }
+            ),
+        )
+
+        input_df = pd.DataFrame(
+            {
+                "customId": [95001],
+                "globalId": ["EXIST001"],
+                "lastModified": [original_timestamp],
+            }
+        )
+        prepare_redcap_data(input_df)
+
+    @patch("hbnmigration.from_ripple.to_redcap.get_redcap_subjects_to_update")
+    @patch("hbnmigration.from_ripple.to_redcap.set_redcap_columns")
+    @patch("hbnmigration.from_ripple.to_redcap.redcap_variables")
+    def test_original_df_not_mutated(
+        self, mock_vars, mock_set_columns, mock_get_updates, temp_dir
+    ):
+        """The original input DataFrame should not be mutated."""
+        mock_vars.redcap_update_file = temp_dir / "update.csv"
+        mock_vars.redcap_import_file = temp_dir / "import.csv"
+
+        mock_set_columns.return_value = pd.DataFrame(
+            {
+                "record_id": [99001],
+                "mrn": [99001],
+                "email_consent": ["nomutate@test.com"],
+                "lastModified": ["2024-01-01T00:00:00"],
+            }
+        )
+        mock_get_updates.return_value = (
+            pd.DataFrame(columns=["record_id", "mrn", "email_consent"]),
+            pd.DataFrame(
+                {
+                    "record_id": [99001],
+                    "mrn": [99001],
+                    "email_consent": ["nomutate@test.com"],
+                }
+            ),
+        )
+
+        input_df = pd.DataFrame({"customId": [99001], "globalId": ["NOMUT001"]})
+        original_columns = list(input_df.columns)
+
+        prepare_redcap_data(input_df)
+
+        # Original df should not have lastModified added
+        assert list(input_df.columns) == original_columns
+        assert "lastModified" not in input_df.columns

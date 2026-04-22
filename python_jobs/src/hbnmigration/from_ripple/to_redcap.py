@@ -191,7 +191,7 @@ def set_redcap_columns(
         lambda row: (
             row[first_match[row.name].replace(".contactType", ".information")]
             if is_email.loc[row.name].any()
-            else pd.NA
+            else float("nan")
         ),
         axis=1,
     )
@@ -258,26 +258,26 @@ def get_redcap_subjects_to_update(
 
 def prepare_redcap_data(df: pd.DataFrame, cache: DataCache | None = None) -> None:
     """Prepare Ripple API returned data to be imported into REDCap."""
-    copy_selected_redcap_df = set_redcap_columns(df)
-
-    # Add last_modified column for cache keying
+    # Inject lastModified into the source df BEFORE transforming,
+    # so it flows through set_redcap_columns naturally.
     if "lastModified" not in df.columns:
-        last_modified = extract_last_modified(df)
-        copy_selected_redcap_df = copy_selected_redcap_df.assign(
-            lastModified=last_modified.values
-        )
+        df = df.copy()
+        df["lastModified"] = extract_last_modified(df)
+
+    copy_selected_redcap_df = set_redcap_columns(
+        df, columns_to_keep=["mrn", "email_consent", "lastModified"]
+    )
 
     # Filter out records already processed by cache
     if cache:
-        # Create cache keys for each record
-        cache_keys = []
-        for _, row in copy_selected_redcap_df.iterrows():
-            cache_key = create_ripple_record_cache_key(
+        cache_keys = [
+            create_ripple_record_cache_key(
                 str(row["mrn"]),
                 str(row.get("email_consent", "")),
                 str(row.get("lastModified", "")),
             )
-            cache_keys.append(cache_key)
+            for _, row in copy_selected_redcap_df.iterrows()
+        ]
 
         copy_selected_redcap_df["cache_key"] = cache_keys
 
@@ -296,10 +296,14 @@ def prepare_redcap_data(df: pd.DataFrame, cache: DataCache | None = None) -> Non
         logger.info("No new records to prepare for REDCap")
         return
 
+    # Drop helper columns before downstream processing
+    cols_to_drop = [
+        c for c in ["cache_key", "lastModified"] if c in copy_selected_redcap_df.columns
+    ]
+    working_df = copy_selected_redcap_df.drop(columns=cols_to_drop)
+
     # Split into update and new
-    to_update, new_subjects = get_redcap_subjects_to_update(
-        copy_selected_redcap_df.drop(columns=["cache_key"], errors="ignore")
-    )
+    to_update, new_subjects = get_redcap_subjects_to_update(working_df)
 
     # Save the new dataframes to CSV files
     if not to_update.empty:
@@ -307,7 +311,7 @@ def prepare_redcap_data(df: pd.DataFrame, cache: DataCache | None = None) -> Non
     if not new_subjects.empty:
         new_subjects.to_csv(redcap_variables.redcap_import_file, index=False)
 
-    # Mark as processed in cache (use the original df with cache_key)
+    # Mark as processed in cache
     if cache and "cache_key" in copy_selected_redcap_df.columns:
         processed_keys = copy_selected_redcap_df["cache_key"].tolist()
         cache.bulk_mark_processed(
