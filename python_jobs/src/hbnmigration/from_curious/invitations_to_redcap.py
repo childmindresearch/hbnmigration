@@ -689,7 +689,7 @@ def push_to_redcap(
     else:
         df = data
 
-    # Determine instrument from data
+    # Determine instrument from data BEFORE removing metadata
     instrument = (
         df.select("instrument").to_series()[0] if "instrument" in df.columns else None
     )
@@ -697,7 +697,12 @@ def push_to_redcap(
         logger.warning("Could not determine instrument from data")
         instrument = "curious_account_created_responder"  # Default
 
-    # Deduplicate before pushing
+    # Remove metadata columns BEFORE deduplication
+    # These are internal fields that don't exist in REDCap
+    metadata_columns = ["instrument", "account_context", "respondent_id"]
+    df = df.drop([col for col in metadata_columns if col in df.columns])
+
+    # Now deduplicate with only real REDCap fields
     df, num_duplicates = deduplicate_dataframe(
         df,
         token,
@@ -712,10 +717,6 @@ def push_to_redcap(
 
     if num_duplicates > 0:
         logger.info("Removed %d duplicate invitation rows before push", num_duplicates)
-
-    # Remove metadata columns before upload
-    columns_to_drop = ["instrument", "account_context", "respondent_id"]
-    df = df.drop([col for col in columns_to_drop if col in df.columns])
 
     csv_data = df.write_csv()
     push_data = {

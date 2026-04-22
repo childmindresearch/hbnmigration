@@ -891,3 +891,48 @@ class TestPushToRedcap:
                 # Verify REDCap fields ARE in the CSV
                 assert "record_id" in call_data
                 assert "curious_account_created_source_secret_id" in call_data
+
+    def test_metadata_fields_removed_before_deduplication(self) -> None:
+        """Verify metadata fields are removed before calling deduplicate_dataframe."""
+        test_df = pl.DataFrame(
+            {
+                "record_id": ["001"],
+                "curious_account_created_source_secret_id": ["resp_123"],
+                "curious_account_created_invite_status": [3],
+                "redcap_event_name": ["admin_arm_1"],
+                "curious_account_created_responder_complete": ["0"],
+                # Metadata fields that should be removed
+                "instrument": ["curious_account_created_responder"],
+                "account_context": ["responder"],
+                "respondent_id": ["subj_123"],
+            }
+        )
+
+        with patch_invitations_module() as mocks:
+            mocks["requests_post"].return_value = _mock_http_response(json_data=1)
+
+            # Mock deduplicate_dataframe to capture what it receives
+            with patch(
+                "hbnmigration.from_curious.invitations_to_redcap.deduplicate_dataframe"
+            ) as mock_dedupe:
+                # Return the dataframe unchanged
+                mock_dedupe.side_effect = lambda df, *args, **kwargs: (df, 0)
+
+                push_to_redcap(test_df, SAMPLE_TOKEN)
+
+                # Verify deduplicate_dataframe was called
+                assert mock_dedupe.called
+
+                # Get the dataframe that was passed to deduplicate_dataframe
+                called_df = mock_dedupe.call_args[0][0]
+
+                # Verify metadata fields are NOT in the dataframe
+                assert "instrument" not in called_df.columns
+                assert "account_context" not in called_df.columns
+                assert "respondent_id" not in called_df.columns
+
+                # Verify REDCap fields ARE still there
+                assert "record_id" in called_df.columns
+                assert "curious_account_created_source_secret_id" in called_df.columns
+                assert "curious_account_created_invite_status" in called_df.columns
+                assert "redcap_event_name" in called_df.columns
