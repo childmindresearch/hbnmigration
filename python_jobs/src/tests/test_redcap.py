@@ -10,7 +10,7 @@ import requests
 
 from hbnmigration.from_curious.config import account_types
 from hbnmigration.from_redcap import to_curious, to_redcap
-from hbnmigration.from_redcap.from_redcap import fetch_data
+from hbnmigration.from_redcap.from_redcap import fetch_data, RedcapRecord, Values
 
 from .conftest import (
     create_curious_api_failure,
@@ -523,7 +523,7 @@ class TestToRedcapWebhook:
                     "project_id": "625",
                     "instrument": "enrollment",
                     "record": "12345",
-                    "ready_to_send_to_intake_redcap": "1",
+                    "intake_ready": "1",
                 },
             )
             assert response.status_code == requests.codes["okay"]
@@ -538,7 +538,7 @@ class TestToRedcapWebhook:
                 "project_id": "625",
                 "instrument": "enrollment",
                 "record": "12345",
-                "ready_to_send_to_intake_redcap": "0",
+                "intake_ready": "0",
             },
         )
         assert response.status_code == requests.codes["okay"]
@@ -679,7 +679,7 @@ class TestProcessRecordForCurious:
 class TestProcessRecordForRedcapOperations:
     """Tests for process_record_for_redcap_operations function."""
 
-    @patch("hbnmigration.from_redcap.to_redcap.clear_ready_flag")
+    @patch("hbnmigration.from_redcap.to_redcap.update_source_redcap_status")
     @patch("hbnmigration.from_redcap.to_redcap.push_to_intake_redcap", return_value=5)
     @patch("hbnmigration.from_redcap.to_redcap.format_data_for_redcap_operations")
     @patch("hbnmigration.from_redcap.to_redcap.fetch_data")
@@ -688,30 +688,40 @@ class TestProcessRecordForRedcapOperations:
         mock_fetch: MagicMock,
         mock_format: MagicMock,
         mock_push: MagicMock,
-        mock_clear: MagicMock,
+        mock_update: MagicMock,
     ) -> None:
         """Test successful processing of a record for Operations REDCap."""
         mock_fetch.return_value = pd.DataFrame(
-            {"record": ["123"], "field_name": ["mrn"], "value": ["abc"]}
+            {
+                "record": ["123", "123"],
+                "field_name": ["mrn", "intake_ready"],
+                "value": ["abc", "1"],
+                "redcap_event_name": ["enrollment_arm_1", "enrollment_arm_1"],
+            }
         )
         mock_format.return_value = pd.DataFrame(
             {"record": ["123"], "field_name": ["mrn"], "value": ["abc"]}
         )
-
         result = to_redcap.process_record_for_redcap_operations("123")
-
         assert result["status"] == "success"
         assert result["record_id"] == "123"
         assert result["rows_pushed"] == 5
-        mock_clear.assert_called_once_with("123")
+        mock_update.assert_called_once_with(
+            "123",
+            str(
+                Values.PID247.intake_ready[
+                    "Participant information already sent to "
+                    "HBN - Intake Redcap project"
+                ]
+            ),
+            "enrollment_arm_1",
+        )
 
     @patch("hbnmigration.from_redcap.to_redcap.fetch_data")
     def test_no_data_found(self, mock_fetch: MagicMock) -> None:
         """Test that missing data returns error status."""
         mock_fetch.return_value = pd.DataFrame()
-
         result = to_redcap.process_record_for_redcap_operations("999")
-
         assert result["status"] == "error"
         assert "No data found" in result["message"]
 
@@ -721,11 +731,11 @@ class TestProcessRecordForRedcapOperations:
         self, mock_fetch: MagicMock, mock_format: MagicMock
     ) -> None:
         """Test when formatting yields empty DataFrame."""
-        mock_fetch.return_value = pd.DataFrame({"record": ["123"]})
+        mock_fetch.return_value = pd.DataFrame(
+            {"record": ["123"], "field_name": ["mrn"], "value": ["abc"]}
+        )
         mock_format.return_value = pd.DataFrame()
-
         result = to_redcap.process_record_for_redcap_operations("123")
-
         assert result["status"] == "error"
         assert "No processable data" in result["message"]
 
@@ -733,11 +743,34 @@ class TestProcessRecordForRedcapOperations:
     def test_exception_handling(self, mock_fetch: MagicMock) -> None:
         """Test that exceptions are caught and returned as error status."""
         mock_fetch.side_effect = RuntimeError("connection failed")
-
         result = to_redcap.process_record_for_redcap_operations("123")
-
         assert result["status"] == "error"
         assert "connection failed" in result["message"]
+
+    @patch("hbnmigration.from_redcap.to_redcap.push_to_intake_redcap", return_value=5)
+    @patch("hbnmigration.from_redcap.to_redcap.format_data_for_redcap_operations")
+    @patch("hbnmigration.from_redcap.to_redcap.fetch_data")
+    def test_skips_status_update_when_no_event_name(
+        self,
+        mock_fetch: MagicMock,
+        mock_format: MagicMock,
+        mock_push: MagicMock,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Test that status update is skipped when event name cannot be determined."""
+        mock_fetch.return_value = pd.DataFrame(
+            {
+                "record": ["123"],
+                "field_name": ["mrn"],
+                "value": ["abc"],
+            }
+        )
+        mock_format.return_value = pd.DataFrame(
+            {"record": ["123"], "field_name": ["mrn"], "value": ["abc"]}
+        )
+        result = to_redcap.process_record_for_redcap_operations("123")
+        assert result["status"] == "success"
+        assert "Could not determine event name" in caplog.text
 
 
 # ============================================================================
@@ -783,7 +816,7 @@ class TestClearReadyFlagIntake:
         """Test flag setting."""
         mock_fetch.return_value = pd.DataFrame(
             {
-                "field_name": ["ready_to_send_to_intake_redcap"],
+                "field_name": ["intake_ready"],
                 "redcap_event_name": ["event_1"],
             }
         )
@@ -1220,3 +1253,266 @@ class TestPushToCurious:
         assert args[0] is data_operations
         pd.testing.assert_frame_equal(args[1], curious_data["child"])
         assert args[2] == []
+
+
+class TestRedcapRecord:
+    """Tests for the RedcapRecord Pydantic model."""
+
+    def test_basic_construction(self) -> None:
+        """Test constructing a RedcapRecord with required fields."""
+        record = RedcapRecord(
+            project_id=625,
+            instrument="enrollment",
+            record="12345",
+        )
+        assert record.project_id == 625
+        assert record.instrument == "enrollment"
+        assert record.record == "12345"
+
+    def test_all_fields(self) -> None:
+        """Test constructing a RedcapRecord with all fields populated."""
+        record = RedcapRecord(
+            project_id=625,
+            instrument="enrollment",
+            record="12345",
+            redcap_event_name="baseline_arm_1",
+            redcap_repeat_instance=3,
+            redcap_repeat_instrument="medications",
+            redcap_data_access_group="site_a",
+            redcap_url="https://redcap.test/redcap_v14.0.0/index.php",
+            project_url="https://redcap.test/redcap_v14.0.0/index.php?pid=625",
+            username="testuser",
+        )
+        assert record.redcap_event_name == "baseline_arm_1"
+        assert record.redcap_repeat_instance == 3
+        assert record.redcap_repeat_instrument == "medications"
+        assert record.redcap_data_access_group == "site_a"
+        assert record.redcap_url == "https://redcap.test/redcap_v14.0.0/index.php"
+        assert record.username == "testuser"
+
+    def test_optional_fields_default_to_none(self) -> None:
+        """Test that optional fields default to None."""
+        record = RedcapRecord(
+            project_id=625,
+            instrument="enrollment",
+            record="12345",
+        )
+        assert record.redcap_event_name is None
+        assert record.redcap_repeat_instance is None
+        assert record.redcap_repeat_instrument is None
+        assert record.redcap_data_access_group is None
+        assert record.redcap_url is None
+        assert record.project_url is None
+        assert record.username is None
+
+    def test_populate_by_name(self) -> None:
+        """Test that fields can be set by alias or field name."""
+        record = RedcapRecord(
+            project_id=625,
+            instrument="enrollment",
+            record="12345",
+            redcap_repeat_instance=2,
+        )
+        assert record.redcap_repeat_instance == 2
+
+
+class TestRedcapRepeatInstanceConversion:
+    """Tests for the float-to-int conversion on redcap_repeat_instance."""
+
+    def test_int_value_unchanged(self) -> None:
+        """Test that int values pass through unchanged."""
+        record = RedcapRecord(
+            project_id=625,
+            instrument="enrollment",
+            record="12345",
+            redcap_repeat_instance=5,
+        )
+        assert record.redcap_repeat_instance == 5
+        assert isinstance(record.redcap_repeat_instance, int)
+
+    def test_float_value_converted_to_int(self) -> None:
+        """Test that float values are converted to int."""
+        record = RedcapRecord(
+            project_id=625,
+            instrument="enrollment",
+            record="12345",
+            redcap_repeat_instance=3.0,
+        )
+        assert record.redcap_repeat_instance == 3
+        assert isinstance(record.redcap_repeat_instance, int)
+
+    def test_float_with_decimal_converted_to_int(self) -> None:
+        """Test that float with fractional part is truncated to int."""
+        record = RedcapRecord(
+            project_id=625,
+            instrument="enrollment",
+            record="12345",
+            redcap_repeat_instance=7.9,
+        )
+        assert record.redcap_repeat_instance == 7
+        assert isinstance(record.redcap_repeat_instance, int)
+
+    def test_none_value_stays_none(self) -> None:
+        """Test that None values remain None."""
+        record = RedcapRecord(
+            project_id=625,
+            instrument="enrollment",
+            record="12345",
+            redcap_repeat_instance=None,
+        )
+        assert record.redcap_repeat_instance is None
+
+    def test_nan_value_converted_to_none(self) -> None:
+        """Test that NaN float values are converted to None."""
+        record = RedcapRecord(
+            project_id=625,
+            instrument="enrollment",
+            record="12345",
+            redcap_repeat_instance=float("nan"),
+        )
+        assert record.redcap_repeat_instance is None
+
+    def test_pandas_na_converted_to_none(self) -> None:
+        """Test that pandas NaN is converted to None."""
+        record = RedcapRecord(
+            project_id=625,
+            instrument="enrollment",
+            record="12345",
+            redcap_repeat_instance=float("nan"),
+        )
+        assert record.redcap_repeat_instance is None
+
+    @pytest.mark.parametrize(
+        "input_value,expected",
+        [
+            (1, 1),
+            (1.0, 1),
+            (0.0, 0),
+            (100.0, 100),
+            (None, None),
+            (float("nan"), None),
+        ],
+        ids=["int", "float_1.0", "float_0.0", "float_100.0", "none", "nan"],
+    )
+    def test_various_values(self, input_value: Any, expected: int | None) -> None:
+        """Test conversion with various input values."""
+        record = RedcapRecord(
+            project_id=625,
+            instrument="enrollment",
+            record="12345",
+            redcap_repeat_instance=input_value,
+        )
+        assert record.redcap_repeat_instance == expected
+
+
+class TestRedcapTriggerPayloadCurious:
+    """Tests for RedcapTriggerPayload in to_curious inheriting RedcapRecord."""
+
+    def test_inherits_float_conversion(self) -> None:
+        """Test that to_curious payload inherits float-to-int conversion."""
+        from hbnmigration.from_redcap.to_curious import RedcapTriggerPayload
+
+        payload = RedcapTriggerPayload(
+            project_id=625,
+            instrument="enrollment",
+            record="12345",
+            redcap_repeat_instance=3.0,
+            ready_to_send_to_curious="1",
+        )
+        assert payload.redcap_repeat_instance == 3
+        assert isinstance(payload.redcap_repeat_instance, int)
+
+    def test_has_ready_to_send_field(self) -> None:
+        """Test that to_curious payload has ready_to_send_to_curious field."""
+        from hbnmigration.from_redcap.to_curious import RedcapTriggerPayload
+
+        payload = RedcapTriggerPayload(
+            project_id=625,
+            instrument="enrollment",
+            record="12345",
+            ready_to_send_to_curious="1",
+        )
+        assert payload.ready_to_send_to_curious == "1"
+
+    def test_nan_conversion_inherited(self) -> None:
+        """Test that NaN conversion is inherited from RedcapRecord."""
+        from hbnmigration.from_redcap.to_curious import RedcapTriggerPayload
+
+        payload = RedcapTriggerPayload(
+            project_id=625,
+            instrument="enrollment",
+            record="12345",
+            redcap_repeat_instance=float("nan"),
+        )
+        assert payload.redcap_repeat_instance is None
+
+
+class TestRedcapTriggerPayloadRedcap:
+    """Tests for RedcapTriggerPayload in to_redcap inheriting RedcapRecord."""
+
+    def test_inherits_float_conversion(self) -> None:
+        """Test that to_redcap payload inherits float-to-int conversion."""
+        from hbnmigration.from_redcap.to_redcap import RedcapTriggerPayload
+
+        payload = RedcapTriggerPayload(
+            project_id=625,
+            instrument="enrollment",
+            record="12345",
+            redcap_repeat_instance=5.0,
+            intake_ready="1",
+        )
+        assert payload.redcap_repeat_instance == 5
+        assert isinstance(payload.redcap_repeat_instance, int)
+
+    def test_has_ready_to_send_field(self) -> None:
+        """Test that to_redcap payload has intake_ready field."""
+        from hbnmigration.from_redcap.to_redcap import RedcapTriggerPayload
+
+        payload = RedcapTriggerPayload(
+            project_id=625,
+            instrument="enrollment",
+            record="12345",
+            intake_ready="1",
+        )
+        assert payload.intake_ready == "1"
+
+    def test_nan_conversion_inherited(self) -> None:
+        """Test that NaN conversion is inherited from RedcapRecord."""
+        from hbnmigration.from_redcap.to_redcap import RedcapTriggerPayload
+
+        payload = RedcapTriggerPayload(
+            project_id=625,
+            instrument="enrollment",
+            record="12345",
+            redcap_repeat_instance=float("nan"),
+        )
+        assert payload.redcap_repeat_instance is None
+
+
+class TestRedcapRecordFromFormData:
+    """Tests simulating REDCap Data Entry Trigger form submissions."""
+
+    def test_from_dict_with_float_instance(self) -> None:
+        """Test constructing from dict as would come from form parsing."""
+        data = {
+            "project_id": 625,
+            "instrument": "medications",
+            "record": "12345",
+            "redcap_event_name": "baseline_arm_1",
+            "redcap_repeat_instance": 2.0,
+            "redcap_repeat_instrument": "medications",
+        }
+        record = RedcapRecord(**data)
+        assert record.redcap_repeat_instance == 2
+        assert isinstance(record.redcap_repeat_instance, int)
+
+    def test_from_dict_with_empty_string_instance(self) -> None:
+        """Test that empty string for repeat instance is handled."""
+        data = {
+            "project_id": 625,
+            "instrument": "enrollment",
+            "record": "12345",
+            "redcap_repeat_instance": None,
+        }
+        record = RedcapRecord(**data)
+        assert record.redcap_repeat_instance is None

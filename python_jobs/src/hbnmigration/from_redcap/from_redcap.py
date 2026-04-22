@@ -3,6 +3,7 @@
 from typing import Hashable, Literal, Optional
 
 import pandas as pd
+from pydantic import BaseModel, Field, field_validator
 
 from .._config_variables import redcap_variables
 from ..exceptions import NoData
@@ -475,6 +476,42 @@ def response_index_reverse_lookup(row: pd.Series) -> list[tuple[str, str, int | 
                 except TypeError, ValueError:
                     lookups.append((field, label.strip().lower(), value.strip()))
     return lookups
+
+
+class RedcapRecord(BaseModel):
+    """Payload from REDCap Data Entry Trigger."""
+
+    project_id: int
+    instrument: str
+    record: str
+    redcap_event_name: str | None = None
+    redcap_repeat_instance: int | None = Field(
+        default=None, alias="redcap_repeat_instance"
+    )
+    redcap_repeat_instrument: str | None = Field(
+        default=None, alias="redcap_repeat_instrument"
+    )
+    redcap_data_access_group: str | None = Field(
+        default=None, alias="redcap_data_access_group"
+    )
+    redcap_url: str | None = Field(default=None, alias="redcap_url")
+    project_url: str | None = Field(default=None, alias="project_url")
+    username: str | None = None
+
+    class Config:
+        """Pydantic config."""
+
+        populate_by_name = True
+
+    @field_validator("redcap_repeat_instance", mode="before")
+    @classmethod
+    def convert_repeat_instance_to_int(cls, value: int | float | None) -> int | None:
+        """Convert float values to int for redcap_repeat_instance."""
+        if value is None or (isinstance(value, float) and pd.isna(value)):
+            return None
+        if isinstance(value, (int, float)):
+            return int(value)
+        return value
 
 
 __all__ = ["fetch_data", "response_index_reverse_lookup"]

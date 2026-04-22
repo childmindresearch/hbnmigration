@@ -14,7 +14,7 @@ from fastapi import BackgroundTasks, FastAPI, Form, Request
 from fastapi.responses import JSONResponse
 import numpy as np
 import pandas as pd
-from pydantic import BaseModel, Field
+from pydantic import Field
 import requests
 import uvicorn
 
@@ -27,7 +27,7 @@ from ..utility_functions import (
     redcap_api_push,
 )
 from .config import Fields, Values
-from .from_redcap import fetch_data
+from .from_redcap import fetch_data, RedcapRecord
 
 logger = initialize_logging(__name__)
 
@@ -42,25 +42,12 @@ app = FastAPI(
 )
 
 
-class RedcapTriggerPayload(BaseModel):
+class RedcapTriggerPayload(RedcapRecord):
     """Payload from REDCap Data Entry Trigger."""
 
-    project_id: int
-    instrument: str
-    record: str
-    redcap_event_name: str | None = None
-    redcap_repeat_instance: int | None = Field(None, alias="redcap_repeat_instance")
-    redcap_repeat_instrument: str | None = Field(None, alias="redcap_repeat_instrument")
-    redcap_data_access_group: str | None = Field(None, alias="redcap_data_access_group")
-    redcap_url: str | None = Field(None, alias="redcap_url")
-    project_url: str | None = Field(None, alias="project_url")
-    username: str | None = None
-    ready_to_send_to_curious: str | None = Field(None, alias="ready_to_send_to_curious")
-
-    class Config:
-        """Pydantic config."""
-
-        populate_by_name = True
+    ready_to_send_to_curious: str | None = Field(
+        default=None, alias="ready_to_send_to_curious"
+    )
 
 
 def _in_set(x: set | int | str, required_value: int | str = 1) -> bool:

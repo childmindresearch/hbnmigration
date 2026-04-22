@@ -1,7 +1,7 @@
 """
 Transfer data from one REDCap project to another via webhook triggers.
 
-When ``ready_to_send_to_intake_redcap`` field is set to 1 in
+When ``intake_ready`` field is set to 1 in
 Healthy Brain Network Study Consent (IRB Approved) (PID 247),
 copies the approved participants to HBN - Operations and Data Collection (PID 625).
 
@@ -15,14 +15,14 @@ from typing import Annotated, Any, cast
 from fastapi import BackgroundTasks, FastAPI, Form, Request
 from fastapi.responses import JSONResponse
 import pandas as pd
-from pydantic import BaseModel, Field
+from pydantic import Field
 import uvicorn
 
 from .._config_variables import redcap_variables
 from ..exceptions import NoData
 from ..utility_functions import initialize_logging, redcap_api_push
 from .config import Fields, Values
-from .from_redcap import fetch_data
+from .from_redcap import fetch_data, RedcapRecord
 
 logger = initialize_logging(__name__)
 
@@ -40,27 +40,10 @@ app = FastAPI(
 )
 
 
-class RedcapTriggerPayload(BaseModel):
+class RedcapTriggerPayload(RedcapRecord):
     """Payload from REDCap Data Entry Trigger."""
 
-    project_id: int
-    instrument: str
-    record: str
-    redcap_event_name: str | None = None
-    redcap_repeat_instance: int | None = Field(None, alias="redcap_repeat_instance")
-    redcap_repeat_instrument: str | None = Field(None, alias="redcap_repeat_instrument")
-    redcap_data_access_group: str | None = Field(None, alias="redcap_data_access_group")
-    redcap_url: str | None = Field(None, alias="redcap_url")
-    project_url: str | None = Field(None, alias="project_url")
-    username: str | None = None
-    ready_to_send_to_intake_redcap: str | None = Field(
-        None, alias="ready_to_send_to_intake_redcap"
-    )
-
-    class Config:
-        """Pydantic config."""
-
-        populate_by_name = True
+    intake_ready: str | None = Field(default=None, alias="intake_ready")
 
 
 def event_map(redcap_data: pd.DataFrame) -> dict[str, str]:
@@ -87,6 +70,9 @@ def format_data_for_redcap_operations(redcap_data: pd.DataFrame) -> pd.DataFrame
     """
     Format data from intake (PID 247) for operations (PID 625).
 
+    Applies field renaming, guardian consent mapping, record ID remapping,
+    and other transformations needed for the target project.
+
     Parameters
     ----------
     redcap_data
@@ -98,12 +84,120 @@ def format_data_for_redcap_operations(redcap_data: pd.DataFrame) -> pd.DataFrame
 
     """
     df = redcap_data.copy()
-    if hasattr(Fields, "export_247") and hasattr(
-        Fields.export_247, "for_redcap_operations"
-    ):
-        intake_fields = str(Fields.export_247.for_redcap_operations).split(",")
-        df = df[df["field_name"].isin(intake_fields)]
+
+    # Step 1: Apply field name transformations
+    if hasattr(Fields.rename, "redcap_consent_to_redcap_operations"):
+        df["field_name"] = df["field_name"].replace(
+            Fields.rename.redcap_consent_to_redcap_operations
+        )
+
+    # Step 2: Update complete_parent_second_guardian_consent based on guardian2_consent
+    df = update_complete_parent_second_guardian_consent(df)
+
+    # Step 3: Filter to only fields needed for operations project
+    if hasattr(Fields, "import_625"):
+        df = df[df["field_name"].str.startswith(tuple(Fields.import_625))]
+
+    # Step 4: Build record ID mapping using MRN
+    record_ids: dict[int | str, int | str] = {
+        row["record"]: row["value"]
+        for _, row in df[df["field_name"] == "mrn"].iterrows()
+    }
+
+    # Step 5: Remap record IDs
+    df["record"] = df["record"].replace(record_ids)
+
+    # Step 6: Update record_id field values to match new record numbers
+    df.loc[df["field_name"] == "record_id", "value"] = df.loc[
+        df["field_name"] == "record_id", "record"
+    ]
+
+    # Step 7: Deduplicate by keeping most recent repeat instance
+    df = (
+        df.sort_values("redcap_repeat_instance", ascending=False, na_position="last")
+        .drop_duplicates(subset=["record", "field_name"], keep="first")
+        .drop(
+            columns=["redcap_repeat_instrument", "redcap_repeat_instance"],
+            errors="ignore",
+        )
+        .reset_index(drop=True)
+    )
+
+    # Step 8: Decrement permission_collab values by 1
+    decrement_mask = df["field_name"] == "permission_collab"
+    if decrement_mask.any():
+        decremented = (
+            pd.to_numeric(df.loc[decrement_mask, "value"], errors="coerce") - 1
+        )
+        df.loc[decrement_mask, "value"] = decremented.astype(str)
+
     return df
+
+
+def update_complete_parent_second_guardian_consent(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Update ``complete_parent_second_guardian_consent`` based on ``guardian2_consent``.
+
+    Only records whose ``guardian2_consent`` value is in the mapping are affected.
+    All other records are left unchanged.
+    """
+    mapping = {
+        Values.PID247.guardian2_consent[
+            _consent
+        ]: Values.PID625.complete_parent_second_guardian_consent[_operations]
+        for _consent, _operations in [
+            ("No", "Not Required"),
+            (
+                "Not Applicable (Adult Participant)",
+                "Not Applicable (Adult Participant)",
+            ),
+        ]
+    }
+
+    # Compute desired target value per record
+    record_to_value = (
+        df.query("field_name == 'guardian2_consent'")
+        .set_index("record")["value"]
+        .map(mapping)
+        .dropna()
+    )
+
+    if record_to_value.empty:
+        return df
+
+    records_to_update = record_to_value.index
+
+    # Update existing rows
+    mask = (df["field_name"] == "complete_parent_second_guardian_consent") & (
+        df["record"].isin(records_to_update)
+    )
+    df.loc[mask, "value"] = df.loc[mask, "record"].map(record_to_value)
+
+    # Append missing rows
+    missing_records = records_to_update.difference(
+        df.loc[
+            df["field_name"] == "complete_parent_second_guardian_consent", "record"
+        ].tolist()
+    )
+
+    if len(missing_records):
+        df = pd.concat(
+            [
+                df,
+                pd.DataFrame(
+                    {
+                        "record": missing_records,
+                        "field_name": "complete_parent_second_guardian_consent",
+                        "value": record_to_value.loc[missing_records].values,
+                    }
+                ),
+            ],
+            ignore_index=True,
+        )
+
+    return df.sort_values(["record", "field_name"], kind="stable").reset_index(
+        drop=True
+    )
 
 
 def push_to_intake_redcap(source_data: pd.DataFrame) -> int:
@@ -157,7 +251,7 @@ def update_source_redcap_status(
                 {
                     "record": record_id,
                     "redcap_event_name": event_name,
-                    "field_name": "ready_to_send_to_intake_redcap",
+                    "field_name": "intake_ready",
                     "value": status_value,
                 }
             ]
@@ -192,7 +286,7 @@ def clear_ready_flag(record_id: str) -> None:
     try:
         data = fetch_data(
             _REDCAP_TOKENS.pid247,
-            "ready_to_send_to_intake_redcap",
+            "intake_ready",
             filter_logic=f"[record_id] = '{record_id}'",
         )
         if data.empty:
@@ -202,11 +296,11 @@ def clear_ready_flag(record_id: str) -> None:
                 _SOURCE_PID,
             )
             return
-        event = event_map(data).get("ready_to_send_to_intake_redcap")
+        event = event_map(data).get("intake_ready")
         if event is None:
             logger.error(
                 "Could not determine redcap_event_name for "
-                "'ready_to_send_to_intake_redcap'. "
+                "'intake_ready'. "
                 "Skipping flag clear for record %s.",
                 record_id,
             )
@@ -229,18 +323,23 @@ def process_record_for_redcap_operations(record_id: str) -> dict[str, Any]:
     """
     try:
         logger.info("Processing record %s for Intake REDCap push", record_id)
+
         if hasattr(Fields, "export_247") and hasattr(
             Fields.export_247, "for_redcap_operations"
         ):
+            # Make sure to include intake_ready in the export
             fields_to_export = str(Fields.export_247.for_redcap_operations)
+            if "intake_ready" not in fields_to_export:
+                fields_to_export += ",intake_ready"
         else:
-            fields_to_export = None
+            fields_to_export = "intake_ready"
 
         source_data = fetch_data(
             _REDCAP_TOKENS.pid247,
             fields_to_export,
             filter_logic=f"[record_id] = '{record_id}'",
         )
+
         if source_data.empty:
             logger.warning(
                 "No data found for record %s in PID %d", record_id, _SOURCE_PID
@@ -251,7 +350,17 @@ def process_record_for_redcap_operations(record_id: str) -> dict[str, Any]:
                 "message": f"No data found in Intake (PID {_SOURCE_PID})",
             }
 
+        # Extract event name for intake_ready field BEFORE formatting
+        event_name = None
+        intake_ready_rows = source_data[source_data["field_name"] == "intake_ready"]
+        if (
+            not intake_ready_rows.empty
+            and "redcap_event_name" in intake_ready_rows.columns
+        ):
+            event_name = intake_ready_rows["redcap_event_name"].iloc[0]
+
         formatted_data = format_data_for_redcap_operations(source_data)
+
         if formatted_data.empty:
             logger.info("No processable data for record %s", record_id)
             return {
@@ -261,7 +370,24 @@ def process_record_for_redcap_operations(record_id: str) -> dict[str, Any]:
             }
 
         rows_pushed = push_to_intake_redcap(formatted_data)
-        clear_ready_flag(record_id)
+
+        # Update the flag with the captured event name
+        if event_name:
+            update_source_redcap_status(
+                record_id,
+                str(
+                    Values.PID247.intake_ready[
+                        "Participant information already sent to "
+                        "HBN - Intake Redcap project"
+                    ]
+                ),
+                event_name,
+            )
+        else:
+            logger.warning(
+                "Could not determine event name for record %s, skipping status update",
+                record_id,
+            )
 
         return {
             "status": "success",
@@ -269,6 +395,7 @@ def process_record_for_redcap_operations(record_id: str) -> dict[str, Any]:
             "message": f"Pushed {rows_pushed} row(s) to Operations (PID {_TARGET_PID})",
             "rows_pushed": rows_pushed,
         }
+
     except Exception as e:
         logger.exception("Error processing record %s for Operations REDCap", record_id)
         return {
@@ -300,13 +427,13 @@ async def redcap_to_intake_webhook(
     background_tasks: BackgroundTasks,
     instrument: Annotated[str, Form()],
     record: Annotated[str, Form()],
-    ready_to_send_to_intake_redcap: Annotated[str | None, Form()] = None,
+    intake_ready: Annotated[str | None, Form()] = None,
 ) -> dict[str, Any]:
     """
     Handle REDCap Data Entry Trigger for Intake updates.
 
     This endpoint should be configured as a Data Entry Trigger in
-    REDCap PID 247. When ``ready_to_send_to_intake_redcap`` is set to ``1``,
+    REDCap PID 247. When ``intake_ready`` is set to ``1``,
     REDCap will POST to this endpoint.
 
     Configuration in REDCap:
@@ -321,7 +448,7 @@ async def redcap_to_intake_webhook(
         record,
         instrument,
     )
-    if ready_to_send_to_intake_redcap != "1":
+    if intake_ready != "1":
         logger.debug("Ready flag not set for record %s, ignoring trigger", record)
         return {
             "status": "ignored",
@@ -360,9 +487,7 @@ def main() -> None:
     process every record currently flagged in REDCap PID 247.
 
     Usage::
-
         python -m hbnmigration.from_redcap.to_redcap
-
     """
     try:
         if hasattr(Fields, "export_247") and hasattr(
@@ -371,7 +496,6 @@ def main() -> None:
             fields_to_export = str(Fields.export_247.for_redcap_operations)
         else:
             fields_to_export = None
-
         data_operations = fetch_data(
             _REDCAP_TOKENS.pid247,
             fields_to_export,
@@ -392,20 +516,68 @@ def main() -> None:
         )
         return
 
+    # Build mapping of MRN -> source record_id BEFORE formatting
+    mrn_to_source_record = (
+        data_operations[data_operations["field_name"] == "mrn"]
+        .set_index("value")["record"]
+        .to_dict()
+    )
+
+    # Also capture event names for each source record
+    source_record_to_event = {}
+    intake_ready_rows = data_operations[data_operations["field_name"] == "intake_ready"]
+    if not intake_ready_rows.empty and "redcap_event_name" in intake_ready_rows.columns:
+        source_record_to_event = intake_ready_rows.set_index("record")[
+            "redcap_event_name"
+        ].to_dict()
+
     formatted_data = format_data_for_redcap_operations(data_operations)
     if formatted_data.empty:
         logger.info("No data to push after formatting.")
         return
-
     try:
         push_to_intake_redcap(formatted_data)
     except Exception:
         logger.exception("Batch push to Intake REDCap failed.")
         return
 
-    pushed_records = set(formatted_data["record"].unique())
-    for record_id in pushed_records:
-        clear_ready_flag(str(record_id))
+    # Get the MRNs (which are now in the 'record' column after remapping)
+    pushed_mrns = set(formatted_data["record"].unique())
+
+    # Track successful updates
+    successful_updates = 0
+
+    # Map back to original source record IDs and update their status
+    for mrn in pushed_mrns:
+        source_record_id = mrn_to_source_record.get(mrn)
+        if source_record_id:
+            event_name = source_record_to_event.get(source_record_id, "")
+            try:
+                update_source_redcap_status(
+                    str(source_record_id),
+                    str(
+                        Values.PID247.intake_ready[
+                            "Participant information already sent to "
+                            "HBN - Intake Redcap project"
+                        ]
+                    ),
+                    event_name,
+                )
+                successful_updates += 1
+            except Exception:
+                logger.exception(
+                    "Failed to update status for source record %s (MRN: %s)",
+                    source_record_id,
+                    mrn,
+                )
+
+    # Verify consistency
+    if successful_updates != len(pushed_mrns):
+        logger.warning(
+            "Mismatch: pushed %d records but only updated %d source records",
+            len(pushed_mrns),
+            successful_updates,
+        )
 
 
 def serve(host: str = "0.0.0.0", port: int = 8001) -> None:
