@@ -11,14 +11,6 @@ terraform {
       version = "~> 2.4"
     }
   }
-
-  backend "s3" {
-    bucket         = "hbn-migration-terraform-state"
-    key            = "terraform.tfstate"
-    region         = "us-east-1"
-    encrypt        = true
-    dynamodb_table = "hbn-migration-terraform-locks"
-  }
 }
 
 provider "aws" {
