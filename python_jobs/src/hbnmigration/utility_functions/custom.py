@@ -20,6 +20,7 @@ import requests
 
 from ..exceptions import TSVLoggedError
 from .cache import YESTERDAY_DATE
+from .datatypes import Record
 from .logging import initialize_logging, log_invalid_fields, setup_tsv_logger
 from .teams import send_alert
 
@@ -583,12 +584,20 @@ def new_curious_account(
             msg = f"No valid account type specified: {record.get('accountType')}"
             raise ValueError(msg)
     curious_url = f"{host}/invitations/{applet_id}/{account_type}"
-    new_record = {}
+    new_record: Record = {}
+
+    # Handle parent_involvement before single-element unpacking
     for key, value in record.items():
-        if isinstance(value, (list, set, tuple)) and len(value) == 1:
+        if key == "parent_involvement" and isinstance(value, (list, set)):
+            new_record[key] = sorted(value)
+        elif isinstance(value, (list, set, tuple)) and len(value) == 1:
             new_record[key] = next(iter(value))
+        elif isinstance(value, (list, set, tuple)):
+            # Skip isnan check for collections
+            new_record[key] = value
         elif not isnan(value):
             new_record[key] = value
+
     response = requests.post(curious_url, json=new_record, headers=headers)
     logger.info("Status Code: %d", response.status_code)
     response_body = response.json()
