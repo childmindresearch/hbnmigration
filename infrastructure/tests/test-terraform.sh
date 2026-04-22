@@ -46,16 +46,7 @@ run_test "Terraform init" "terraform init -backend=false"
 # Test 3: Validation
 run_test "Terraform validate" "terraform validate"
 
-# Test 4: Security scan with Checkov (if installed)
-if command -v checkov &> /dev/null; then
-    run_test "Security scan (Checkov)" "checkov -d . --quiet --compact --config-file tests/.checkov.yaml"
-else
-    echo -e "${YELLOW}⊘ SKIPPED: Security scan (Checkov not installed)${NC}"
-    echo "  Install with: pip install checkov"
-    echo ""
-fi
-
-# Test 5: Lint with tflint (if installed)
+# Test 4: Lint with tflint (if installed)
 if command -v tflint &> /dev/null; then
     run_test "Terraform lint (tflint)" "tflint --config tests/.tflint.hcl --init && tflint --config tests/.tflint.hcl"
 else
@@ -64,16 +55,19 @@ else
     echo ""
 fi
 
-# Test 6: Check required files exist
+# Test 5: Check required files exist
 run_test "Required files exist" "test -f main.tf && test -f variables.tf && test -f outputs.tf"
 
-# Test 7: Check service templates exist
-run_test "Service templates exist" "test -f services/redcap-to-redcap.service.tpl && test -f services/redcap-to-curious.service.tpl"
+# Test 6: Check service templates exist
+run_test "Service templates exist" \
+    "test -f services/redcap-to-redcap.service.tpl && \
+     test -f services/redcap-to-curious.service.tpl && \
+     test -f services/redcap-to-redcap-batch.service.tpl && \
+     test -f services/redcap-to-curious-batch.service.tpl && \
+     test -f services/hbn-sync.service.tpl && \
+     test -f services/hbn-sync.timer.tpl"
 
-# Test 8: Check user_data script exists
-run_test "User data script exists" "test -f user_data.sh"
-
-# Test 9: Check for common issues
+# Test 7: Check for common issues
 echo -e "${YELLOW}Running: Common issues check${NC}"
 issues_found=0
 

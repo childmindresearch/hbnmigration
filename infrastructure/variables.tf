@@ -1,91 +1,45 @@
-variable "aws_region" {
-  description = "AWS region"
+variable "project_root" {
+  description = "Base directory for the application"
   type        = string
-  default     = "us-east-1"
+  default     = "/data/hbnmigration"
 }
 
-variable "environment" {
-  description = "Environment (dev, staging, production)"
-  type        = string
-  validation {
-    condition     = contains(["dev", "staging", "production"], var.environment)
-    error_message = "Must be dev, staging, or production"
-  }
-}
-
-variable "vpc_id" {
-  description = "VPC ID"
-  type        = string
-}
-
-variable "subnet_id" {
-  description = "Subnet ID for EC2 instance"
-  type        = string
-}
-
-variable "ami_id" {
-  description = "AMI ID (Ubuntu 22.04 recommended)"
-  type        = string
-}
-
-variable "instance_type" {
-  description = "EC2 instance type"
-  type        = string
-  default     = "t3.small"
-}
-
-variable "key_name" {
-  description = "EC2 key pair name"
-  type        = string
-}
-
-variable "ssh_allowed_cidrs" {
-  description = "CIDR blocks allowed for SSH (leave empty to disable SSH)"
-  type        = list(string)
-  default     = []
-}
-
-variable "webhook_allowed_cidrs" {
-  description = "CIDR blocks allowed for webhooks (REDCap server IPs)"
-  type        = list(string)
-  validation {
-    condition     = length(var.webhook_allowed_cidrs) > 0
-    error_message = "Must specify at least one CIDR for webhook access"
-  }
-}
-
-variable "service_user" {
-  description = "System user for services"
+variable "user_group" {
+  description = "System user/group for running services"
   type        = string
   default     = "hbnmigration"
 }
 
-variable "service_group" {
-  description = "System group for services"
+variable "venv_path" {
+  description = "Python virtual environment path (relative to project_root or absolute)"
   type        = string
-  default     = "hbnmigration"
+  default     = "python_jobs/.venv"
 }
 
-variable "working_directory" {
-  description = "Working directory"
+variable "log_directory" {
+  description = "Where logs are stored"
   type        = string
-  default     = "/opt/hbnmigration"
+  default     = "/data/logs/hbnmigration"
 }
 
-variable "python_venv" {
-  description = "Python virtual environment path"
-  type        = string
-  default     = "/opt/hbnmigration/venv"
+variable "sync_interval_minutes" {
+  description = "How often the batch sync timer runs (minutes)"
+  type        = number
+  default     = 1
+  validation {
+    condition     = var.sync_interval_minutes >= 1 && var.sync_interval_minutes <= 1440
+    error_message = "Must be between 1 and 1440 minutes"
+  }
 }
 
-variable "github_repo" {
-  description = "GitHub repository URL"
+variable "project_status" {
+  description = "Project status (prod, dev, test)"
   type        = string
-  default     = "https://github.com/childmindresearch/hbnmigration.git"
+  default     = "prod"
 }
 
-variable "github_branch" {
-  description = "GitHub branch"
-  type        = string
-  default     = "main"
+variable "recovery_mode" {
+  description = "Enable recovery mode"
+  type        = bool
+  default     = false
 }
