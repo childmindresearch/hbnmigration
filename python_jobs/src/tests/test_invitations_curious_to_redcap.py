@@ -936,3 +936,52 @@ class TestPushToRedcap:
                 assert "curious_account_created_source_secret_id" in called_df.columns
                 assert "curious_account_created_invite_status" in called_df.columns
                 assert "redcap_event_name" in called_df.columns
+
+
+class TestInvitationCacheKeys:
+    """Test invitation-specific cache key creation."""
+
+    def test_create_invitation_cache_key(self):
+        """Test creating cache key for invitation."""
+        from hbnmigration.from_curious.invitations_to_redcap import (
+            create_invitation_cache_key,
+        )
+
+        result = create_invitation_cache_key("12345", "3", True)
+        assert result == "12345:3:1"
+
+    def test_create_invitation_cache_key_no_response(self):
+        """Test cache key with no response."""
+        from hbnmigration.from_curious.invitations_to_redcap import (
+            create_invitation_cache_key,
+        )
+
+        result = create_invitation_cache_key("12345", "2", False)
+        assert result == "12345:2:0"
+
+    def test_process_responder_accounts_uses_cache_keys(self, tmp_path):
+        """Test responder processing uses composite cache keys."""
+        from hbnmigration.from_curious.invitations_to_redcap import (
+            _process_responder_accounts,
+        )
+        from hbnmigration.utility_functions import DataCache
+
+        cache = DataCache("test", ttl_minutes=5, cache_dir=str(tmp_path))
+
+        with (
+            patch(
+                "hbnmigration.from_curious.invitations_to_redcap.curious_authenticate"
+            ),
+            patch(
+                "hbnmigration.from_curious.invitations_to_redcap.pull_data_from_curious"
+            ) as mock_pull,
+        ):
+            # Return empty DataFrame
+            mock_pull.return_value = pl.DataFrame()
+
+            _process_responder_accounts(
+                "Test Applet", "token", "lookup_token", cache, 625
+            )
+
+            # Should handle empty DataFrame gracefully
+            assert cache.get_stats()["total_entries"] == 0

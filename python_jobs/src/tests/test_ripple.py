@@ -375,13 +375,22 @@ class TestPrepareRedcapData:
         mock_set_columns,
         mock_get_updates,
         temp_dir,
-        bella_garten_participant,
     ):
         """Test that both update and new CSV files are created."""
         mock_vars.redcap_update_file = temp_dir / "update.csv"
         mock_vars.redcap_import_file = temp_dir / "import.csv"
 
-        mock_set_columns.return_value = bella_garten_participant
+        # Create DataFrame with required columns including lastModified
+        test_df = pd.DataFrame(
+            {
+                "record_id": [99001],
+                "mrn": [99001],
+                "email_consent": ["bella@garden.green"],
+                "lastModified": ["2024-01-15T12:00:00"],
+            }
+        )
+
+        mock_set_columns.return_value = test_df
 
         # Mock returning both updates and new subjects
         update_df = pd.DataFrame(
@@ -400,7 +409,15 @@ class TestPrepareRedcapData:
         )
         mock_get_updates.return_value = (update_df, new_df)
 
-        prepare_redcap_data(pd.DataFrame())
+        # Pass DataFrame with data instead of empty
+        input_df = pd.DataFrame(
+            {
+                "customId": [99001],
+                "globalId": ["BG001"],
+            }
+        )
+
+        prepare_redcap_data(input_df)
 
         assert mock_vars.redcap_update_file.exists()
         assert mock_vars.redcap_import_file.exists()
@@ -421,13 +438,15 @@ class TestPrepareRedcapData:
         mock_vars.redcap_update_file = temp_dir / "update.csv"
         mock_vars.redcap_import_file = temp_dir / "import.csv"
 
-        mock_set_columns.return_value = pd.DataFrame(
+        test_df = pd.DataFrame(
             {
                 "record_id": [1],
                 "mrn": [1],
                 "email_consent": ["test@test.com"],
+                "lastModified": ["2024-01-15T12:00:00"],
             }
         )
+        mock_set_columns.return_value = test_df
 
         # Only new subjects, no updates
         empty_update = pd.DataFrame(columns=["record_id", "mrn", "email_consent"])
@@ -440,7 +459,13 @@ class TestPrepareRedcapData:
         )
         mock_get_updates.return_value = (empty_update, new_df)
 
-        prepare_redcap_data(pd.DataFrame())
+        input_df = pd.DataFrame(
+            {
+                "customId": [1],
+                "globalId": ["TEST001"],
+            }
+        )
+        prepare_redcap_data(input_df)
 
         assert not mock_vars.redcap_update_file.exists()
         assert mock_vars.redcap_import_file.exists()
@@ -460,15 +485,22 @@ class TestPrepareRedcapData:
                 "record_id": [12345],
                 "mrn": [12345],
                 "email_consent": ["alec@swamp.com"],
+                "lastModified": ["2024-01-15T12:00:00"],
             }
         )
         mock_set_columns.return_value = mock_df
         mock_get_updates.return_value = (
             pd.DataFrame(columns=["record_id", "mrn", "email_consent"]),
-            mock_df,
+            mock_df.drop(columns=["lastModified"]),
         )
 
-        prepare_redcap_data(pd.DataFrame())
+        input_df = pd.DataFrame(
+            {
+                "customId": [12345],
+                "globalId": ["ST001"],
+            }
+        )
+        prepare_redcap_data(input_df)
 
         result = pd.read_csv(mock_vars.redcap_import_file)
         assert "Unnamed: 0" not in result.columns
@@ -488,15 +520,22 @@ class TestPrepareRedcapData:
                 "record_id": range(10000, 10100),
                 "mrn": range(10000, 10100),
                 "email_consent": [f"plant{i}@garden.green" for i in range(100)],
+                "lastModified": ["2024-01-15T12:00:00"] * 100,
             }
         )
         mock_set_columns.return_value = large_df
         mock_get_updates.return_value = (
             pd.DataFrame(columns=["record_id", "mrn", "email_consent"]),
-            large_df,
+            large_df.drop(columns=["lastModified"]),
         )
 
-        prepare_redcap_data(pd.DataFrame())
+        input_df = pd.DataFrame(
+            {
+                "customId": range(10000, 10100),
+                "globalId": [f"PLANT{i:03d}" for i in range(100)],
+            }
+        )
+        prepare_redcap_data(input_df)
 
         result = pd.read_csv(mock_vars.redcap_import_file)
         assert len(result) == 100
@@ -516,15 +555,22 @@ class TestPrepareRedcapData:
                 "record_id": [44001],
                 "mrn": [44001],
                 "email_consent": ["bella.o'garden@green.org"],
+                "lastModified": ["2024-01-15T12:00:00"],
             }
         )
         mock_set_columns.return_value = mock_df
         mock_get_updates.return_value = (
             pd.DataFrame(columns=["record_id", "mrn", "email_consent"]),
-            mock_df,
+            mock_df.drop(columns=["lastModified"]),
         )
 
-        prepare_redcap_data(pd.DataFrame())
+        input_df = pd.DataFrame(
+            {
+                "customId": [44001],
+                "globalId": ["BG001"],
+            }
+        )
+        prepare_redcap_data(input_df)
 
         result = pd.read_csv(mock_vars.redcap_import_file)
         assert "bella.o'garden@green.org" in result["email_consent"].values
@@ -558,9 +604,7 @@ class TestPushToRedcap:
         mock_vars.redcap_import_file = csv_with_content
         mock_vars.redcap_update_file = csv_with_content.parent / "nonexistent.csv"
         mock_post.return_value = mock_redcap_response
-
         push_to_redcap("test_token_swamp_thing", update=False)
-
         mock_post.assert_called_once()
         call_args = mock_post.call_args
         assert call_args[1]["data"]["token"] == "test_token_swamp_thing"
@@ -577,9 +621,7 @@ class TestPushToRedcap:
             csv_with_update_content.parent / "nonexistent.csv"
         )
         mock_post.return_value = mock_redcap_response
-
         push_to_redcap("test_token_garden", update=True)
-
         mock_post.assert_called_once()
         call_args = mock_post.call_args
         assert call_args[1]["data"]["forceAutoNumber"] == "false"
@@ -592,18 +634,14 @@ class TestPushToRedcap:
         """Test pushing both update and new when update=None."""
         update_file = temp_dir / "update.csv"
         import_file = temp_dir / "import.csv"
-
         update_file.write_text("record_id,mrn,email_consent\n1,12345,alec@swamp.com")
         import_file.write_text(
             "record_id,mrn,email_consent\n99001,99001,bella@garden.green"
         )
-
         mock_vars.redcap_update_file = update_file
         mock_vars.redcap_import_file = import_file
         mock_post.return_value = mock_redcap_response
-
         push_to_redcap("test_token", update=None)
-
         assert mock_post.call_count == 2
 
     @pytest.mark.parametrize(
@@ -623,7 +661,6 @@ class TestPushToRedcap:
         mock_vars.redcap_import_file = csv_with_content
         mock_vars.redcap_update_file = csv_with_content.parent / "nonexistent.csv"
         mock_post.side_effect = exception_class(error_message)
-
         with pytest.raises(exception_class):
             push_to_redcap("test_token", update=False)
 
@@ -636,9 +673,7 @@ class TestPushToRedcap:
         temp_csv_file.unlink(missing_ok=True)
         mock_vars.redcap_import_file = temp_csv_file
         mock_vars.redcap_update_file = temp_csv_file.parent / "nonexistent.csv"
-
         push_to_redcap("test_token", update=False)
-
         mock_post.assert_not_called()
 
     @patch("hbnmigration.from_ripple.to_redcap.requests.post")
@@ -648,9 +683,7 @@ class TestPushToRedcap:
         temp_csv_file.write_text("")
         mock_vars.redcap_import_file = temp_csv_file
         mock_vars.redcap_update_file = temp_csv_file.parent / "nonexistent.csv"
-
         push_to_redcap("test_token", update=False)
-
         mock_post.assert_not_called()
 
 
@@ -673,9 +706,7 @@ class TestSetStatusInRipple:
             "https://ripple.swamp.org/import"
         )
         mock_post.return_value = mock_ripple_response
-
         set_status_in_ripple("HBN - Main", str(excel_file_with_data))
-
         mock_post.assert_called_once()
 
     @patch("hbnmigration.from_ripple.to_redcap.ripple_variables")
@@ -683,13 +714,11 @@ class TestSetStatusInRipple:
         """Test empty Excel file doesn't trigger API request."""
         empty_df = pd.DataFrame()
         empty_df.to_excel(temp_excel_file, index=False)
-
         set_status_in_ripple("HBN - Main", str(temp_excel_file))
 
     def test_file_not_found_raises_exception(self, temp_excel_file):
         """Test FileNotFoundError is raised for missing file."""
         temp_excel_file.unlink(missing_ok=True)
-
         with pytest.raises(FileNotFoundError):
             set_status_in_ripple("HBN - Main", str(temp_excel_file))
 
@@ -717,9 +746,7 @@ class TestSetStatusInRipple:
             "https://ripple.swamp.org/import"
         )
         mock_post.return_value = mock_ripple_response
-
         set_status_in_ripple(study_name, str(excel_file_with_data))
-
         mock_post.assert_called_once()
 
     @pytest.mark.parametrize(
@@ -745,7 +772,6 @@ class TestSetStatusInRipple:
             "https://ripple.swamp.org/import"
         )
         mock_post.side_effect = exception_class("API error")
-
         with pytest.raises((exception_class, requests.exceptions.RequestException)):
             set_status_in_ripple("HBN - Main", str(excel_file_with_data))
 
@@ -768,14 +794,11 @@ class TestSetStatusInRipple:
             }
         )
         large_df.to_excel(temp_excel_file, index=False)
-
         mock_endpoints.Ripple.import_data.return_value = (
             "https://ripple.swamp.org/import"
         )
         mock_post.return_value = mock_ripple_response
-
         set_status_in_ripple("HBN - Main", str(temp_excel_file))
-
         mock_post.assert_called_once()
 
 
@@ -814,7 +837,6 @@ class TestMain:
         mock_tokens = MagicMock()
         setattr(mock_tokens, token_attr, token_value)
         mock_vars.Tokens.return_value = mock_tokens
-
         mock_df = pd.DataFrame({"globalId": ["ST001"]})
         mock_request.return_value = mock_df
         mock_prep_ripple.return_value = {"HBN - Main": str(temp_excel_file)}
@@ -859,7 +881,6 @@ class TestMain:
         mock_tokens = MagicMock()
         mock_tokens.pid757 = "dev_token"
         mock_vars.Tokens.return_value = mock_tokens
-
         mock_df = pd.DataFrame({"globalId": ["EMPT001"]})
         mock_request.return_value = mock_df
         mock_prep_ripple.return_value = {}
@@ -899,7 +920,6 @@ class TestMain:
         mock_tokens = MagicMock()
         mock_tokens.pid757 = "dev_token"
         mock_vars.Tokens.return_value = mock_tokens
-
         mock_df = pd.DataFrame({"globalId": ["ERR001"]})
         mock_request.return_value = mock_df
         mock_prep_ripple.return_value = {}
@@ -931,7 +951,6 @@ class TestMain:
         mock_tokens = MagicMock()
         mock_tokens.pid757 = "dev_token"
         mock_vars.Tokens.return_value = mock_tokens
-
         mock_df = pd.DataFrame({"globalId": ["PRT001", "PRT002"]})
         mock_request.return_value = mock_df
         excel_file_2 = temp_excel_file.parent / "ripple_waitlist.xlsx"
@@ -971,7 +990,6 @@ class TestMain:
         mock_tokens = MagicMock()
         mock_tokens.pid757 = "dev_token_parliament"
         mock_vars.Tokens.return_value = mock_tokens
-
         mock_df = pd.DataFrame(
             {
                 "globalId": ["WND001", "GRS001"],
@@ -1012,7 +1030,6 @@ class TestMain:
         mock_tokens = MagicMock()
         mock_tokens.pid757 = "dev_token"
         mock_vars.Tokens.return_value = mock_tokens
-
         mock_df = pd.DataFrame({"globalId": ["BG001"]})
         mock_request.return_value = mock_df
         excel_file_2 = temp_excel_file.parent / "ripple_waitlist.xlsx"
@@ -1056,7 +1073,6 @@ class TestIntegration:
         mock_rp_vars.study_ids = {"HBN - Main": "main_study_id"}
         mock_rp_vars.column_dict.return_value = {}
         mock_endpoints.Ripple.import_data.return_value = "https://ripple.test/import"
-
         # Mock existing REDCap subjects
         mock_fetch.return_value = pd.DataFrame(
             {
@@ -1064,7 +1080,6 @@ class TestIntegration:
                 "record_id": [1],
             }
         )
-
         ripple_data = pd.DataFrame(
             {
                 "globalId": ["ST001", "BG001"],
@@ -1082,9 +1097,7 @@ class TestIntegration:
         )
         mock_endpoints.Ripple.export_from_ripple.return_value = ripple_data
         mock_post.return_value = mock_redcap_response
-
         main(project_status="dev")
-
         # Should have called post at least twice (update + new for REDCap, plus Ripple)
         assert mock_post.call_count >= 2
         assert_cleanup_called(mock_cleanup)
@@ -1114,7 +1127,6 @@ class TestIntegration:
         mock_rp_vars.study_ids = {"HBN - Main": "main_study_id"}
         mock_rp_vars.column_dict.return_value = {}
         mock_endpoints.Ripple.import_data.return_value = "https://ripple.test/import"
-
         # All subjects already exist
         mock_fetch.return_value = pd.DataFrame(
             {
@@ -1122,7 +1134,6 @@ class TestIntegration:
                 "record_id": [1, 2],
             }
         )
-
         ripple_data = pd.DataFrame(
             {
                 "globalId": ["ST001", "BG001"],
@@ -1139,11 +1150,86 @@ class TestIntegration:
         )
         mock_endpoints.Ripple.export_from_ripple.return_value = ripple_data
         mock_post.return_value = mock_redcap_response
-
         main(project_status="dev")
-
         # Verify update file was created
         assert mock_rc_vars.redcap_update_file.exists()
         # Verify import file was not created (no new subjects)
         assert not mock_rc_vars.redcap_import_file.exists()
         assert_cleanup_called(mock_cleanup)
+
+
+class TestRippleCacheKeys:
+    """Test Ripple-specific cache key creation."""
+
+    def test_create_ripple_record_cache_key(self):
+        """Test creating cache key for Ripple record."""
+        from hbnmigration.from_ripple.to_redcap import create_ripple_record_cache_key
+
+        result = create_ripple_record_cache_key(
+            "12345", "test@example.com", "2024-01-15T12:00:00"
+        )
+        parts = result.split(":")
+        assert len(parts) == 3
+        assert parts[0] == "12345"
+        assert parts[2] == "2024-01-15"
+
+    def test_extract_last_modified(self):
+        """Test extracting last modified timestamp."""
+        from hbnmigration.from_ripple.to_redcap import extract_last_modified
+
+        df = pd.DataFrame(
+            {
+                "mrn": [12345],
+                "lastModified": ["2024-01-15T12:00:00"],
+            }
+        )
+
+        result = extract_last_modified(df)
+        assert len(result) == 1
+
+    def test_prepare_redcap_data_uses_cache_keys(self, tmp_path):
+        """Test prepare_redcap_data uses composite cache keys."""
+        from hbnmigration.from_ripple.to_redcap import prepare_redcap_data
+        from hbnmigration.utility_functions import DataCache
+
+        df = pd.DataFrame(
+            {
+                "customId": [12345],
+                "globalId": ["TEST001"],
+                "contact.1.infos.1.contactType": ["email"],
+                "contact.1.infos.1.information": ["test@example.com"],
+            }
+        )
+
+        cache = DataCache("test", ttl_minutes=5, cache_dir=str(tmp_path))
+
+        with (
+            patch("hbnmigration.from_ripple.to_redcap.set_redcap_columns") as mock_set,
+            patch(
+                "hbnmigration.from_ripple.to_redcap.get_redcap_subjects_to_update"
+            ) as mock_get,
+        ):
+            mock_set.return_value = pd.DataFrame(
+                {
+                    "record_id": [12345],
+                    "mrn": [12345],
+                    "email_consent": ["test@example.com"],
+                    "lastModified": ["2024-01-15T12:00:00"],
+                }
+            )
+            mock_get.return_value = (
+                pd.DataFrame(columns=["record_id", "mrn", "email_consent"]),
+                pd.DataFrame(
+                    {
+                        "record_id": [12345],
+                        "mrn": [12345],
+                        "email_consent": ["test@example.com"],
+                    }
+                ),
+            )
+
+            prepare_redcap_data(df, cache)
+
+            # Verify cache has entries
+            stats = cache.get_stats()
+            assert stats["total_entries"] >= 1

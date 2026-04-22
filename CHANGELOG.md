@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## 1.10.4
 
+### Changed
+
+- Updating caching logic to incorporate full state, not just record ID.
+
 ### Fixed
 
 - Convert "parent_involvement" from a set to a list before JSON serializing.

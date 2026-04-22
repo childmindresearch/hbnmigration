@@ -2,7 +2,7 @@
 
 import json
 from typing import cast
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pandas as pd
 import pytest
@@ -842,3 +842,57 @@ def test_push_alerts_various_values(mock_alerts_dependencies, records, values):
     assert push_mock.called
     pushed_data = push_mock.call_args[0][0]
     assert len(pushed_data) == len(records)
+
+
+class TestAlertCacheKeys:
+    """Test alert-specific cache key creation."""
+
+    def test_create_alert_cache_key(self):
+        """Test creating cache key for alert."""
+        from hbnmigration.from_curious.alerts_to_redcap import (
+            create_alert_cache_key,
+        )
+
+        result = create_alert_cache_key("alert_123", "Test message")
+        assert result.startswith("alert_123:")
+        assert len(result.split(":")) == 2
+
+    def test_synchronous_main_uses_cache_keys(
+        self, mock_alerts_dependencies, sample_curious_alert
+    ):
+        """Test that synchronous_main uses composite cache keys."""
+        from hbnmigration.from_curious.alerts_to_redcap import synchronous_main
+
+        setup_standard_alert_mocks(mock_alerts_dependencies)
+
+        # Use actual applet name that exists
+        applet_name = "Healthy Brain Network Questionnaires"
+
+        with (
+            patch(
+                "hbnmigration.from_curious.alerts_to_redcap.call_curious_api"
+            ) as mock_call,
+            patch(
+                "hbnmigration.from_curious.alerts_to_redcap.curious_authenticate"
+            ) as mock_auth,
+        ):
+            # Mock authentication
+            mock_tokens = MagicMock()
+            mock_tokens.endpoints.alerts = "https://test.com/alerts"
+            mock_auth.return_value = mock_tokens
+
+            # Return alert
+            mock_call.return_value = [sample_curious_alert]
+
+            # Mock parse_alert to return valid DataFrame
+            with patch(
+                "hbnmigration.from_curious.alerts_to_redcap.parse_alert"
+            ) as mock_parse:
+                mock_parse.return_value = create_alert_df(
+                    ["12345"], ["alerts_parent_baseline_1"], ["yes"]
+                )
+
+                synchronous_main(applet_names=[applet_name])
+
+                # Verify cache key was used (push should be called)
+                assert mock_alerts_dependencies["push"].called

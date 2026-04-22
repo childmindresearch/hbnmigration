@@ -13,11 +13,15 @@ from mindlogger_data_export.outputs import NamedOutput, RedcapImportFormat
 from .._config_variables import curious_variables, redcap_variables
 from ..from_redcap.config import Fields as RedcapFields, Values as RedcapValues
 from ..utility_functions import (
+    add_cache_keys,
+    create_composite_cache_key,
     CuriousDecryptedAnswer,
     CuriousId,
     DataCache,
     fetch_api_data,
+    filter_by_cache,
     initialize_logging,
+    log_cache_statistics,
     yesterday_or_more_recent,
 )
 from .config import curious_authenticate, invitation_statuses, Values as CuriousValues
@@ -41,6 +45,28 @@ class Endpoints:
     """Curious endpoints."""
     Redcap = redcap_variables.Endpoints()
     """REDCap endpoints."""
+
+
+def create_invitation_cache_key(record_id: str, status: str, has_response: bool) -> str:
+    """
+    Create a unique cache key that includes the invitation state.
+
+    Parameters
+    ----------
+    record_id : str
+        The record identifier (MRN)
+    status : str
+        The invitation status code
+    has_response : bool
+        Whether the record has a survey response
+
+    Returns
+    -------
+    str
+        Composite cache key like "12345:3:1"
+
+    """
+    return create_composite_cache_key(record_id, status, has_response)
 
 
 def lookup_mrn_from_r_id(r_id: str, token: str) -> str | None:
@@ -131,12 +157,15 @@ def check_activity_response(
 
     """
     encryption = get_applet_encryption(Endpoints.Curious.applet(applet_id), token)
+
     response = requests.get(
         Endpoints.Curious.applet_activity_answers_list(applet_id, activity_id)
         + f"?targetSubjectId={respondent['respondent_id']}",
         headers=curious_variables.headers(token),
     )
+
     all_formatted_data: list[NamedOutput] = []
+
     if response.status_code == requests.codes["okay"]:
         result = response.json()["result"]
         if result:
@@ -156,6 +185,7 @@ def check_activity_response(
                 )
                 if formatted_data:
                     all_formatted_data.extend(formatted_data)
+
     return all_formatted_data
 
 
@@ -194,6 +224,7 @@ def check_activity_responses(
             token, row, applet_id, activity_id, account_context
         )
         responses += [r.output for r in response]
+
     return pl.concat(responses) if responses else df
 
 
@@ -226,6 +257,7 @@ def create_invitation_record(
     details: list[dict] = [
         detail for detail in respondent["details"] if detail["appletId"] == applet_id
     ]
+
     if not details:
         return None
 
@@ -259,8 +291,6 @@ def create_invitation_record(
         source_secret_id = secret_id
 
     # Add field suffix for child accounts
-    # Note: The base field name is always "curious_account_created_"
-    # For child, we add "_c" suffix to the field name itself
     field_suffix = "_c" if account_context == "child" else ""
 
     return {
@@ -554,7 +584,6 @@ def format_for_redcap(
 
         if response_field in result.output.columns:
             # Check if they confirmed account creation
-            # Both use the same response field descriptor
             hbnq = CuriousValues.HealthyBrainNetworkQuestionnaires
             curious_values = hbnq.CuriousAccountCreated.acount_created
             context_columns.append(
@@ -652,6 +681,7 @@ def pull_data_from_curious(
                 records.append(record)
 
     invitation_df = pl.DataFrame(records)
+
     if not invitation_df.is_empty():
         invitation_df = update_already_completed(
             invitation_df, account_context, redcap_token
@@ -699,7 +729,13 @@ def push_to_redcap(
 
     # Remove metadata columns BEFORE deduplication
     # These are internal fields that don't exist in REDCap
-    metadata_columns = ["instrument", "account_context", "respondent_id"]
+    metadata_columns = [
+        "instrument",
+        "account_context",
+        "respondent_id",
+        "has_response",  # Add this temporary column to the removal list
+        "cache_key",  # Also remove if present
+    ]
     df = df.drop([col for col in metadata_columns if col in df.columns])
 
     # Now deduplicate with only real REDCap fields
@@ -719,6 +755,7 @@ def push_to_redcap(
         logger.info("Removed %d duplicate invitation rows before push", num_duplicates)
 
     csv_data = df.write_csv()
+
     push_data = {
         "token": token,
         "content": "record",
@@ -733,9 +770,12 @@ def push_to_redcap(
     }
 
     r = requests.post(Endpoints.Redcap.base_url, data=push_data)
+
     if r.status_code != requests.codes["okay"]:
         logger.exception("%s\n%s\nHTTP Status: %d", r.reason, r.text, r.status_code)
+
     r.raise_for_status()
+
     return r.json()
 
 
@@ -796,7 +836,277 @@ def update_already_completed(
     return df.filter(~pl.col("record_id").is_in(already_completed)).drop_nulls()
 
 
-def main(  # noqa: PLR0912,PLR0915
+def _get_target_token(target_pid: Literal[625, 891]) -> str | None:
+    """
+    Get REDCap token for target PID.
+
+    Parameters
+    ----------
+    target_pid : Literal[625, 891]
+        Target REDCap project ID
+
+    Returns
+    -------
+    str | None
+        REDCap token, or None if not configured
+
+    """
+    if target_pid == 891:  # noqa: PLR2004
+        try:
+            token = redcap_variables.Tokens().pid891
+            if token is None:
+                msg = "PID 891 token is None"
+                raise AttributeError(msg)
+            return token
+        except AttributeError:
+            logger.warning(
+                "PID 891 not yet configured, skipping. "
+                "This is expected during transition period."
+            )
+            return None
+    return redcap_variables.Tokens().pid625
+
+
+def _add_cache_keys_to_df(
+    df: pl.DataFrame, status_field: str, response_field: str | None
+) -> pl.DataFrame:
+    """
+    Add cache_key column to DataFrame based on current state.
+
+    Parameters
+    ----------
+    df : pl.DataFrame
+        DataFrame with invitation records
+    status_field : str
+        Name of the invitation status field
+    response_field : str | None
+        Name of the response field (if exists)
+
+    Returns
+    -------
+    pl.DataFrame
+        DataFrame with cache_key column added
+
+    """
+    # Determine if response exists
+    has_response_col = (
+        pl.col(response_field).is_not_null()
+        if response_field and response_field in df.columns
+        else pl.lit(False)
+    )
+
+    # Add has_response as a temporary column, build cache keys, then drop it
+    df_with_keys = add_cache_keys(
+        df.with_columns(has_response_col.alias("has_response")),
+        ["record_id", status_field, "has_response"],
+        create_invitation_cache_key,
+    )
+
+    # Remove the temporary has_response column
+    return df_with_keys.drop("has_response")
+
+
+def _process_responder_accounts(
+    applet_name: str,
+    token: str,
+    lookup_token: str,
+    cache: DataCache,
+    target_pid: Literal[625, 891],
+) -> None:
+    """
+    Process responder account invitations.
+
+    Parameters
+    ----------
+    applet_name : str
+        Name of the responder applet
+    token : str
+        REDCap API token for target PID
+    lookup_token : str
+        REDCap API token for PID 625 (MRN lookups)
+    cache : DataCache
+        Cache instance for tracking processed records
+    target_pid : Literal[625, 891]
+        Target REDCap project ID
+
+    """
+    try:
+        auth = curious_authenticate(applet_name)
+    except (KeyError, ConnectionError) as e:
+        logger.warning(
+            "Responder applet not configured: %s. Skipping responder processing.",
+            e,
+        )
+        return
+
+    invitation_df_responder = pull_data_from_curious(
+        auth.access, applet_name, "responder", lookup_token
+    )
+
+    if invitation_df_responder.is_empty():
+        logger.info("No responder invitations to update.")
+        return
+
+    # Add cache keys based on current state (before checking responses)
+    invitation_df_responder = _add_cache_keys_to_df(
+        invitation_df_responder,
+        "curious_account_created_invite_status",
+        None,  # Will be updated after checking responses
+    )
+
+    # Filter by cache
+    invitation_df_responder = filter_by_cache(
+        invitation_df_responder,
+        cache,
+        "cache_key",
+        logger,
+        "responder records",
+    )
+
+    if invitation_df_responder.is_empty():
+        return
+
+    # Check for activity responses
+    invitation_df_responder = check_activity_responses(
+        auth.access,
+        invitation_df_responder,
+        curious_variables.applets[applet_name].applet_id,
+        curious_variables.applets[applet_name]
+        .activities["Curious Account Created"]
+        .activity_id,
+        "responder",
+    )
+
+    # Update cache keys with response status
+    response_field = "curious_account_created_responder_account_created_response"
+    invitation_df_responder = _add_cache_keys_to_df(
+        invitation_df_responder,
+        "curious_account_created_invite_status",
+        response_field,
+    )
+
+    invitation_df_responder = invitation_df_responder.unique(
+        subset=["record_id"], keep="last"
+    )
+
+    n_records_responder = push_to_redcap(
+        invitation_df_responder.drop("cache_key"), token, cache
+    )
+
+    logger.info(
+        "%d responder records updated in REDCap (PID %d)",
+        n_records_responder,
+        target_pid,
+    )
+
+    if n_records_responder > 0:
+        cache.bulk_mark_processed(
+            invitation_df_responder["cache_key"].to_list(),
+            metadata={
+                "count": n_records_responder,
+                "type": "responder",
+            },
+        )
+
+
+def _process_child_accounts(
+    token: str,
+    lookup_token: str,
+    cache: DataCache,
+    target_pid: Literal[625, 891],
+) -> None:
+    """
+    Process child account invitations.
+
+    Parameters
+    ----------
+    token : str
+        REDCap API token for target PID
+    lookup_token : str
+        REDCap API token for PID 625 (MRN lookups)
+    cache : DataCache
+        Cache instance for tracking processed records
+    target_pid : Literal[625, 891]
+        Target REDCap project ID
+
+    """
+    child_applet = "CHILD-Healthy Brain Network Questionnaires"
+
+    try:
+        auth_child = curious_authenticate(child_applet)
+    except (KeyError, ConnectionError) as e:
+        logger.warning(
+            "Child applet not yet configured: %s. Skipping child account processing.",
+            e,
+        )
+        return
+
+    invitation_df_child = pull_data_from_curious(
+        auth_child.access, child_applet, "child", lookup_token
+    )
+
+    if invitation_df_child.is_empty():
+        logger.info("No child invitations to update.")
+        return
+
+    # Add cache keys based on current state (before checking responses)
+    invitation_df_child = _add_cache_keys_to_df(
+        invitation_df_child,
+        "curious_account_created_invite_status_c",
+        None,  # Will be updated after checking responses
+    )
+
+    # Filter by cache
+    invitation_df_child = filter_by_cache(
+        invitation_df_child,
+        cache,
+        "cache_key",
+        logger,
+        "child records",
+    )
+
+    if invitation_df_child.is_empty():
+        return
+
+    # Check for activity responses
+    invitation_df_child = check_activity_responses(
+        auth_child.access,
+        invitation_df_child,
+        curious_variables.applets[child_applet].applet_id,
+        curious_variables.applets[child_applet]
+        .activities["Curious Account Created"]
+        .activity_id,
+        "child",
+    )
+
+    # Update cache keys with response status
+    response_field = "curious_account_created_child_account_created_response_c"
+    invitation_df_child = _add_cache_keys_to_df(
+        invitation_df_child,
+        "curious_account_created_invite_status_c",
+        response_field,
+    )
+
+    invitation_df_child = invitation_df_child.unique(subset=["record_id"], keep="last")
+
+    n_records_child = push_to_redcap(
+        invitation_df_child.drop("cache_key"), token, cache
+    )
+
+    logger.info(
+        "%d child records updated in REDCap (PID %d)",
+        n_records_child,
+        target_pid,
+    )
+
+    if n_records_child > 0:
+        cache.bulk_mark_processed(
+            invitation_df_child["cache_key"].to_list(),
+            metadata={"count": n_records_child, "type": "child"},
+        )
+
+
+def main(
     applet_name: Optional[str] = None,
     target_pid: Literal[625, 891] = 625,
     account_context: Optional[AccountContext] = None,
@@ -815,21 +1125,10 @@ def main(  # noqa: PLR0912,PLR0915
         If None, processes both.
 
     """
-    # Feature flag for PID 891
-    if target_pid == 891:  # noqa: PLR2004
-        try:
-            token = redcap_variables.Tokens().pid891
-            if token is None:
-                msg = "PID 891 token is None"
-                raise AttributeError(msg)
-        except AttributeError:
-            logger.warning(
-                "PID 891 not yet configured, skipping. "
-                "This is expected during transition period."
-            )
-            return
-    else:
-        token = redcap_variables.Tokens().pid625
+    # Get target token
+    token = _get_target_token(target_pid)
+    if token is None:
+        return
 
     # Set global token for MRN lookups (always use 625 for lookups)
     lookup_token = redcap_variables.Tokens().pid625
@@ -839,136 +1138,16 @@ def main(  # noqa: PLR0912,PLR0915
     # Process responder accounts
     if account_context is None or account_context == "responder":
         responder_applet = applet_name or "Healthy Brain Network Questionnaires"
-
-        try:
-            auth = curious_authenticate(responder_applet)
-        except (KeyError, ConnectionError) as e:
-            logger.warning(
-                "Responder applet not configured: %s. Skipping responder processing.",
-                e,
-            )
-        else:
-            invitation_df_responder = pull_data_from_curious(
-                auth.access, responder_applet, "responder", lookup_token
-            )
-
-            if not invitation_df_responder.is_empty():
-                # Cache filtering
-                if cache:
-                    unprocessed_records = cache.get_unprocessed_records(
-                        invitation_df_responder["record_id"].to_list()
-                    )
-                    if len(unprocessed_records) < len(invitation_df_responder):
-                        logger.info(
-                            "Skipping %d already-processed responder records "
-                            "(cache hit)",
-                            len(invitation_df_responder) - len(unprocessed_records),
-                        )
-                        invitation_df_responder = invitation_df_responder.filter(
-                            pl.col("record_id").is_in(unprocessed_records)
-                        )
-
-                if not invitation_df_responder.is_empty():
-                    invitation_df_responder = check_activity_responses(
-                        auth.access,
-                        invitation_df_responder,
-                        curious_variables.applets[responder_applet].applet_id,
-                        curious_variables.applets[responder_applet]
-                        .activities["Curious Account Created"]
-                        .activity_id,
-                        "responder",
-                    ).unique(subset=["record_id"], keep="last")
-
-                    n_records_responder = push_to_redcap(
-                        invitation_df_responder, token, cache
-                    )
-                    logger.info(
-                        "%d responder records updated in REDCap (PID %d)",
-                        n_records_responder,
-                        target_pid,
-                    )
-
-                    if cache and n_records_responder > 0:
-                        cache.bulk_mark_processed(
-                            invitation_df_responder["record_id"].to_list(),
-                            metadata={
-                                "count": n_records_responder,
-                                "type": "responder",
-                            },
-                        )
-                else:
-                    logger.info("All responder invitations already processed in cache.")
-            else:
-                logger.info("No responder invitations to update.")
+        _process_responder_accounts(
+            responder_applet, token, lookup_token, cache, target_pid
+        )
 
     # Process child accounts
     if account_context is None or account_context == "child":
-        child_applet = "CHILD-Healthy Brain Network Questionnaires"
-
-        try:
-            auth_child = curious_authenticate(child_applet)
-        except (KeyError, ConnectionError) as e:
-            logger.warning(
-                "Child applet not yet configured: %s. "
-                "Skipping child account processing.",
-                e,
-            )
-        else:
-            invitation_df_child = pull_data_from_curious(
-                auth_child.access, child_applet, "child", lookup_token
-            )
-
-            if not invitation_df_child.is_empty():
-                # Cache filtering
-                if cache:
-                    unprocessed_records = cache.get_unprocessed_records(
-                        invitation_df_child["record_id"].to_list()
-                    )
-                    if len(unprocessed_records) < len(invitation_df_child):
-                        logger.info(
-                            "Skipping %d already-processed child records (cache hit)",
-                            len(invitation_df_child) - len(unprocessed_records),
-                        )
-                        invitation_df_child = invitation_df_child.filter(
-                            pl.col("record_id").is_in(unprocessed_records)
-                        )
-
-                if not invitation_df_child.is_empty():
-                    invitation_df_child = check_activity_responses(
-                        auth_child.access,
-                        invitation_df_child,
-                        curious_variables.applets[child_applet].applet_id,
-                        curious_variables.applets[child_applet]
-                        .activities["Curious Account Created"]
-                        .activity_id,
-                        "child",
-                    ).unique(subset=["record_id"], keep="last")
-
-                    n_records_child = push_to_redcap(invitation_df_child, token, cache)
-                    logger.info(
-                        "%d child records updated in REDCap (PID %d)",
-                        n_records_child,
-                        target_pid,
-                    )
-
-                    if cache and n_records_child > 0:
-                        cache.bulk_mark_processed(
-                            invitation_df_child["record_id"].to_list(),
-                            metadata={"count": n_records_child, "type": "child"},
-                        )
-                else:
-                    logger.info("All child invitations already processed in cache.")
-            else:
-                logger.info("No child invitations to update.")
+        _process_child_accounts(token, lookup_token, cache, target_pid)
 
     # Log cache statistics
-    cache_stats = cache.get_stats()
-    logger.info(
-        "Cache statistics: %d entries, file size: %d bytes, last activity: %s",
-        cache_stats["total_entries"],
-        cache_stats["file_size_bytes"],
-        cache_stats.get("last_activity", "never"),
-    )
+    log_cache_statistics(cache, logger)
 
 
 if __name__ == "__main__":

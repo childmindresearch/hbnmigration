@@ -1208,3 +1208,53 @@ def test_format_for_redcap_no_filtering():
     # format_for_redcap should return outputs as-is, no filtering
     # (This test verifies the removal of _filter_parent_records call)
     assert len(output.output) == 4
+
+
+class TestInstrumentCacheKeys:
+    """Test instrument-specific cache key creation."""
+
+    def test_create_instrument_cache_key(self):
+        """Test creating cache key for instrument."""
+        from hbnmigration.from_curious.data_to_redcap import (
+            create_instrument_cache_key,
+        )
+
+        result = create_instrument_cache_key("ysr_sr_1117", "abc123", 42)
+        assert result == "ysr_sr_1117:abc123:42"
+
+    def test_send_to_redcap_uses_composite_keys(self, tmp_path):
+        """Test that send_to_redcap uses composite cache keys."""
+        from hbnmigration.from_curious.data_to_redcap import send_to_redcap
+        from hbnmigration.utility_functions import DataCache
+
+        # Create test CSV
+        csv_path = tmp_path / "test_instrument.csv"
+        pl.DataFrame({"record_id": ["001"], "field1": ["value1"]}).write_csv(csv_path)
+
+        cache = DataCache("test", ttl_minutes=5, cache_dir=str(tmp_path))
+
+        # Mock the metadata fetch and push
+        with (
+            patch(
+                "hbnmigration.from_curious.data_to_redcap.fetch_api_data"
+            ) as mock_fetch,
+            patch(
+                "hbnmigration.from_curious.data_to_redcap.push_to_redcap"
+            ) as mock_push,
+        ):
+            # Mock metadata response - fix the DataFrame construction
+            mock_fetch.return_value = pd.DataFrame(
+                {
+                    "instrument_name": ["test_instrument", "test_instrument"],
+                    "field_name": ["record_id", "field1"],
+                }
+            )
+
+            send_to_redcap(tmp_path, {"test_instrument": 1}, cache)
+
+            # Verify cache key includes file hash and row count
+            stats = cache.get_stats()
+            assert stats["total_entries"] >= 1
+
+            # Verify push was called
+            assert mock_push.called
