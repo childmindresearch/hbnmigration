@@ -514,7 +514,9 @@ class TestToRedcapWebhook:
 
     def test_webhook_accepts_valid_trigger(self, client: TestClient) -> None:
         """Test trigger."""
-        with patch("hbnmigration.from_redcap.to_redcap.process_record_for_intake"):
+        with patch(
+            "hbnmigration.from_redcap.to_redcap.process_record_for_redcap_operations"
+        ):
             response = client.post(
                 "/webhook/redcap-to-intake",
                 data={
@@ -674,12 +676,12 @@ class TestProcessRecordForCurious:
 # ============================================================================
 
 
-class TestProcessRecordForIntake:
-    """Tests for process_record_for_intake function."""
+class TestProcessRecordForRedcapOperations:
+    """Tests for process_record_for_redcap_operations function."""
 
     @patch("hbnmigration.from_redcap.to_redcap.clear_ready_flag")
     @patch("hbnmigration.from_redcap.to_redcap.push_to_intake_redcap", return_value=5)
-    @patch("hbnmigration.from_redcap.to_redcap.format_data_for_intake")
+    @patch("hbnmigration.from_redcap.to_redcap.format_data_for_redcap_operations")
     @patch("hbnmigration.from_redcap.to_redcap.fetch_data")
     def test_successful_processing(
         self,
@@ -688,7 +690,7 @@ class TestProcessRecordForIntake:
         mock_push: MagicMock,
         mock_clear: MagicMock,
     ) -> None:
-        """Test successful processing of a record for Intake REDCap."""
+        """Test successful processing of a record for Operations REDCap."""
         mock_fetch.return_value = pd.DataFrame(
             {"record": ["123"], "field_name": ["mrn"], "value": ["abc"]}
         )
@@ -696,7 +698,7 @@ class TestProcessRecordForIntake:
             {"record": ["123"], "field_name": ["mrn"], "value": ["abc"]}
         )
 
-        result = to_redcap.process_record_for_intake("123")
+        result = to_redcap.process_record_for_redcap_operations("123")
 
         assert result["status"] == "success"
         assert result["record_id"] == "123"
@@ -708,12 +710,12 @@ class TestProcessRecordForIntake:
         """Test that missing data returns error status."""
         mock_fetch.return_value = pd.DataFrame()
 
-        result = to_redcap.process_record_for_intake("999")
+        result = to_redcap.process_record_for_redcap_operations("999")
 
         assert result["status"] == "error"
         assert "No data found" in result["message"]
 
-    @patch("hbnmigration.from_redcap.to_redcap.format_data_for_intake")
+    @patch("hbnmigration.from_redcap.to_redcap.format_data_for_redcap_operations")
     @patch("hbnmigration.from_redcap.to_redcap.fetch_data")
     def test_no_processable_data(
         self, mock_fetch: MagicMock, mock_format: MagicMock
@@ -722,7 +724,7 @@ class TestProcessRecordForIntake:
         mock_fetch.return_value = pd.DataFrame({"record": ["123"]})
         mock_format.return_value = pd.DataFrame()
 
-        result = to_redcap.process_record_for_intake("123")
+        result = to_redcap.process_record_for_redcap_operations("123")
 
         assert result["status"] == "error"
         assert "No processable data" in result["message"]
@@ -732,7 +734,7 @@ class TestProcessRecordForIntake:
         """Test that exceptions are caught and returned as error status."""
         mock_fetch.side_effect = RuntimeError("connection failed")
 
-        result = to_redcap.process_record_for_intake("123")
+        result = to_redcap.process_record_for_redcap_operations("123")
 
         assert result["status"] == "error"
         assert "connection failed" in result["message"]
@@ -1026,3 +1028,195 @@ class TestFetchDataOptionalFields:
         fetch_data("fake_token", "field1,field2")
         request_data = mock_fetch_api.call_args[0][2]
         assert request_data.get("fields") == "field1,field2"
+
+
+# ============================================================================
+# _prepare_curious_data() Tests
+# ============================================================================
+
+
+class TestPrepareCuriousData:
+    """Tests for _prepare_curious_data helper function."""
+
+    @pytest.fixture
+    def curious_data(self) -> dict[to_curious.Individual, pd.DataFrame]:
+        """Sample curious data dict with child and parent DataFrames."""
+        return {
+            "child": pd.DataFrame(
+                {"secretUserId": ["00001", "00002"], "firstName": ["Alice", "Bob"]}
+            ),
+            "parent": pd.DataFrame(
+                {"secretUserId": ["00001_P"], "firstName": ["Carol"]}
+            ),
+        }
+
+    def test_sets_account_types_correctly(
+        self, curious_data: dict[to_curious.Individual, pd.DataFrame]
+    ) -> None:
+        """Test that account types are set correctly for each DataFrame."""
+        child_full, child_limited, parent_full = to_curious._prepare_curious_data(
+            curious_data
+        )
+
+        assert (child_full["accountType"] == "full").all()
+        assert (child_limited["accountType"] == "limited").all()
+        assert (parent_full["accountType"] == "full").all()
+
+    def test_returns_copies_not_references(
+        self, curious_data: dict[to_curious.Individual, pd.DataFrame]
+    ) -> None:
+        """Test that returned DataFrames are independent copies."""
+        child_full, child_limited, parent_full = to_curious._prepare_curious_data(
+            curious_data
+        )
+
+        for result_df in (child_full, child_limited, parent_full):
+            result_df["extra"] = "x"
+
+        for original_df in curious_data.values():
+            assert "extra" not in original_df.columns
+            assert "accountType" not in original_df.columns
+
+    def test_preserves_original_data(
+        self, curious_data: dict[to_curious.Individual, pd.DataFrame]
+    ) -> None:
+        """Test that original column data is preserved in all copies."""
+        child_full, child_limited, parent_full = to_curious._prepare_curious_data(
+            curious_data
+        )
+
+        assert child_full.iloc[0]["firstName"] == "Alice"
+        assert child_limited.iloc[0]["firstName"] == "Alice"
+        assert parent_full.iloc[0]["firstName"] == "Carol"
+
+    def test_handles_empty_dataframes(self) -> None:
+        """Test with empty child and parent DataFrames."""
+        empty_data: dict[to_curious.Individual, pd.DataFrame] = {
+            "child": pd.DataFrame(),
+            "parent": pd.DataFrame(),
+        }
+
+        for result_df in to_curious._prepare_curious_data(empty_data):
+            assert result_df.empty
+
+
+# ============================================================================
+# _push_to_curious() Tests
+# ============================================================================
+
+
+class TestPushToCurious:
+    """Tests for _push_to_curious orchestration function."""
+
+    @pytest.fixture
+    def curious_data(self) -> dict[to_curious.Individual, pd.DataFrame]:
+        """Sample curious data dict with child and parent DataFrames."""
+        return {
+            "child": pd.DataFrame({"secretUserId": ["00001"]}),
+            "parent": pd.DataFrame({"secretUserId": ["00001_P"]}),
+        }
+
+    @pytest.fixture
+    def data_operations(self) -> pd.DataFrame:
+        """Minimal raw REDCap operations DataFrame."""
+        return pd.DataFrame({"record": ["001"]})
+
+    def _run(
+        self,
+        data_operations: pd.DataFrame,
+        curious_data: dict[to_curious.Individual, pd.DataFrame],
+        *,
+        child_failures: list[str] | None = None,
+        parent_failures: list[str] | None = None,
+    ) -> tuple[list[str], MagicMock, MagicMock, MagicMock]:
+        """
+        Run ``_push_to_curious`` with patched push/update functions.
+
+        Args:
+            data_operations: Raw REDCap export data.
+            curious_data: Formatted child/parent DataFrames.
+            child_failures: Return value for ``push_child_data``.
+            parent_failures: Return value for ``push_parent_data``.
+
+        Returns:
+            Tuple of (failures, mock_push_child, mock_push_parent, mock_update).
+
+        """
+        with (
+            patch(
+                "hbnmigration.from_redcap.to_curious.push_child_data",
+                return_value=child_failures or [],
+            ) as mock_child,
+            patch(
+                "hbnmigration.from_redcap.to_curious.push_parent_data",
+                return_value=parent_failures or [],
+            ) as mock_parent,
+            patch(
+                "hbnmigration.from_redcap.to_curious.update_redcap",
+            ) as mock_update,
+        ):
+            failures = to_curious._push_to_curious(data_operations, curious_data)
+        return failures, mock_child, mock_parent, mock_update
+
+    def test_passes_correct_account_types(
+        self,
+        data_operations: pd.DataFrame,
+        curious_data: dict[to_curious.Individual, pd.DataFrame],
+    ) -> None:
+        """Test that push functions receive DataFrames with correct accountType."""
+        _, mock_child, mock_parent, _ = self._run(data_operations, curious_data)
+
+        assert (mock_child.call_args[0][0]["accountType"] == "full").all()
+        assert (mock_parent.call_args[0][0]["accountType"] == "limited").all()
+        assert (mock_parent.call_args[0][1]["accountType"] == "full").all()
+
+    def test_no_failures(
+        self,
+        data_operations: pd.DataFrame,
+        curious_data: dict[to_curious.Individual, pd.DataFrame],
+    ) -> None:
+        """Test that an empty list is returned when nothing fails."""
+        failures, *_ = self._run(data_operations, curious_data)
+
+        assert failures == []
+
+    @pytest.mark.parametrize(
+        "child_failures,parent_failures,expected",
+        [
+            (["mrn1"], [], {"mrn1"}),
+            ([], ["mrn2"], {"mrn2"}),
+            (["mrn1"], ["mrn2"], {"mrn1", "mrn2"}),
+        ],
+        ids=["child-only", "parent-only", "both"],
+    )
+    def test_aggregates_failures(
+        self,
+        data_operations: pd.DataFrame,
+        curious_data: dict[to_curious.Individual, pd.DataFrame],
+        child_failures: list[str],
+        parent_failures: list[str],
+        expected: set[str],
+    ) -> None:
+        """Test that failures from child and parent pushes are combined."""
+        failures, *_ = self._run(
+            data_operations,
+            curious_data,
+            child_failures=child_failures,
+            parent_failures=parent_failures,
+        )
+
+        assert set(failures) == expected
+
+    def test_calls_update_redcap(
+        self,
+        data_operations: pd.DataFrame,
+        curious_data: dict[to_curious.Individual, pd.DataFrame],
+    ) -> None:
+        """Test that update_redcap is called with the original data."""
+        _, _, _, mock_update = self._run(data_operations, curious_data)
+
+        mock_update.assert_called_once()
+        args = mock_update.call_args[0]
+        assert args[0] is data_operations
+        pd.testing.assert_frame_equal(args[1], curious_data["child"])
+        assert args[2] == []

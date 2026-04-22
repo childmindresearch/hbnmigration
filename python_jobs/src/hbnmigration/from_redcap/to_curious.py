@@ -31,7 +31,8 @@ from .from_redcap import fetch_data
 
 logger = initialize_logging(__name__)
 
-INDIVIDUALS: list[Literal["child", "parent"]] = ["parent", "child"]
+Individual = Literal["child", "parent"]
+INDIVIDUALS: list[Individual] = ["parent", "child"]
 _REDCAP_TOKENS = redcap_variables.Tokens()
 _REDCAP_PID = 625
 
@@ -295,6 +296,124 @@ def clear_ready_flag(record_id: str) -> None:
         logger.exception("Error clearing ready flag for record %s", record_id)
 
 
+def push_child_data(
+    child_data: pd.DataFrame,
+    curious_endpoints: curious_variables.Endpoints,
+    curious_credentials: curious_variables.AppletCredentials,
+) -> list[str]:
+    """
+    Push child (full) data to the child Curious applet.
+
+    Args:
+        child_data: Child DataFrame with ``accountType`` already set.
+        curious_endpoints: Curious API endpoints.
+        curious_credentials: Curious applet credentials.
+
+    Returns:
+        List of MRNs that failed to send.
+
+    """
+    applet_name = "CHILD-Healthy Brain Network Questionnaires"
+    curious_tokens = curious_variables.Tokens(
+        curious_endpoints, curious_credentials[applet_name]
+    )
+    return send_to_curious(
+        child_data,
+        curious_tokens,
+        curious_variables.applets[applet_name].applet_id,
+    )
+
+
+def push_parent_data(
+    child_data_limited: pd.DataFrame,
+    parent_data: pd.DataFrame,
+    curious_endpoints: curious_variables.Endpoints,
+    curious_credentials: curious_variables.AppletCredentials,
+) -> list[str]:
+    """
+    Push parent (full) and child (limited) data to the parent Curious applet.
+
+    Args:
+        child_data_limited: Child DataFrame with ``accountType`` set to
+            ``"limited"``.
+        parent_data: Parent DataFrame with ``accountType`` set to ``"full"``.
+        curious_endpoints: Curious API endpoints.
+        curious_credentials: Curious applet credentials.
+
+    Returns:
+        List of MRNs that failed to send.
+
+    """
+    applet_name = "Healthy Brain Network Questionnaires"
+    curious_tokens = curious_variables.Tokens(
+        curious_endpoints, curious_credentials[applet_name]
+    )
+    applet_id = curious_variables.applets[applet_name].applet_id
+    return [
+        *send_to_curious(child_data_limited, curious_tokens, applet_id),
+        *send_to_curious(parent_data, curious_tokens, applet_id),
+    ]
+
+
+def _prepare_curious_data(
+    curious_data: dict[Literal["child", "parent"], pd.DataFrame],
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """
+    Prepare DataFrames with ``accountType`` set for each destination.
+
+    Args:
+        curious_data: Formatted child and parent DataFrames from
+            :func:`format_redcap_data_for_curious`.
+
+    Returns:
+        A tuple of (child_full, child_limited, parent_full).
+
+    """
+    child_full = curious_data["child"].copy()
+    child_full["accountType"] = "full"
+
+    child_limited = curious_data["child"].copy()
+    child_limited["accountType"] = "limited"
+
+    parent_full = curious_data["parent"].copy()
+    parent_full["accountType"] = "full"
+
+    return child_full, child_limited, parent_full
+
+
+def _push_to_curious(
+    data_operations: pd.DataFrame,
+    curious_data: dict[Literal["child", "parent"], pd.DataFrame],
+) -> list[str]:
+    """
+    Validate, push, and update REDCap for a batch of formatted records.
+
+    Args:
+        data_operations: Raw REDCap export data (used for the REDCap update).
+        curious_data: Formatted child and parent DataFrames from
+            :func:`format_redcap_data_for_curious`.
+
+    Returns:
+        List of MRNs that failed to send.
+
+    """
+    child_full, child_limited, parent_full = _prepare_curious_data(curious_data)
+    _check_for_data_to_process(child_full, "full")
+    _check_for_data_to_process(child_limited, "limited")
+    _check_for_data_to_process(parent_full, "full")
+
+    curious_endpoints = curious_variables.Endpoints()
+    curious_credentials = curious_variables.AppletCredentials()
+    failures = [
+        *push_child_data(child_full, curious_endpoints, curious_credentials),
+        *push_parent_data(
+            child_limited, parent_full, curious_endpoints, curious_credentials
+        ),
+    ]
+    update_redcap(data_operations, curious_data["child"], failures)
+    return failures
+
+
 def process_record_for_curious(record_id: str) -> dict[str, Any]:
     """
     Process a single record triggered by REDCap webhook.
@@ -320,6 +439,7 @@ def process_record_for_curious(record_id: str) -> dict[str, Any]:
                 "record_id": record_id,
                 "message": "No data found in REDCap",
             }
+
         curious_data = format_redcap_data_for_curious(data_operations)
         if curious_data["child"].empty and curious_data["parent"].empty:
             logger.info("No processable data for record %s", record_id)
@@ -328,16 +448,10 @@ def process_record_for_curious(record_id: str) -> dict[str, Any]:
                 "record_id": record_id,
                 "message": "No processable data after formatting",
             }
-        curious_endpoints = curious_variables.Endpoints()
-        curious_credentials = curious_variables.AppletCredentials()
-        failures = [
-            *push_child_data(
-                curious_data["child"], curious_endpoints, curious_credentials
-            ),
-            *push_parent_data(curious_data, curious_endpoints, curious_credentials),
-        ]
-        update_redcap(data_operations, curious_data["child"], failures)
+
+        failures = _push_to_curious(data_operations, curious_data)
         clear_ready_flag(record_id)
+
         if failures:
             return {
                 "status": "partial",
@@ -357,49 +471,6 @@ def process_record_for_curious(record_id: str) -> dict[str, Any]:
             "record_id": record_id,
             "message": str(e),
         }
-
-
-def push_child_data(
-    curious_data: pd.DataFrame,
-    curious_endpoints: curious_variables.Endpoints,
-    curious_credentials: curious_variables.AppletCredentials,
-) -> list[str]:
-    """Push child data to Curious."""
-    applet_name = "CHILD-Healthy Brain Network Questionnaires"
-    curious_tokens = curious_variables.Tokens(
-        curious_endpoints, curious_credentials[applet_name]
-    )
-    child_data = curious_data.copy()
-    child_data["accountType"] = "full"
-    return send_to_curious(
-        child_data,
-        curious_tokens,
-        curious_variables.applets[applet_name].applet_id,
-    )
-
-
-def push_parent_data(
-    curious_data: dict[Literal["child", "parent"], pd.DataFrame],
-    curious_endpoints: curious_variables.Endpoints,
-    curious_credentials: curious_variables.AppletCredentials,
-) -> list[str]:
-    """Push parent data to Curious."""
-    applet_name = "Healthy Brain Network Questionnaires"
-    curious_tokens = curious_variables.Tokens(
-        curious_endpoints, curious_credentials[applet_name]
-    )
-    return [
-        *send_to_curious(
-            curious_data["child"],
-            curious_tokens,
-            curious_variables.applets[applet_name].applet_id,
-        ),
-        *send_to_curious(
-            curious_data["parent"],
-            curious_tokens,
-            curious_variables.applets[applet_name].applet_id,
-        ),
-    ]
 
 
 # ---------------------------------------------------------------------------
@@ -494,7 +565,6 @@ def main() -> None:
     Usage::
 
         python -m hbnmigration.from_redcap.to_curious
-
     """
     try:
         data_operations = fetch_data(
@@ -517,15 +587,7 @@ def main() -> None:
         logger.info("All participants already sent to Curious")
         return
 
-    curious_endpoints = curious_variables.Endpoints()
-    curious_credentials = curious_variables.AppletCredentials()
-
-    failures = [
-        *push_child_data(curious_data["child"], curious_endpoints, curious_credentials),
-        *push_parent_data(curious_data, curious_endpoints, curious_credentials),
-    ]
-
-    update_redcap(data_operations, curious_data["child"], failures)
+    _push_to_curious(data_operations, curious_data)
 
 
 def serve(host: str = "0.0.0.0", port: int = 8002) -> None:

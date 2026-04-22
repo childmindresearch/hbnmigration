@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Websocket now gets a new token when the one it's trying expires.
+- Bug in creating new Curious users after splitting REDCap and Curious projects.
 
 ## 1.10.0
 
