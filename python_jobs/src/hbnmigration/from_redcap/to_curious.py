@@ -5,6 +5,7 @@ For each subject in PID 247, if `enrollment_complete` == 1,
 prepares and copies the reviewed and approved participants by the RAs to Curious.
 """
 
+import numpy as np
 import pandas as pd
 import requests
 
@@ -79,7 +80,7 @@ def format_redcap_data_for_curious(redcap_data: pd.DataFrame) -> pd.DataFrame:
         drop=True
     )
     df_curious_participant_data = df_curious_participant_data.where(
-        pd.notna(df_curious_participant_data), None
+        pd.notna(df_curious_participant_data), np.nan
     )
     if "adult_enrollment_form_complete" in df_curious_participant_data.columns:
         # Check for `parent_involvement___1`

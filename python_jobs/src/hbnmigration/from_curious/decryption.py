@@ -1,5 +1,6 @@
 """Curious decryption."""
 
+from pathlib import Path
 from typing import Any, cast, Literal, TypeAlias
 
 import requests
@@ -39,12 +40,14 @@ def _decrypt(
         list[dict],
         tsx(
             script,
-            encrypted_answer[what],
-            encrypted_answer["userPublicKey"],
-            password,
-            applet_encryption["accountId"],
-            applet_encryption["prime"],
-            applet_encryption["base"],
+            [
+                encrypted_answer[what],
+                encrypted_answer["userPublicKey"],
+                password,
+                applet_encryption["accountId"],
+                applet_encryption["prime"],
+                applet_encryption["base"],
+            ],
         ),
     )
 
@@ -55,7 +58,7 @@ def decrypt_single(
     password: str,
 ) -> CuriousDecryptedAnswer:
     """Return a decrypted answer."""
-    script = str(
+    script: Path = (
         Config.PROJECT_ROOT / "javascript_jobs/autoexport/src/decryptSingleAnswer.ts"
     )
     return cast(

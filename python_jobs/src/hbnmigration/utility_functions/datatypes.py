@@ -3,12 +3,22 @@
 from abc import ABC
 from collections import UserDict
 from collections.abc import ItemsView, KeysView, ValuesView
+import json
 from typing import Annotated, Any, Iterator, Literal, NotRequired, Optional, TypedDict
 
 from pydantic.types import StringConstraints
 
 ApiProtocol = Literal["https", "wss"]
 ApiProtocols: list[ApiProtocol] = ["https", "wss"]
+
+
+class CliOptions(UserDict):
+    """Dictionary with CLI string methods."""
+
+    @property
+    def long(self) -> str:
+        """Return long-form options string."""
+        return " ".join(f"--{key} {value}" for key, value in self.data.items())
 
 
 class Credentials(ABC):
@@ -98,14 +108,14 @@ class CuriousEncryption(TypedDict):
 
 
 class CuriousAlert(TypedDict):
-    """API response from Curious alerts endpoint."""
+    """Base API response from Curious alerts endpoint."""
 
     id: CuriousId
+    secretId: NotRequired[str]
     isWatched: bool
     appletId: CuriousId
     appletName: str
     version: SemanticVersion
-    secretId: str
     activityId: CuriousId
     activityItemId: CuriousId
     message: str
@@ -174,6 +184,58 @@ class FieldDescriptor(UserDict):
         if not self.field_name:
             raise AttributeError
         return ValueField(self.field_name, self.value_dict)
+
+
+InstrumentRowCount = dict[str, int | None]
+ProjectStatus = Literal["dev", "prod"]
+
+
+class Results:
+    """Class to pass results to data pipeline."""
+
+    def __init__(self) -> None:
+        """Initialize results class."""
+        self.success: int = 0
+        self.failure: list[str] = []
+
+    @property
+    def exit_string(self) -> str:
+        """Return a JSON dump of the results."""
+        return json.dumps(
+            {
+                "status": self._status,
+                "successes": self.success,
+                "failures": len(self.failure),
+            }
+        )
+
+    @property
+    def report(self) -> str:
+        """
+        Report results.
+
+        Usage
+        -----
+        >>> results = Results()
+        >>> logger.info(results.report, yesterday)
+        """
+        if self.success:
+            return f"{self.success} rows submitted to REDCap for %s."
+        if self._status == "failure":
+            return (
+                f"These assessments failed: {self.failure}\nCurious to REDCap transfer "
+                "for %s failed. See logs for details."
+            )
+        return "Curious to REDCap transfer for %s succeeded."
+
+    @property
+    def _status(self) -> Literal["no data", "success", "failure"]:
+        """Return string representation of status."""
+        if len(self.failure):
+            return "failure"
+        if self.success == 0:
+            return "no data"
+        return "success"
 
 
 class ValueField:

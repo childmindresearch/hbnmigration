@@ -1,7 +1,7 @@
 """Transfer data from Ripple to REDCap."""
 
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Optional
 
 import numpy as np
 import pandas as pd
@@ -9,7 +9,12 @@ import requests
 
 from .._config_variables import redcap_variables, ripple_variables
 from ..exceptions import NoData
-from ..utility_functions import fetch_api_data, initialize_logging, yesterday
+from ..utility_functions import (
+    fetch_api_data,
+    initialize_logging,
+    ProjectStatus,
+    yesterday,
+)
 
 logger = initialize_logging(__name__)
 
@@ -302,9 +307,9 @@ def cleanup(temp_files: list[str | Path]) -> None:
             logger.warning("%s already does not exist.", filepath)
 
 
-def main(project_status: Literal["dev", "prod"] = "prod") -> None:
+def main(project_status: ProjectStatus = "prod") -> None:
     """Transfer data from Ripple to REDCap."""
-    project = {
+    project: dict[ProjectStatus, dict[str, str]] = {
         "dev": {"token": redcap_variables.Tokens.pid757},
         "prod": {"token": redcap_variables.Tokens.pid247},
     }

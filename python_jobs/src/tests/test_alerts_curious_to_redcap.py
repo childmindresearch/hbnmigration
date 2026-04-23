@@ -11,6 +11,7 @@ from hbnmigration.from_curious.alerts_to_redcap import (
     cli,
     main,
     main_with_reconnect,
+    parse_alert,
     process_alerts_for_redcap,
     push_alerts_to_redcap,
     synchronous_main,
@@ -104,6 +105,61 @@ def test_toggle_alerts_kevin_urgent_alert(kevin_alert):
     assert summary_row["value"].iloc[0] == "yes"
     assert summary_row["record"].iloc[0] == "005"
 
+
+# ============================================================================
+# Tests - parse_alert
+# ============================================================================
+
+
+def test_parse_alert_with_secret_id(sample_curious_alert):
+    """Test that parse_alert correctly parses an alert with secretId."""
+    # Update message to match the expected format: color: "answer" ... item
+    alert = sample_curious_alert.copy()
+    alert["message"] = 'Red: "Yes" - Difficulty concentrating parent_baseline'
+    result = parse_alert(alert)
+    assert not result.empty
+    assert "record" in result.columns
+    assert "field_name" in result.columns
+    assert "value" in result.columns
+    assert sample_curious_alert["secretId"] in result["record"].values
+
+
+def test_parse_alert_without_secret_id(sample_curious_alert):
+    """Test that parse_alert returns empty DataFrame when secretId is missing."""
+    alert = sample_curious_alert.copy()
+    alert["message"] = 'Red: "Yes" - Difficulty concentrating parent_baseline'
+    del alert["secretId"]
+    result = parse_alert(alert)
+    assert result.empty
+    assert list(result.columns) == [
+        "record",
+        "field_name",
+        "value",
+        "redcap_event_name",
+    ]
+
+
+def test_parse_alert_extracts_mrn(sample_curious_alert):
+    """Test that parse_alert extracts MRN correctly."""
+    alert = sample_curious_alert.copy()
+    alert["message"] = 'Red: "Yes" - Difficulty concentrating parent_baseline'
+    result = parse_alert(alert)
+    mrn_row = result[result["field_name"] == "mrn"]
+    assert len(mrn_row) == 1
+    assert mrn_row["value"].iloc[0] == sample_curious_alert["secretId"]
+
+
+def test_parse_alert_converts_message_to_field_name(sample_curious_alert):
+    """Test that parse_alert converts message to alert field name."""
+    alert = sample_curious_alert.copy()
+    alert["message"] = 'Red: "Yes" - Difficulty concentrating parent_baseline'
+    result = parse_alert(alert)
+    field_rows = result[result["field_name"] != "mrn"]
+    assert len(field_rows) > 0
+    assert field_rows["field_name"].iloc[0].startswith("alerts_")
+
+
+# ============================================================================
 
 # ============================================================================
 # Tests - process_alerts_for_redcap
@@ -534,18 +590,30 @@ def test_cli_max_reconnect_attempts():
 @pytest.mark.parametrize(
     "field_name,choices,expected",
     [
-        ("test_field", "0, No | 1, Yes | 2, Maybe", ("test_field", "no", 0)),
-        ("text_field", "", None),
-        ("test_field", "invalid_format", None),
+        (
+            "test_field",
+            "0, No | 1, Yes | 2, Maybe",
+            [
+                ("test_field", "no", 0),
+                ("test_field", "yes", 1),
+                ("test_field", "maybe", 2),
+            ],
+        ),
+        ("text_field", "", []),
+        ("test_field", "invalid_format", []),
         (
             "alerts_parent_baseline_5",
             "0, Normal | 1, Concerning | 2, Urgent",
-            ("alerts_parent_baseline_5", "normal", 0),
+            [
+                ("alerts_parent_baseline_5", "normal", 0),
+                ("alerts_parent_baseline_5", "concerning", 1),
+                ("alerts_parent_baseline_5", "urgent", 2),
+            ],
         ),
     ],
 )
 def test_response_index_reverse_lookup(field_name, choices, expected):
-    """Test response_index_reverse_lookup with various inputs."""
+    """Test response_index_reverse_lookup with various inputs - now returns a list."""
     row = pd.Series(
         {
             "field_name": field_name,

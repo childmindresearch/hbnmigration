@@ -8,6 +8,7 @@ from .custom import (
     fetch_api_data1,
     fetch_api_data2,
     fetch_api_data3,
+    flat_to_eav,
     get_mindlogger_token,
     get_redcap_event_names,
     new_curious_account,
@@ -17,12 +18,14 @@ from .custom import (
     print_module_variables,
     read_vars_file_as_module,
     redcap_api_push,
+    today,
     yesterday,
     yesterday_or_more_recent,
 )
 from .datatypes import (
     ApiProtocol,
     ApiProtocols,
+    CliOptions,
     Credentials,
     CuriousAlert,
     CuriousAnswer,
@@ -32,17 +35,21 @@ from .datatypes import (
     CuriousId,
     Endpoints,
     FieldDescriptor,
+    InstrumentRowCount,
+    ProjectStatus,
+    Results,
     Tokens,
     ValueClass,
     ValueField,
 )
-from .logging import initialize_logging
+from .logging import initialize_logging, setup_tsv_logger, TSVLoggedError
 from .secrets import ImportWithFallback
 from .typescript import tsx
 
 __all__ = [
     "ApiProtocol",
     "ApiProtocols",
+    "CliOptions",
     "Credentials",
     "CuriousAlert",
     "CuriousAnswer",
@@ -53,6 +60,10 @@ __all__ = [
     "Endpoints",
     "FieldDescriptor",
     "ImportWithFallback",
+    "InstrumentRowCount",
+    "ProjectStatus",
+    "Results",
+    "TSVLoggedError",
     "Tokens",
     "ValueClass",
     "ValueField",
@@ -63,6 +74,7 @@ __all__ = [
     "fetch_api_data1",
     "fetch_api_data2",
     "fetch_api_data3",
+    "flat_to_eav",
     "get_mindlogger_token",
     "get_redcap_event_names",
     "initialize_logging",
@@ -73,6 +85,8 @@ __all__ = [
     "print_module_variables",
     "read_vars_file_as_module",
     "redcap_api_push",
+    "setup_tsv_logger",
+    "today",
     "tsx",
     "yesterday",
     "yesterday_or_more_recent",

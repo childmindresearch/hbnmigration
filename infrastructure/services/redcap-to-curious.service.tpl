@@ -9,8 +9,11 @@ Group=${user_group}
 WorkingDirectory=${project_root}
 ExecStart=${venv_path}/bin/redcap-to-curious
 Environment="WORKSPACE=${workspace}"
+Environment="HBNMIGRATION_PROJECT_ROOT=${project_root}"
+Environment="HBNMIGRATION_LOG_PATH=${log_directory}"
 
 # Logging
+BindPaths=/data/logs/hbnmigration:/home/hbnmigration/hbnmigration/.hbnmigration_logs
 StandardOutput=append:${log_directory}/redcap-to-curious.log
 StandardError=append:${log_directory}/redcap-to-curious-error.log
 SyslogIdentifier=redcap-to-curious-${workspace}
@@ -19,7 +22,6 @@ SyslogIdentifier=redcap-to-curious-${workspace}
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
-ProtectHome=true
 ReadWritePaths=${project_root}
 ReadWritePaths=${log_directory}
 

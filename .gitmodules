@@ -1,4 +1,4 @@
 [submodule "javascript_jobs/autoexport"]
 	path = javascript_jobs/autoexport
-	url = https://github.com/childmindresearch/mindlogger-autoexport.git
+	url = git@github.com:childmindresearch/mindlogger-autoexport.git
 	branch = one-activity
