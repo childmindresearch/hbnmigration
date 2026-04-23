@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## 1.10.6
 
+### Added
+
+- Protection against log injection attacks.
+
 ### Fixed
 
 - Column misalignment in Ripple-to-REDCap.

@@ -63,7 +63,7 @@ from .datatypes import (
     ValueClass,
     ValueField,
 )
-from .logging import initialize_logging, setup_tsv_logger
+from .logging import initialize_logging, safe_record_for_log, setup_tsv_logger
 from .secrets import ImportWithFallback
 from .typescript import tsx
 
@@ -125,6 +125,7 @@ __all__ = [
     "print_module_variables",
     "read_vars_file_as_module",
     "redcap_api_push",
+    "safe_record_for_log",
     "setup_tsv_logger",
     "today",
     "tsx",

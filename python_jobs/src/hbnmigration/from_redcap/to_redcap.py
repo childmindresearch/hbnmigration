@@ -20,7 +20,7 @@ import uvicorn
 
 from .._config_variables import redcap_variables
 from ..exceptions import NoData
-from ..utility_functions import initialize_logging, redcap_api_push
+from ..utility_functions import initialize_logging, redcap_api_push, safe_record_for_log
 from .config import Fields, Values
 from .from_redcap import fetch_data, RedcapRecord
 
@@ -443,23 +443,25 @@ async def redcap_to_intake_webhook(
     3. Set URL to: ``https://your-domain.com/webhook/redcap-to-intake``
 
     """
+    safe_record = safe_record_for_log(record)
+
     logger.info(
         "Received REDCap trigger for record %s (instrument: %s)",
-        record,
-        instrument,
+        safe_record,
+        safe_record_for_log(instrument),
     )
     if intake_ready != "1":
-        logger.debug("Ready flag not set for record %s, ignoring trigger", record)
+        logger.debug("Ready flag not set for record %s, ignoring trigger", safe_record)
         return {
             "status": "ignored",
             "message": "Ready flag not set to '1', ignoring trigger",
             "record_id": record,
         }
     background_tasks.add_task(process_record_for_redcap_operations, record)
-    logger.info("Queued record %s for Intake REDCap push", record)
+    logger.info("Queued record %s for Intake REDCap push", safe_record)
     return {
         "status": "accepted",
-        "message": f"Trigger accepted for record {record}",
+        "message": f"Trigger accepted for record {safe_record}",
         "record_id": record,
     }
 

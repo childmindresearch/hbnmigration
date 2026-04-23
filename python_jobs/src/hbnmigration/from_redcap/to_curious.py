@@ -25,6 +25,7 @@ from ..utility_functions import (
     initialize_logging,
     new_curious_account,
     redcap_api_push,
+    safe_record_for_log,
 )
 from .config import Fields, Values
 from .from_redcap import fetch_data, RedcapRecord
@@ -506,20 +507,21 @@ async def redcap_to_curious_webhook(
     3. Set URL to: ``https://your-domain.com/webhook/redcap-to-curious``
 
     """
+    safe_record = safe_record_for_log(record)
     logger.info(
         "Received REDCap trigger for record %s (instrument: %s)",
-        record,
-        instrument,
+        safe_record,
+        safe_record_for_log(instrument),
     )
     if ready_to_send_to_curious != "1":
-        logger.debug("Ready flag not set for record %s, ignoring trigger", record)
+        logger.debug("Ready flag not set for record %s, ignoring trigger", safe_record)
         return {
             "status": "ignored",
             "message": "Ready flag not set to '1', ignoring trigger",
             "record_id": record,
         }
     background_tasks.add_task(process_record_for_curious, record)
-    logger.info("Queued record %s for Curious push", record)
+    logger.info("Queued record %s for Curious push", safe_record)
     return {
         "status": "accepted",
         "message": f"Trigger accepted for record {record}",
