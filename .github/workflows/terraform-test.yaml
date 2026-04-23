@@ -1,5 +1,4 @@
 name: Terraform Tests
-
 on:
   pull_request:
     paths:
@@ -10,14 +9,12 @@ on:
       - fix-alerts-more
     paths:
       - 'infrastructure/**'
-
 jobs:
   terraform-tests:
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: infrastructure
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -25,7 +22,7 @@ jobs:
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: 1.6.0
+          terraform_version: 1.9.0
 
       - name: Setup Python
         uses: actions/setup-python@v5
