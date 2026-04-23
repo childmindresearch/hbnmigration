@@ -48,7 +48,7 @@ class Fields:
             ]
         )
         """Fields to export from REDCap PID 247 for import into Curious."""
-        for_redcap744: Final[FieldList] = FieldList(
+        for_redcap_operations: Final[FieldList] = FieldList(
             [
                 "record_id",
                 "mrn",
@@ -110,7 +110,7 @@ class Fields:
                 "guardian2_consent",
             ]
         )
-        """Fields to export from REDCap PID 247 for import into REDCap PID 744."""
+        """Fields to export from REDCap PID 247 for import into REDCap PID 625."""
 
     class import_curious:
         """Fields to import into Curious."""
@@ -141,7 +141,7 @@ class Fields:
         }
         """Fields to import into Curious for parent accounts."""
 
-    import_744: Final[FieldList] = FieldList(
+    import_625: Final[FieldList] = FieldList(
         [
             "record_id",
             "mrn",
@@ -180,7 +180,7 @@ class Fields:
             "role_consent",
         ]
     )
-    """Fields to import into REDCap PID 744."""
+    """Fields to import into REDCap PID 625."""
 
     class rename:
         """Mappings to rename from one DataFrame to another."""
@@ -208,7 +208,7 @@ class Fields:
             }
             """Columns to rename for parent accounts from REDCap PID 247 to Curious."""
 
-        redcap247_to_redcap744: Final[dict[str, str]] = {
+        redcap_consent_to_redcap_operations: Final[dict[str, str]] = {
             "consent1": "first_name",
             "consent5": "last_name",
             "biosex": "sex",
@@ -239,7 +239,7 @@ class Fields:
             "email_2_1821": "email_2",
             "phone_2_1821": "phone_2",
         }
-        """Columns to rename from REDCap PID 247 to REDCap PID 744."""
+        """Columns to rename from REDCap PID 247 to REDCap PID 625."""
 
 
 class Values:
@@ -292,8 +292,8 @@ class Values:
         )
         """Please indicate whether or not we may receive your child's records from, and share your child's records with partnering scientific institution(s)."""  # noqa: E501
 
-    class PID744(ValueClass):
-        """Values for PID 744 HBN - Intake and Curious (TEMP for Transition)."""
+    class PID625(ValueClass):
+        """Values for PID 625 HBN - Operations and Data Collection."""
 
         complete_parent_second_guardian_consent = FieldDescriptor(
             {

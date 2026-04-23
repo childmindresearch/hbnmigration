@@ -1,5 +1,6 @@
 """Utility functions."""
 
+from .cache import DataCache, get_cache_dir, get_recent_time_window, YESTERDAY
 from .custom import (
     create_tempory_file,
     execute_vars_file,
@@ -19,7 +20,6 @@ from .custom import (
     read_vars_file_as_module,
     redcap_api_push,
     today,
-    yesterday,
     yesterday_or_more_recent,
 )
 from .datatypes import (
@@ -27,16 +27,19 @@ from .datatypes import (
     ApiProtocols,
     CliOptions,
     Credentials,
+    CuriousActivity,
     CuriousAlert,
+    CuriousAlertHttps,
+    CuriousAlertWebsocket,
     CuriousAnswer,
     CuriousAppletEncryption,
     CuriousDecryptedAnswer,
     CuriousEncryptedAnswer,
     CuriousId,
+    CuriousItem,
     Endpoints,
     FieldDescriptor,
     InstrumentRowCount,
-    PROJECT_STATUS,
     ProjectStatus,
     Results,
     Tokens,
@@ -44,27 +47,33 @@ from .datatypes import (
     ValueField,
 )
 from .logging import initialize_logging, setup_tsv_logger
-from .secrets import ImportWithFallback
+from .secrets import ImportWithFallback, T
 from .typescript import tsx
 
 __all__ = [
-    "PROJECT_STATUS",
+    "YESTERDAY",
     "ApiProtocol",
     "ApiProtocols",
     "CliOptions",
     "Credentials",
+    "CuriousActivity",
     "CuriousAlert",
+    "CuriousAlertHttps",
+    "CuriousAlertWebsocket",
     "CuriousAnswer",
     "CuriousAppletEncryption",
     "CuriousDecryptedAnswer",
     "CuriousEncryptedAnswer",
     "CuriousId",
+    "CuriousItem",
+    "DataCache",
     "Endpoints",
     "FieldDescriptor",
     "ImportWithFallback",
     "InstrumentRowCount",
     "ProjectStatus",
     "Results",
+    "T",
     "Tokens",
     "ValueClass",
     "ValueField",
@@ -76,7 +85,9 @@ __all__ = [
     "fetch_api_data2",
     "fetch_api_data3",
     "flat_to_eav",
+    "get_cache_dir",
     "get_mindlogger_token",
+    "get_recent_time_window",
     "get_redcap_event_names",
     "initialize_logging",
     "new_curious_account",
@@ -89,6 +100,5 @@ __all__ = [
     "setup_tsv_logger",
     "today",
     "tsx",
-    "yesterday",
     "yesterday_or_more_recent",
 ]

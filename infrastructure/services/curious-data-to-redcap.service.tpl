@@ -1,6 +1,7 @@
 [Unit]
 Description=Curious data to REDCap Sync Service [${workspace}]
 After=network.target
+PartOf=hbn-sync.service
 
 [Service]
 Type=oneshot
@@ -10,7 +11,13 @@ WorkingDirectory=${project_root}
 ExecStart=${venv_path}/bin/curious-data-to-redcap
 Environment="WORKSPACE=${workspace}"
 Environment="HBNMIGRATION_PROJECT_ROOT=${project_root}"
-Environment="HBNMIGRATION_LOG_PATH=${log_directory}"
+Environment="HBNMIGRATION_LOG_ROOT=${log_directory}"
+Environment="HBNMIGRATION_PROJECT_STATUS=${project_status}"
+Environment="HBNMIGRATION_RECOVERY_MODE=${recovery_mode ? "1" : "0"}"
+
+# Timeouts
+TimeoutStartSec=300
+TimeoutStopSec=30
 
 # Logging
 BindPaths=/data/logs/hbnmigration:/home/hbnmigration/hbnmigration/.hbnmigration_logs
@@ -24,6 +31,7 @@ PrivateTmp=true
 ProtectSystem=strict
 ReadWritePaths=${project_root}
 ReadWritePaths=${log_directory}
+ReadWritePaths=${project_root}/.hbnmigration_cache
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=hbn-sync.timer

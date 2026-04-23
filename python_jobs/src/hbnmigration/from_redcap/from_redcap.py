@@ -112,7 +112,9 @@ def response_index_reverse_lookup(row: pd.Series) -> list[tuple[str, str, int | 
             if len(parts) == 2:  # noqa: PLR2004
                 value, label = parts
                 try:
-                    lookups.append((field, label.strip().lower(), int(value.strip())))
+                    lookups.append(
+                        (field, label.strip().lower(), str(int(value.strip())))
+                    )
                 except (TypeError, ValueError):
                     lookups.append((field, label.strip().lower(), value.strip()))
     return lookups

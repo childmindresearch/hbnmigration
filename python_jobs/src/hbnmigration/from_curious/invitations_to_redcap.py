@@ -13,9 +13,9 @@ from ..from_redcap.config import Values as RedcapValues
 from ..utility_functions import (
     CuriousDecryptedAnswer,
     CuriousId,
+    DataCache,
     fetch_api_data,
     initialize_logging,
-    PROJECT_STATUS,
     yesterday_or_more_recent,
 )
 from .config import curious_authenticate, invitation_statuses
@@ -93,7 +93,7 @@ def create_invitation_record(respondent: dict, applet_id: CuriousId) -> dict | N
         "source_secret_id": secret_id,
         "invite_status": invitation_statuses[respondent["status"]],
         "redcap_event_name": "curious_parent_arm_1",
-        "complete": RedcapValues.PID744.curious_account_created_complete["Incomplete"],
+        "complete": RedcapValues.PID625.curious_account_created_complete["Incomplete"],
         "respondent_id": detail["subjectId"],
     }
 
@@ -326,7 +326,7 @@ def format_for_redcap(
                 )
         if "curious_account_created_account_created_response" in result.output.columns:
             curious_account_created_account_created_response = (
-                RedcapValues.PID744.curious_account_created_account_created_response
+                RedcapValues.PID625.curious_account_created_account_created_response
             )
             context_columns.append(
                 pl.when(
@@ -339,12 +339,12 @@ def format_for_redcap(
                 )
                 .then(
                     pl.lit(
-                        RedcapValues.PID744.curious_account_created_complete["Complete"]
+                        RedcapValues.PID625.curious_account_created_complete["Complete"]
                     )
                 )
                 .otherwise(
                     pl.lit(
-                        RedcapValues.PID744.curious_account_created_complete[
+                        RedcapValues.PID625.curious_account_created_complete[
                             "Unverified"
                         ]
                     )
@@ -355,13 +355,13 @@ def format_for_redcap(
         elif redcap_context.get("invite_status") == "3":
             context_columns.append(
                 pl.lit(
-                    RedcapValues.PID744.curious_account_created_complete["Unverified"]
+                    RedcapValues.PID625.curious_account_created_complete["Unverified"]
                 ).alias("curious_account_created_complete")
             )
         else:
             context_columns.append(
                 pl.lit(
-                    RedcapValues.PID744.curious_account_created_complete["Incomplete"]
+                    RedcapValues.PID625.curious_account_created_complete["Incomplete"]
                 ).alias("curious_account_created_complete")
             )
         result.output = result.output.with_columns(context_columns)
@@ -394,7 +394,7 @@ def pull_data_from_curious(token: str) -> pl.DataFrame:
     return invitation_df
 
 
-def push_to_redcap(csv_data: str) -> int:
+def push_to_redcap(csv_data: str, cache: DataCache | None = None) -> int:
     """
     Push data to RedCap.
 
@@ -405,9 +405,7 @@ def push_to_redcap(csv_data: str) -> int:
 
     """
     data = {
-        "token": redcap_variables.Tokens.pid744
-        if PROJECT_STATUS == "dev"
-        else redcap_variables.Tokens.pid625,
+        "token": redcap_variables.Tokens.pid625,
         "content": "record",
         "action": "import",
         "format": "csv",
@@ -431,7 +429,7 @@ def update_already_completed(df: pl.DataFrame) -> pl.DataFrame:
         Endpoints.Redcap.base_url,
         redcap_variables.headers,
         {
-            "token": redcap_variables.Tokens.pid744,
+            "token": redcap_variables.Tokens.pid625,
             "content": "record",
             "action": "export",
             "format": "csv",
@@ -439,7 +437,7 @@ def update_already_completed(df: pl.DataFrame) -> pl.DataFrame:
             "csvDelimiter": "",
             "fields": "curious_account_created_complete",
             "filter"
-            "Logic": RedcapValues.PID744.curious_account_created_complete.filter_logic(
+            "Logic": RedcapValues.PID625.curious_account_created_complete.filter_logic(
                 "Complete"
             ),
             "rawOrLabel": "raw",
@@ -456,26 +454,66 @@ def update_already_completed(df: pl.DataFrame) -> pl.DataFrame:
 
 def main() -> None:
     """Monitor Curious account invitations and send updates to REDCap."""
+    # Initialize cache for minute-by-minute transfers (TTL: 2 minutes)
+    cache = DataCache("curious_invitations_to_redcap", ttl_minutes=2)
+
     auth = curious_authenticate()
     invitation_df = pull_data_from_curious(auth.access)
     if invitation_df.is_empty():
         logger.info("No invitations to update.")
         return
+
+    # Filter out records already processed by cache
+    if cache:
+        unprocessed_records = cache.get_unprocessed_records(
+            invitation_df["record_id"].to_list()
+        )
+        if len(unprocessed_records) < len(invitation_df):
+            logger.info(
+                "Skipping %d already-processed records (cache hit)",
+                len(invitation_df) - len(unprocessed_records),
+            )
+            invitation_df = invitation_df.filter(
+                pl.col("record_id").is_in(unprocessed_records)
+            )
+
+    if invitation_df.is_empty():
+        logger.info("All invitations already processed in cache.")
+        return
+
     invitation_df = check_activity_responses(
         auth.access,
         invitation_df,
         curious_variables.applet_ids["Healthy Brain Network Questionnaires"],
         curious_variables.activity_ids["Curious Account Created"],
     ).unique(subset=["record_id"], keep="last")
-    n_records = push_to_redcap(invitation_df.write_csv())
+
+    n_records = push_to_redcap(invitation_df.write_csv(), cache)
     logger.info(
         "%d records updated in REDCap from Curious account creation.", n_records
     )
+
+    # Mark records as processed in cache
+    if cache and n_records > 0:
+        cache.bulk_mark_processed(
+            invitation_df["record_id"].to_list(),
+            metadata={"count": n_records},
+        )
+
     if n_records != invitation_df.shape[0]:
         msg = (
             f"Expected {invitation_df.shape[0]} records to update but {n_records} did."
         )
         raise ValueError(msg)
+
+    # Log cache statistics
+    cache_stats = cache.get_stats()
+    logger.info(
+        "Cache statistics: %d entries, file size: %d bytes, last activity: %s",
+        cache_stats["total_entries"],
+        cache_stats["file_size_bytes"],
+        cache_stats.get("last_activity", "never"),
+    )
     return
 
 

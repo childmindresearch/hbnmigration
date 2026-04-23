@@ -1,9 +1,8 @@
 [Unit]
-Description=Ripple, REDCap and Curious Sync Timer [default]
-Requires=hbn-sync.service
+Description=Ripple, REDCap and Curious Sync Timer [${workspace}]
 
 [Timer]
-OnCalendar=*:0/1
+OnCalendar=*:0/${sync_interval_minutes}
 Persistent=true
 
 [Install]

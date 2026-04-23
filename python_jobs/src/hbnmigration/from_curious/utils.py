@@ -1,18 +1,26 @@
 """Shared utilities for data processing from Curious to REDCap."""
 
 import logging
-from typing import cast
+from typing import cast, Optional, overload
 
 import pandas as pd
+import requests
 
-from .._config_variables import redcap_variables
-from ..utility_functions import fetch_api_data, PROJECT_STATUS
+from .._config_variables import curious_variables, redcap_variables
+from ..from_redcap.from_redcap import response_index_reverse_lookup
+from ..utility_functions import (
+    CuriousActivity,
+    CuriousAlert,
+    CuriousAlertHttps,
+    CuriousId,
+    CuriousItem,
+    fetch_api_data,
+    T,
+)
 
 logger = logging.getLogger(__name__)
 
-REDCAP_TOKEN = getattr(
-    redcap_variables.Tokens, "pid625" if PROJECT_STATUS == "prod" else "pid744"
-)
+REDCAP_TOKEN = redcap_variables.Tokens.pid625
 
 # Standard REDCap metadata fetch parameters
 METADATA_PARAMS = {
@@ -33,6 +41,39 @@ ALERTS_INSTRUMENT_FORM = "ra_alerts_child,ra_alerts_parent"
 DEFAULT_EVENT_FOR_ALERTS = "admin_arm_1"
 
 
+@overload
+def call_curious_api(
+    endpoint: str,
+    tokens: curious_variables.Tokens,
+    return_type: None = None,
+    headers: Optional[dict[str, str]] = None,
+) -> list | dict: ...
+@overload
+def call_curious_api(
+    endpoint: str,
+    tokens: curious_variables.Tokens,
+    return_type: type[T],
+    headers: Optional[dict[str, str]] = None,
+) -> T: ...
+def call_curious_api(
+    endpoint: str,
+    tokens: curious_variables.Tokens,
+    return_type: Optional[type[T]] = None,
+    headers: Optional[dict[str, str]] = None,
+) -> T | list | dict:
+    """Call Curious API."""
+    response = requests.get(
+        endpoint,
+        headers=headers if headers else curious_variables.headers(tokens.access),
+    )
+    if response.status_code != requests.codes["okay"]:
+        response.raise_for_status()
+    result = response.json()["result"]
+    if return_type:
+        return cast(T, result)
+    return result
+
+
 def fetch_alerts_metadata(base_url: str) -> pd.DataFrame:
     """Fetch alerts instrument metadata from REDCap."""
     return fetch_api_data(
@@ -44,6 +85,24 @@ def fetch_alerts_metadata(base_url: str) -> pd.DataFrame:
             **METADATA_PARAMS,
         },
     )
+
+
+def create_choice_lookup(
+    alerts_instrument: pd.DataFrame,
+) -> dict[tuple[str, str], str]:
+    """Create lookup dictionary for mapping response values to REDCap indices."""
+    choice_lookup_tuples = [
+        lookup_tuple
+        for lookup_tuple in [
+            item
+            for _, row in alerts_instrument.iterrows()
+            for item in response_index_reverse_lookup(row)
+        ]
+        if lookup_tuple
+    ]
+    return {
+        lookup_tuple[0:2]: str(lookup_tuple[2]) for lookup_tuple in choice_lookup_tuples
+    }
 
 
 def possible_alert_instruments(base_url: str) -> list[str]:
@@ -225,3 +284,86 @@ def get_field_to_event_mapping(base_url: str, field_names: list[str]) -> dict[st
     except Exception as e:
         logger.warning("Could not fetch field-to-event mapping: %s", e)
         return {}
+
+
+def get_activity(
+    tokens: curious_variables.Tokens, activity_id: CuriousId
+) -> CuriousActivity:
+    """Get an activity from Curious."""
+    return call_curious_api(
+        tokens.endpoints.activity(activity_id), tokens, CuriousActivity
+    )
+
+
+def get_item(
+    tokens: curious_variables.Tokens, activity_id: CuriousId, item_id: CuriousId
+) -> CuriousItem:
+    """Get an item from Curious."""
+    activity = get_activity(tokens, activity_id)
+    try:
+        return next(item for item in activity["items"] if item["id"] == item_id)
+    except StopIteration as stop_iteration:
+        msg = f"Item {item_id} not found in {activity['name']} ({activity_id})."
+        raise LookupError(msg) from stop_iteration
+
+
+def alert_websocket_to_https(alert: CuriousAlert) -> CuriousAlertHttps:
+    """Convert a `CuriousAlertWebsocket` to a `CuriousAlertHttps`."""
+    return cast(
+        CuriousAlertHttps,
+        {
+            "secretId" if key == "secret_id" else key: value
+            for key, value in alert.items()
+        },
+    )
+
+
+def map_mrns_to_records(
+    redcap_alerts: pd.DataFrame,
+    redcap_fields: pd.DataFrame,
+) -> tuple[pd.DataFrame, dict[str, str]]:
+    """
+    Map MRNs to record IDs and prepare lookups.
+
+    Parameters
+    ----------
+    redcap_alerts
+        DataFrame with alert data containing MRNs in 'record' column
+    redcap_fields
+        DataFrame with existing REDCap data for field validation
+
+    Returns
+    -------
+    tuple
+        (processed_alerts, mrn_lookup)
+        - processed_alerts: Filtered alert DataFrame with event names populated
+        - mrn_lookup: Maps MRN string to record ID integer
+
+    """
+    # Prepare data types
+    redcap_alerts["record"] = (
+        redcap_alerts["record"].str.replace(r"\D", "", regex=True).astype(str)
+    )
+    redcap_fields["record"] = redcap_fields["record"].astype(str)
+
+    # Create lookups
+    mrn_lookup = {
+        str(k): str(v)
+        for k, v in redcap_fields[redcap_fields["field_name"] == "mrn"]
+        .set_index("value")["record"]
+        .to_dict()
+        .items()
+    }
+    record_events = cast(
+        dict[str, str],
+        redcap_fields.groupby("field_name")["redcap_event_name"].first().to_dict(),
+    )
+
+    # Filter results
+    result = redcap_alerts.loc[redcap_alerts["field_name"] != "mrn"].copy()
+    result = result[result["field_name"].isin(redcap_fields["field_name"])]
+
+    # Map event names by field name
+    result["redcap_event_name"] = result["field_name"].map(record_events)
+
+    return result, mrn_lookup

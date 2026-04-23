@@ -1,6 +1,7 @@
 output "configuration" {
   description = "Deployed configuration"
   value = {
+    workspace             = terraform.workspace
     project_root          = var.project_root
     venv_path             = local.venv_full_path
     user_group            = var.user_group
@@ -10,10 +11,28 @@ output "configuration" {
   }
 }
 
+output "services" {
+  description = "Deployed services"
+  value = {
+    timer = local.services.hbn_sync_timer
+    always_on = [
+      "${local.services.curious_alerts_websocket}.service"
+    ]
+    timer_triggered = [
+      "${local.services.ripple_sync}.service",
+      "${local.services.redcap_sync}.service",
+      "${local.services.redcap_to_curious}.service",
+      "${local.services.curious_accounts_to_redcap}.service",
+      "${local.services.curious_data_to_redcap}.service",
+    ]
+  }
+}
+
 output "user_info" {
   description = "User and group information"
   value       = <<-EOT
     User/Group: ${var.user_group}
+    Workspace: ${terraform.workspace}
 
     Verify user exists:
       id ${split(":", var.user_group)[0]}
@@ -26,6 +45,8 @@ output "user_info" {
 output "permissions_summary" {
   description = "Summary of file permissions"
   value       = <<-EOT
+    Workspace: ${terraform.workspace}
+
     Project Root: ${var.project_root}
       Owner: ${var.user_group}:${var.user_group}
       Directories: 750 (rwxr-x---)
@@ -53,13 +74,15 @@ output "permissions_summary" {
 output "backup_info" {
   description = "Backup configuration details"
   value       = <<-EOT
+    Workspace: ${terraform.workspace}
+
     Automated Backups:
-      Script: /usr/local/bin/terraform-state-backup
-      Cron: /etc/cron.daily/terraform-state-backup
+      Script: /usr/local/bin/terraform-state-backup${local.workspace_suffix}
+      Cron: /etc/cron.daily/terraform-state-backup${local.workspace_suffix}
       Directory: ${local.log_full_path}/terraform-backups/
 
     Manual backup:
-      sudo /usr/local/bin/terraform-state-backup
+      sudo /usr/local/bin/terraform-state-backup${local.workspace_suffix}
 
     List backups:
       ls -lh ${local.log_full_path}/terraform-backups/
@@ -76,20 +99,39 @@ output "backup_info" {
 output "monitoring_commands" {
   description = "Commands to monitor the services"
   value       = <<-EOT
-    View logs:
-      sudo journalctl -u curious-alerts-websocket -f
-      sudo journalctl -u ripple-to-redcap -u redcap-to-redcap -u redcap-to-curious -f
+    Workspace: ${terraform.workspace}
+
+    Timer Status:
+      sudo systemctl status ${local.services.hbn_sync_timer}
+      sudo systemctl list-timers ${local.services.hbn_sync_timer}
+
+    Always-On Service:
+      sudo systemctl status ${local.services.curious_alerts_websocket}.service
+      sudo journalctl -u ${local.services.curious_alerts_websocket}.service -f
+
+    Timer-Triggered Services (last runs):
+      sudo systemctl status ${local.services.ripple_sync}.service
+      sudo systemctl status ${local.services.redcap_sync}.service
+      sudo systemctl status ${local.services.redcap_to_curious}.service
+      sudo systemctl status ${local.services.curious_accounts_to_redcap}.service
+      sudo systemctl status ${local.services.curious_data_to_redcap}.service
+
+    View all sync logs:
+      sudo journalctl -u ${local.services.ripple_sync}.service \
+                      -u ${local.services.redcap_sync}.service \
+                      -u ${local.services.redcap_to_curious}.service \
+                      -u ${local.services.curious_accounts_to_redcap}.service \
+                      -u ${local.services.curious_data_to_redcap}.service -f
+
+    View application logs:
       tail -f ${local.log_full_path}/*.log
+      tail -f ${local.log_full_path}/curious-alerts-websocket.log
+      tail -f ${local.log_full_path}/ripple-to-redcap.log
 
     Check permissions:
       ls -la ${var.project_root}
       ls -la ${var.project_root}/python_jobs/src/hbnmigration/_config_variables
       ls -la ${local.log_full_path}
-
-    Check service status:
-      sudo systemctl status curious-alerts-websocket.service
-      sudo systemctl status hbn-sync.timer
-      sudo systemctl list-timers
 
     Check user/group:
       id ${split(":", var.user_group)[0]}
@@ -98,5 +140,36 @@ output "monitoring_commands" {
     Check backups:
       ls -lh ${local.log_full_path}/terraform-backups/
       cat ${local.log_full_path}/terraform-backups/backup.log
+  EOT
+}
+
+output "quick_troubleshooting" {
+  description = "Quick troubleshooting guide"
+  value       = <<-EOT
+    Workspace: ${terraform.workspace}
+    Sync Interval: Every ${var.sync_interval_minutes} minute(s)
+
+    Check if timer is running:
+      sudo systemctl is-active ${local.services.hbn_sync_timer}
+
+    Check when services will run next:
+      sudo systemctl list-timers ${local.services.hbn_sync_timer}
+
+    Manually trigger a sync cycle:
+      sudo systemctl start ${local.services.hbn_sync}.service
+
+    Restart websocket service:
+      sudo systemctl restart ${local.services.curious_alerts_websocket}.service
+
+    View recent failures:
+      sudo systemctl --failed
+      sudo journalctl -p err -u ${local.services.ripple_sync}.service --since "1 hour ago"
+
+    Reset failed services:
+      sudo systemctl reset-failed
+
+    Check service timeouts (should be 300s for sync, 60s for websocket):
+      systemctl show ${local.services.ripple_sync}.service -p TimeoutStartUSec
+      systemctl show ${local.services.curious_alerts_websocket}.service -p TimeoutStartUSec
   EOT
 }

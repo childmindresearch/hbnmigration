@@ -3,6 +3,7 @@
 from collections.abc import Generator
 from contextlib import contextmanager, ExitStack
 import json
+import os
 from pathlib import Path
 import tempfile
 from typing import Any, cast, ContextManager, TypedDict
@@ -14,6 +15,7 @@ import pytest
 import requests
 from websockets.exceptions import InvalidStatus
 
+from hbnmigration._config_variables.curious_variables import Tokens
 from hbnmigration.from_curious.alerts_to_redcap import (
     parse_alert,
     synchronous_main,
@@ -21,7 +23,9 @@ from hbnmigration.from_curious.alerts_to_redcap import (
 )
 from hbnmigration.from_redcap.config import Values
 from hbnmigration.utility_functions.datatypes import (
+    ApiProtocol,
     CuriousAlert,
+    CuriousAlertHttps,
     CuriousDecryptedAnswer,
     CuriousEncryption,
 )
@@ -45,6 +49,35 @@ SAMPLE_RESPONDENT_ID = "resp1234-ab12-cd34-ef56-abcdef123456"
 SAMPLE_SUBJECT_ID = "subj1234-ab12-cd34-ef56-abcdef123456"
 SAMPLE_SUBMIT_ID = "smit1234-ab12-cd34-ef56-abcdef123456"
 INVITATIONS_MOD = "hbnmigration.from_curious.invitations_to_redcap"
+
+
+@pytest.fixture(autouse=True)
+def isolated_cache(tmp_path: Path) -> Generator[None, None, None]:
+    """Isolate cache directory per test to prevent cross-test pollution."""
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
+    old_cache_dir = os.environ.get("HBNMIGRATION_CACHE_DIR")
+    os.environ["HBNMIGRATION_CACHE_DIR"] = str(cache_dir)
+
+    yield
+
+    # Restore original value
+    if old_cache_dir is None:
+        os.environ.pop("HBNMIGRATION_CACHE_DIR", None)
+    else:
+        os.environ["HBNMIGRATION_CACHE_DIR"] = old_cache_dir
+
+
+@pytest.fixture
+def mock_config_log_root(tmp_path: Path) -> Generator[Path, None, None]:
+    """Mock Config.LOG_ROOT for testing."""
+    log_root = tmp_path / "logs"
+    log_root.mkdir(parents=True, exist_ok=True)
+    with patch("hbnmigration.from_curious.data_to_redcap.Config") as mock_config:
+        mock_config.LOG_ROOT = log_root
+        yield log_root
+
 
 # ============================================================================
 # Constants - Alert Testing
@@ -294,41 +327,45 @@ def create_curious_alert(
     respondent_id: str,
     subject_id: str,
     account_id: str = "account_001",
+    api_protocol: ApiProtocol = "https",
     **kwargs: Any,
 ) -> CuriousAlert:
     """Create CuriousAlert test data."""
     encryption = DEFAULT_ENCRYPTION.copy()
     encryption["accountId"] = account_id
-    return {
-        "id": alert_id,
-        "isWatched": kwargs.get("isWatched", False),
-        "appletId": kwargs.get("appletId", "hbn_applet_id"),
-        "appletName": kwargs.get("appletName", "HBN Questionnaires"),
-        "version": kwargs.get("version", "1.0.0"),
-        "secretId": secret_id,
-        "activityId": kwargs.get("activityId", "baseline_activity"),
-        "activityItemId": activity_item_id,
-        "message": message,
-        "createdAt": kwargs.get("createdAt", "2024-01-01T00:00:00Z"),
-        "answerId": kwargs.get("answerId", f"answer_{alert_id}"),
-        "encryption": encryption,
-        "workspace": kwargs.get("workspace", "workspace_1"),
-        "respondentId": respondent_id,
-        "subjectId": subject_id,
-        "type": kwargs.get("type", "answer"),
-    }
+    return cast(
+        CuriousAlert,
+        {
+            "id": alert_id,
+            "isWatched": kwargs.get("isWatched", False),
+            "appletId": kwargs.get("appletId", "hbn_applet_id"),
+            "appletName": kwargs.get("appletName", "HBN Questionnaires"),
+            "version": kwargs.get("version", "1.0.0"),
+            "secretId" if api_protocol == "https" else "secret_id": secret_id,
+            "activityId": kwargs.get("activityId", "baseline_activity"),
+            "activityItemId": activity_item_id,
+            "message": message,
+            "createdAt": kwargs.get("createdAt", "2024-01-01T00:00:00Z"),
+            "answerId": kwargs.get("answerId", f"answer_{alert_id}"),
+            "encryption": encryption,
+            "workspace": kwargs.get("workspace", "workspace_1"),
+            "respondentId": respondent_id,
+            "subjectId": subject_id,
+            "type": kwargs.get("type", "answer"),
+        },
+    )
 
 
 def create_curious_alert_with_message(
     alert_id: str,
-    secret_id: str | None,
+    secret_id: str,
     item_name: str,
     answer: str,
     color: str = "Red",
     respondent_id: str | None = None,
     subject_id: str | None = None,
     **kwargs: Any,
-) -> CuriousAlert:
+) -> CuriousAlertHttps:
     """
     Create CuriousAlert with properly formatted message.
 
@@ -336,8 +373,8 @@ def create_curious_alert_with_message(
     ----------
     alert_id : str
         Alert identifier
-    secret_id : str | None
-        Secret ID (MRN), or None to create alert without secretId
+    secret_id : str
+        Secret ID (MRN)
     item_name : str
         Item name (e.g., "parent_baseline")
     answer : str
@@ -357,9 +394,9 @@ def create_curious_alert_with_message(
         Alert with formatted message and optional secretId
 
     """
-    message = f'{color}: "{answer}" - Question text {item_name}'
-    alert = cast(
-        CuriousAlert,
+    message = f'{color}: "{answer}" to Question text {item_name}'
+    return cast(
+        CuriousAlertHttps,
         create_curious_alert(
             alert_id=alert_id,
             secret_id=secret_id or "PLACEHOLDER",
@@ -370,9 +407,6 @@ def create_curious_alert_with_message(
             **kwargs,
         ),
     )
-    if secret_id is None:
-        del alert["secretId"]
-    return alert
 
 
 # ============================================================================
@@ -660,13 +694,13 @@ def assert_pushed_data_contains_value(
     assert expected_value in pushed_data["value"].values
 
 
-def assert_reconnect_called_with_token_and_uri(
-    mock_reconnect: Mock, token: str, uri_fragment: str
+def assert_reconnect_called_with_tokens_and_uri(
+    mock_reconnect: Mock, tokens: Tokens, uri_fragment: str
 ) -> None:
     """Assert reconnect was called with expected token and URI."""
     assert mock_reconnect.called
     call_kwargs = mock_reconnect.call_args[1]
-    assert call_kwargs["token"] == token
+    assert call_kwargs["tokens"] == tokens
     assert uri_fragment in call_kwargs["uri"]
 
 
@@ -732,7 +766,6 @@ def setup_standard_alert_mocks(
         if existing_data is not None
         else create_default_existing_alert_data()
     )
-    mocks["choice_lookup"].return_value = {}
 
 
 def setup_alert_test_with_metadata(
@@ -878,7 +911,7 @@ def setup_sync_main_mocks(
             "auth": stack.enter_context(
                 patch("hbnmigration.from_curious.alerts_to_redcap.curious_authenticate")
             ),
-            "get": stack.enter_context(
+            "call_api": stack.enter_context(
                 patch("hbnmigration.from_curious.alerts_to_redcap.requests.get")
             ),
             "parse": stack.enter_context(
@@ -892,8 +925,9 @@ def setup_sync_main_mocks(
         mock_response = Mock()
         mock_response.status_code = status_code
         if status_code == requests.codes["okay"]:
-            mock_response.json.return_value = {"result": alerts_list}
-        mocks["get"].return_value = mock_response
+            mocks["call_api"].return_value = alerts_list
+        else:
+            mocks["call_api"].side_effect = Exception("API Error")
         if parse_returns is not None:
             mocks["parse"].side_effect = parse_returns
         mocks["curious_vars"].headers.return_value = {}
@@ -954,7 +988,7 @@ def create_sync_main_test_setup(
 
 
 def run_parse_alert_test(
-    alert: CuriousAlert,
+    alert: CuriousAlertHttps,
     should_be_empty: bool,
     caplog: pytest.LogCaptureFixture | None = None,
 ) -> pd.DataFrame:
@@ -1097,17 +1131,6 @@ def alert_with_secret_id() -> CuriousAlert:
 
 
 @pytest.fixture
-def alert_without_secret_id() -> CuriousAlert:
-    """Alert with secretId missing."""
-    return create_curious_alert_with_message(
-        alert_id="alert_002",
-        secret_id=None,
-        item_name="parent_baseline",
-        answer="No",
-    )
-
-
-@pytest.fixture
 def mixed_alerts_with_and_without_secret_id(
     alert_with_secret_id: CuriousAlert,
     alert_without_secret_id: CuriousAlert,
@@ -1123,7 +1146,7 @@ def non_answer_alert() -> dict[str, Any]:
 
 
 @pytest.fixture
-def sample_curious_alert() -> CuriousAlert:
+def sample_curious_alert(request: pytest.FixtureRequest) -> CuriousAlert:
     """Sample alert from Curious websocket/API."""
     return create_curious_alert(
         "alert_001",
@@ -1133,6 +1156,7 @@ def sample_curious_alert() -> CuriousAlert:
         "respondent_12345",
         "subject_001",
         answerId="answer_456",
+        api_protocol=getattr(request, "param", "https"),
     )
 
 
@@ -1421,21 +1445,16 @@ def mock_alerts_dependencies() -> Generator[dict[str, Mock], None, None]:
         patch(
             "hbnmigration.from_curious.alerts_to_redcap.fetch_alerts_metadata"
         ) as mock_fetch_metadata,
-        patch(
-            "hbnmigration.from_curious.alerts_to_redcap._create_choice_lookup"
-        ) as mock_choice_lookup,
     ):
         mock_vars.Tokens.pid625 = "token_625"
         mock_vars.headers = {}
         mock_vars.Endpoints.return_value.base_url = DEFAULT_REDCAP_BASE_URL
-        mock_choice_lookup.return_value = {}
         yield {
             "fetch_api": mock_fetch_api,
             "fetch": mock_fetch,
             "push": mock_push,
             "vars": mock_vars,
             "fetch_metadata": mock_fetch_metadata,
-            "choice_lookup": mock_choice_lookup,
         }
 
 
@@ -1790,9 +1809,9 @@ def expected_transformed_data() -> pd.DataFrame:
             "field_name": ["participant_full_name", "permission_collab"] * 2,
             "value": [
                 "Alec Holland",
-                Values.PID744.permission_collab["No"],
+                Values.PID625.permission_collab["No"],
                 "Abby Arcane",
-                Values.PID744.permission_collab["Yes"],
+                Values.PID625.permission_collab["Yes"],
             ],
         }
     )

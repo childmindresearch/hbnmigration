@@ -12,7 +12,12 @@ import requests
 from .._config_variables import curious_variables, redcap_variables
 from ..exceptions import NoData
 from ..from_curious.config import account_types, AccountType
-from ..utility_functions import initialize_logging, new_curious_account, redcap_api_push
+from ..utility_functions import (
+    DataCache,
+    initialize_logging,
+    new_curious_account,
+    redcap_api_push,
+)
 from .config import Fields, Values
 from .from_redcap import fetch_data
 
@@ -105,7 +110,10 @@ def format_redcap_data_for_curious(redcap_data: pd.DataFrame) -> pd.DataFrame:
 
 
 def send_to_curious(
-    df: pd.DataFrame, tokens: curious_variables.Tokens, applet_id: str
+    df: pd.DataFrame,
+    tokens: curious_variables.Tokens,
+    applet_id: str,
+    cache: DataCache | None = None,
 ) -> list[str]:
     """Send new participants to Curious."""
     failures: list[str] = []
@@ -116,6 +124,17 @@ def send_to_curious(
         {k: v for k, v in record.items() if v is not None}
         for record in df.to_dict(orient="records")
     ]:
+        secret_user_id = record.get("secretUserId", "")
+        mrn = str(int(secret_user_id.rstrip("_P"))) if secret_user_id else ""
+
+        # Check cache before sending
+        if cache and cache.is_processed(mrn):
+            logger.info(
+                "Skipping MRN %s (already sent to Curious)",
+                mrn,
+            )
+            continue
+
         try:
             logger.info(
                 "%s",
@@ -123,9 +142,12 @@ def send_to_curious(
                     tokens.endpoints.base_url, applet_id, record, headers
                 ),
             )
+            # Mark as processed in cache
+            if cache:
+                cache.mark_processed(mrn, metadata={"sent_to_curious": True})
         except requests.exceptions.RequestException:
             logger.exception("Error")
-            failures.append(str(int(record["secretUserId"].rstrip("_P"))))
+            failures.append(mrn)
     return failures
 
 
@@ -170,6 +192,9 @@ def update_redcap(
 
 def main() -> None:
     """Transfer data from REDCap to Curious."""
+    # Initialize cache for minute-by-minute transfers (TTL: 2 minutes)
+    cache = DataCache("redcap_to_curious", ttl_minutes=2)
+
     try:
         # get data from PID247
         data247 = fetch_data(
@@ -185,9 +210,34 @@ def main() -> None:
     except NoData:
         logger.info("No data to transfer from REDCap PID 247 to Curious.")
         return
+
     curious_data = format_redcap_data_for_curious(data247)
+
+    # Filter out records already sent to Curious
+    unprocessed_records = cache.get_unprocessed_records(
+        curious_data["secretUserId"].str.rstrip("_P").astype(int).astype(str).tolist()
+    )
+
+    if len(unprocessed_records) < len(curious_data):
+        logger.info(
+            "Skipping %d already-processed records (cache hit)",
+            len(curious_data) - len(unprocessed_records),
+        )
+        curious_data = curious_data[
+            curious_data["secretUserId"]
+            .str.rstrip("_P")
+            .astype(int)
+            .astype(str)
+            .isin(unprocessed_records)
+        ]
+
+    if curious_data.empty:
+        logger.info("All participants already sent to Curious")
+        return
+
     for account_type in account_types:
         _check_for_data_to_process(curious_data, account_type)
+
     curious_endpoints = curious_variables.Endpoints()
     curious_tokens = curious_variables.Tokens(
         curious_endpoints, curious_variables.Credentials.hbn_mindlogger
@@ -196,7 +246,18 @@ def main() -> None:
         curious_data,
         curious_tokens,
         curious_variables.applet_ids["Healthy Brain Network Questionnaires"],
+        cache,
     )
+
+    # Log cache statistics
+    cache_stats = cache.get_stats()
+    logger.info(
+        "Cache statistics: %d entries, file size: %d bytes, last activity: %s",
+        cache_stats["total_entries"],
+        cache_stats["file_size_bytes"],
+        cache_stats.get("last_activity", "never"),
+    )
+
     update_redcap(data247, curious_data, failures)
 
 

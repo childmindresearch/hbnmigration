@@ -5,6 +5,36 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 1.7.2
+
+### Fixed
+
+- Bug where MRNs & REDCap record IDs
+
+## 1.7.1
+
+### Added
+
+- Timeouts to minute-by-minute transfers to avoid hanging on connection failures.
+
+### Changed
+
+- Curious data and alerts now go to prod REDCap project even in dev mode.
+
+## 1.7.0
+
+### Changed
+
+- Moved project status to envrironment variable `$HBNMIGRATION_PROJECT_STATUS` with default `"prod"`
+- Log missing fields but push acceptable data in those cases
+- Log invalid categories separately
+- Optimize from day-by-day to minute-by-minute
+
+### Fixed
+
+- Don't create `{mrn}_P` records in REDCap.
+- Handle differences in websocket and HTTPS Curious alerts API responses.
+
 ## 1.6.1
 
 ### Added

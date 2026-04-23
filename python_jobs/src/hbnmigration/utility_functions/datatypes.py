@@ -25,6 +25,30 @@ class Credentials(ABC):
     """Class to store credentials."""
 
 
+class CuriousActivity(TypedDict):
+    """Curious activity."""
+
+    name: str
+    description: str
+    splashScreen: Any
+    image: str
+    showAllAtOnce: bool
+    isSkippable: bool
+    isReviewable: bool
+    responseIsEditable: bool
+    isHidden: Optional[bool]
+    scoresAndReports: dict
+    subscaleSetting: dict
+    reportIncludedItemName: Optional[bool]
+    performanceTaskType: Optional[str]
+    isPerformanceTask: bool
+    autoAssign: Optional[bool]
+    id: "CuriousId"
+    order: int
+    items: Any
+    createdAt: "Datetime"
+
+
 class CuriousAppletEncryption(TypedDict):
     """
     Encryption info for a Curious applet.
@@ -107,11 +131,10 @@ class CuriousEncryption(TypedDict):
     publicKey: str
 
 
-class CuriousAlert(TypedDict):
+class _CuriousAlert(TypedDict):
     """Base API response from Curious alerts endpoint."""
 
     id: CuriousId
-    secretId: NotRequired[str]
     isWatched: bool
     appletId: CuriousId
     appletName: str
@@ -127,6 +150,35 @@ class CuriousAlert(TypedDict):
     respondentId: CuriousId
     subjectId: CuriousId
     type: str
+
+
+class CuriousAlertHttps(_CuriousAlert):
+    """API response from Curious alerts HTTPS endpoint."""
+
+    secretId: str
+
+
+class CuriousAlertWebsocket(_CuriousAlert):
+    """API response from Curious alerts websocket endpoint."""
+
+    secret_id: str
+
+
+CuriousAlert = CuriousAlertHttps | CuriousAlertWebsocket
+
+
+class CuriousItem(TypedDict):
+    """Curious item."""
+
+    question: str | dict
+    responseType: str
+    responseValues: dict
+    config: dict
+    name: str
+    isHidden: Optional[bool]
+    conditionalLogic: Optional[dict]
+    allowEdit: Optional[bool]
+    id: CuriousId
 
 
 class Endpoints(ABC):
@@ -188,13 +240,7 @@ class FieldDescriptor(UserDict):
 
 InstrumentRowCount = dict[str, int | None]
 ProjectStatus = Literal["dev", "prod"]
-PROJECT_STATUS: ProjectStatus = "prod"
-"""
-Project status.
-
-- dev = HBN - Intake and Curious (TEMP for Transition) PID 744
-- prod = HBN - Operations and Data Collection PID 625
-"""
+ProjectStatuses: list[ProjectStatus] = ["dev", "prod"]
 
 
 class Results:
@@ -223,8 +269,10 @@ class Results:
 
         Usage
         -----
+        >>> from logging import getLogger
+        >>> from hbnmigration.utility_functions.cache import YESTERDAY
         >>> results = Results()
-        >>> logger.info(results.report, yesterday)
+        >>> getLogger(__name__).info(results.report, YESTERDAY)
         """
         if self.success:
             return f"{self.success} rows submitted to REDCap for %s."
