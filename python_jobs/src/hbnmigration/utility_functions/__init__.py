@@ -36,17 +36,19 @@ from .datatypes import (
     Endpoints,
     FieldDescriptor,
     InstrumentRowCount,
+    PROJECT_STATUS,
     ProjectStatus,
     Results,
     Tokens,
     ValueClass,
     ValueField,
 )
-from .logging import initialize_logging, setup_tsv_logger, TSVLoggedError
+from .logging import initialize_logging, setup_tsv_logger
 from .secrets import ImportWithFallback
 from .typescript import tsx
 
 __all__ = [
+    "PROJECT_STATUS",
     "ApiProtocol",
     "ApiProtocols",
     "CliOptions",
@@ -63,7 +65,6 @@ __all__ = [
     "InstrumentRowCount",
     "ProjectStatus",
     "Results",
-    "TSVLoggedError",
     "Tokens",
     "ValueClass",
     "ValueField",

@@ -18,7 +18,8 @@ from pyspark.sql import DataFrame as SparkDataFrame, SparkSession
 import pytz
 import requests
 
-from .logging import initialize_logging, setup_tsv_logger, TSVLoggedError
+from ..exceptions import TSVLoggedError
+from .logging import initialize_logging, setup_tsv_logger
 
 logger = initialize_logging()
 

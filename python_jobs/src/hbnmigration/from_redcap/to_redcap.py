@@ -2,7 +2,7 @@
 Transfer data from REDCap to REDCap.
 
 For each subject in PID 247, if `intake_ready` == 1:
-- push subject to PID 744, &
+- push subject to PID 744 / 625, &
 - set `indake_ready` = 2 in PID 247.
 """
 
@@ -10,12 +10,11 @@ import pandas as pd
 
 from .._config_variables import redcap_variables
 from ..exceptions import NoData
-from ..utility_functions import initialize_logging, redcap_api_push
+from ..utility_functions import initialize_logging, PROJECT_STATUS, redcap_api_push
 from .config import Fields, Values
 from .from_redcap import fetch_data
 
 Endpoints = redcap_variables.Endpoints()
-
 logger = initialize_logging(__name__)
 
 
@@ -165,7 +164,10 @@ def main() -> None:
         df_744.loc[decrement_mask, "value"] = decremented.astype(str)
         rows_imported_744 = redcap_api_push(
             df=df_744,
-            token=redcap_variables.Tokens.pid744,
+            token=getattr(
+                redcap_variables.Tokens,
+                "pid625" if PROJECT_STATUS == "prod" else "pid744",
+            ),
             url=Endpoints.base_url,
             headers=redcap_variables.headers,
         )
