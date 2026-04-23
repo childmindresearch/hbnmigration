@@ -120,4 +120,4 @@ def response_index_reverse_lookup(row: pd.Series) -> list[tuple[str, str, int | 
     return lookups
 
 
-__all__ = ["fetch_data"]
+__all__ = ["fetch_data", "response_index_reverse_lookup"]

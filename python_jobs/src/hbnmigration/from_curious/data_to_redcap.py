@@ -37,10 +37,12 @@ from ..utility_functions import (
     YESTERDAY,
 )
 from .utils import (
+    deduplicate_dataframe,
     get_alert_field_event,
     map_mrns_to_records,
     possible_alert_instruments,
     REDCAP_TOKEN,
+    STANDARD_FIELDS,
 )
 
 initialize_logging()
@@ -53,6 +55,313 @@ ENDPOINTS: dict[Literal["Curious", "REDCap"], Endpoints] = {
 """Initialized endpoints"""
 
 
+def _extract_field_names_from_outputs(outputs: list[NamedOutput]) -> set[str]:
+    """
+    Extract all unique field names from formatted outputs.
+
+    This identifies which fields need metadata for choice mapping.
+
+    Parameters
+    ----------
+    outputs
+        List of formatted outputs
+
+    Returns
+    -------
+    set[str]
+        Set of field names that end with _response, _index, or _score
+
+    """
+    all_fields = set()
+    for output in outputs:
+        df = output.output
+        # Get fields that might need choice mapping
+        for col in df.columns:
+            # Remove instrument prefix to get base field name
+            # e.g., "ysr_sr_1117_ysr_100_response" -> "ysr_sr_1117_ysr_100_response"
+            if col.endswith(("_response", "_index", "_score")):
+                all_fields.add(col)
+
+    return all_fields
+
+
+def _fetch_redcap_metadata_for_fields(field_names: set[str]) -> pl.DataFrame | None:
+    """
+    Fetch REDCap metadata for specific fields only.
+
+    This is more efficient than fetching all metadata when we only need
+    a subset of fields.
+
+    Parameters
+    ----------
+    field_names
+        Set of field names to fetch metadata for
+
+    Returns
+    -------
+    pl.DataFrame | None
+        REDCap metadata as polars DataFrame, or None if empty
+
+    """
+    if not field_names:
+        logger.warning("No field names provided for metadata fetch")
+        return None
+
+    logger.info("Fetching REDCap metadata for %d specific fields...", len(field_names))
+
+    # REDCap API requires fields as comma-separated string
+    fields_param = ",".join(sorted(field_names))
+
+    try:
+        metadata = fetch_api_data(
+            ENDPOINTS["REDCap"].base_url,
+            redcap_variables.headers,
+            {
+                "token": REDCAP_TOKEN,
+                "content": "metadata",
+                "format": "csv",
+                "fields": fields_param,
+            },
+        )
+
+        if metadata.empty:
+            logger.warning("No metadata returned for requested fields")
+            return None
+
+        # Convert to polars
+        redcap_metadata_pl = pl.from_pandas(metadata)
+
+        logger.info(
+            "Loaded REDCap metadata for %d fields (requested %d)",
+            len(redcap_metadata_pl),
+            len(field_names),
+        )
+
+        return redcap_metadata_pl
+
+    except Exception as e:
+        logger.warning("Error fetching field-specific metadata: %s", e)
+        logger.info("Falling back to full metadata fetch...")
+        return _fetch_redcap_metadata_for_formatting()
+
+
+def _fetch_redcap_metadata_for_formatting() -> pl.DataFrame | None:
+    """
+    Fetch all REDCap metadata for choice value mapping.
+
+    This is a fallback when field-specific fetching fails.
+
+    Returns
+    -------
+    pl.DataFrame | None
+        REDCap metadata as polars DataFrame, or None if empty
+
+    """
+    logger.info("Fetching all REDCap metadata for choice value mapping...")
+    all_instruments_metadata = fetch_api_data(
+        ENDPOINTS["REDCap"].base_url,
+        redcap_variables.headers,
+        {
+            "token": REDCAP_TOKEN,
+            "content": "metadata",
+            "format": "csv",
+        },
+    )
+
+    # Convert to polars for passing to formatter
+    redcap_metadata_pl = (
+        pl.from_pandas(all_instruments_metadata)
+        if not all_instruments_metadata.empty
+        else None
+    )
+
+    if redcap_metadata_pl is not None:
+        logger.info("Loaded REDCap metadata for %d fields", len(redcap_metadata_pl))
+
+    return redcap_metadata_pl
+
+
+def _filter_parent_records_for_account_created(df: pl.DataFrame) -> pl.DataFrame:
+    """
+    Strip _P suffix from record IDs for curious_account_created instrument.
+
+    Parameters
+    ----------
+    df
+        DataFrame with target_user_secret_id column
+
+    Returns
+    -------
+    pl.DataFrame
+        Filtered DataFrame with _P suffix removed from record IDs
+
+    """
+    with_p = df.filter(
+        pl.col("target_user_secret_id").cast(pl.Utf8).str.ends_with("_P")
+    )
+    without_p = df.filter(
+        ~pl.col("target_user_secret_id").cast(pl.Utf8).str.ends_with("_P")
+    )
+
+    if len(with_p) > 0:
+        # Strip _P suffix using string replacement
+        with_p = with_p.with_columns(
+            pl.col("target_user_secret_id")
+            .cast(pl.Utf8)
+            .str.replace(r"_P$", "")
+            .alias("target_user_secret_id")
+        )
+        logger.info(
+            "Stripped '_P' suffix from %d records in curious_account_created",
+            len(with_p),
+        )
+        return pl.concat([without_p, with_p])
+
+    return df
+
+
+def _filter_parent_records_from_instrument(
+    df: pl.DataFrame, instrument_name: str
+) -> pl.DataFrame:
+    """
+    Filter out records with _P suffix from regular instruments.
+
+    Parameters
+    ----------
+    df
+        DataFrame with target_user_secret_id column
+    instrument_name
+        Name of the instrument being processed
+
+    Returns
+    -------
+    pl.DataFrame
+        Filtered DataFrame without _P records
+
+    """
+    with_p = df.filter(
+        pl.col("target_user_secret_id").cast(pl.Utf8).str.ends_with("_P")
+    )
+    df_filtered = df.filter(
+        ~pl.col("target_user_secret_id").cast(pl.Utf8).str.ends_with("_P")
+    )
+
+    if len(with_p) > 0:
+        ignored_records = with_p["target_user_secret_id"].cast(pl.Utf8).to_list()
+        logger.info(
+            "Ignored %d records with '_P' suffix in %s: %s",
+            len(with_p),
+            instrument_name,
+            ", ".join(str(r) for r in ignored_records),
+        )
+
+    return df_filtered
+
+
+def _filter_by_target_user_secret_id(
+    df: pl.DataFrame, instrument_name: str
+) -> pl.DataFrame:
+    """
+    Filter parent records using target_user_secret_id column.
+
+    Parameters
+    ----------
+    df
+        DataFrame with target_user_secret_id column
+    instrument_name
+        Name of the instrument being processed
+
+    Returns
+    -------
+    pl.DataFrame
+        Filtered DataFrame
+
+    """
+    # Check if this is curious_account_created instrument
+    if instrument_name.startswith("curious_account_created"):
+        return _filter_parent_records_for_account_created(df)
+    return _filter_parent_records_from_instrument(df, instrument_name)
+
+
+def _filter_by_record_id_fallback(
+    df: pl.DataFrame, instrument_name: str
+) -> pl.DataFrame:
+    """
+    Filter parent records using record_id column as fallback.
+
+    Parameters
+    ----------
+    df
+        DataFrame with record_id column
+    instrument_name
+        Name of the instrument being processed
+
+    Returns
+    -------
+    pl.DataFrame
+        Filtered DataFrame
+
+    """
+    logger.warning(
+        "Instrument '%s' missing 'target_user_secret_id' column, "
+        "attempting fallback filter on 'record_id'",
+        instrument_name,
+    )
+
+    if "record_id" not in df.columns:
+        logger.error(
+            "Cannot filter parent records for '%s': "
+            "missing both 'target_user_secret_id' and 'record_id' columns",
+            instrument_name,
+        )
+        return df
+
+    with_p_records = df.filter(pl.col("record_id").cast(pl.Utf8).str.ends_with("_P"))
+    df_filtered = df.filter(~pl.col("record_id").cast(pl.Utf8).str.ends_with("_P"))
+
+    if len(with_p_records) > 0:
+        ignored_ids = with_p_records["record_id"].cast(pl.Utf8).to_list()
+        logger.warning(
+            "Filtered %d parent records by record_id in %s: %s",
+            len(with_p_records),
+            instrument_name,
+            ", ".join(str(r) for r in ignored_ids),
+        )
+
+    return df_filtered
+
+
+def _filter_parent_records(output: NamedOutput) -> NamedOutput:
+    """
+    Filter parent records (_P suffix) from output data.
+
+    For curious_account_created: strip _P from record ID
+    For other instruments: exclude records with _P suffix
+
+    Parameters
+    ----------
+    output
+        NamedOutput from formatter
+
+    Returns
+    -------
+    NamedOutput
+        Filtered output
+
+    """
+    df = output.output
+    instrument_name = output.name
+
+    # Try target_user_secret_id first
+    if "target_user_secret_id" in df.columns:
+        df_filtered = _filter_by_target_user_secret_id(df, instrument_name)
+    else:
+        # Fallback to record_id
+        df_filtered = _filter_by_record_id_fallback(df, instrument_name)
+
+    return NamedOutput(name=output.name, output=df_filtered)
+
+
 def format_for_redcap(
     curious_data_dir: Path,
 ) -> tuple[list[NamedOutput], InstrumentRowCount]:
@@ -60,107 +369,44 @@ def format_for_redcap(
     event_names = get_redcap_event_names(
         ENDPOINTS["REDCap"].base_url, redcap_variables.headers, {"token": REDCAP_TOKEN}
     )
-    # Create formatter with project name
-    formatter = RedcapImportFormat(project=event_names)
+
+    # First pass: format without metadata to see what fields we have
+    formatter_initial = RedcapImportFormat(project=event_names, redcap_metadata=None)
+
     # Process data
     try:
         ml_data = MindloggerData.create(curious_data_dir)
     except pl.exceptions.NoDataError:
         logger.info("No Curious data to export.")
         sys.exit(0)
-    outputs = formatter.produce(ml_data)
-    # Process records where target subject is a parent (_P suffix)
-    # For curious_account_created: strip _P from record ID
-    # For other instruments: ignore records with _P suffix
-    filtered_outputs = []
-    for output in outputs:
-        df = output.output
-        if "target_user_secret_id" in df.columns:
-            instrument_name = output.name
-            # Check if this is curious_account_created instrument
-            if instrument_name.startswith("curious_account_created"):
-                # For curious_account_created: strip _P from record ID
-                with_p = df.filter(
-                    pl.col("target_user_secret_id").cast(pl.Utf8).str.ends_with("_P")
-                )
-                without_p = df.filter(
-                    ~pl.col("target_user_secret_id").cast(pl.Utf8).str.ends_with("_P")
-                )
-                if len(with_p) > 0:
-                    # Strip _P suffix using string replacement
-                    with_p = with_p.with_columns(
-                        pl.col("target_user_secret_id")
-                        .cast(pl.Utf8)
-                        .str.replace(r"_P$", "")
-                        .alias("target_user_secret_id")
-                    )
-                    logger.info(
-                        "Stripped '_P' suffix from %d records in %s",
-                        len(with_p),
-                        instrument_name,
-                    )
-                    df_filtered = pl.concat([without_p, with_p])
-                else:
-                    df_filtered = df
-            else:
-                # For other instruments: filter out rows with _P suffix
-                with_p = df.filter(
-                    pl.col("target_user_secret_id").cast(pl.Utf8).str.ends_with("_P")
-                )
-                df_filtered = df.filter(
-                    ~pl.col("target_user_secret_id").cast(pl.Utf8).str.ends_with("_P")
-                )
-                if len(with_p) > 0:
-                    ignored_records = (
-                        with_p["target_user_secret_id"].cast(pl.Utf8).to_list()
-                    )
-                    logger.info(
-                        "Ignored %d records with '_P' suffix in %s: %s",
-                        len(with_p),
-                        instrument_name,
-                        ", ".join(str(r) for r in ignored_records),
-                    )
-            # Create new NamedOutput with processed data
-            filtered_outputs.append(NamedOutput(name=output.name, output=df_filtered))
-        else:
-            # No target_user_secret_id column - check record_id for _P suffix fallback
-            instrument_name = output.name
-            logger.warning(
-                "Instrument '%s' missing 'target_user_secret_id' column, "
-                "attempting fallback filter on 'record_id'",
-                instrument_name,
-            )
-            # Try to filter by record_id column if it exists
-            if "record_id" in df.columns:
-                with_p_records = df.filter(
-                    pl.col("record_id").cast(pl.Utf8).str.ends_with("_P")
-                )
-                df_filtered = df.filter(
-                    ~pl.col("record_id").cast(pl.Utf8).str.ends_with("_P")
-                )
-                if len(with_p_records) > 0:
-                    ignored_ids = with_p_records["record_id"].cast(pl.Utf8).to_list()
-                    logger.warning(
-                        "Filtered %d parent records by record_id in %s: %s",
-                        len(with_p_records),
-                        instrument_name,
-                        ", ".join(str(r) for r in ignored_ids),
-                    )
-                filtered_outputs.append(
-                    NamedOutput(name=output.name, output=df_filtered)
-                )
-            else:
-                # No suitable column found for _P filtering
-                logger.error(
-                    "Cannot filter parent records for '%s': "
-                    "missing both 'target_user_secret_id' and 'record_id' columns",
-                    instrument_name,
-                )
-                filtered_outputs.append(output)
+
+    # Get initial outputs to identify needed fields
+    initial_outputs = formatter_initial.produce(ml_data)
+
+    # Extract field names that need metadata
+    field_names = _extract_field_names_from_outputs(initial_outputs)
+
+    # Fetch metadata only for those specific fields
+    redcap_metadata_pl = _fetch_redcap_metadata_for_fields(field_names)
+
+    # Create formatter with metadata and re-process if we got metadata
+    if redcap_metadata_pl is not None:
+        formatter = RedcapImportFormat(
+            project=event_names, redcap_metadata=redcap_metadata_pl
+        )
+        outputs = formatter.produce(ml_data)
+    else:
+        # Use initial outputs if no metadata was fetched
+        outputs = initial_outputs
+
+    # Filter parent records from all outputs
+    filtered_outputs = [_filter_parent_records(output) for output in outputs]
+
     logger.info(
         "Data formatted for these instruments: %s",
         "".join([f"\n\t- {_.name[:-7]}" for _ in filtered_outputs]),
     )
+
     return filtered_outputs, formatter.get_instrument_row_counts()
 
 
@@ -189,7 +435,6 @@ def _validate_csv_structure(
     if "record_id" not in df_polars.columns:
         logger.debug("No record_id column in %s, skipping MRN validation", csv_name)
         return False, []
-
     # Get all data columns (excluding REDCap metadata columns)
     standard_fields = {
         "record_id",
@@ -198,11 +443,9 @@ def _validate_csv_structure(
         "redcap_repeat_instance",
     }
     data_fields = [col for col in df_polars.columns if col not in standard_fields]
-
     if not data_fields:
         logger.debug("No data fields found in %s", csv_name)
         return False, []
-
     return True, data_fields
 
 
@@ -230,12 +473,9 @@ def _prepare_mrn_lookup_data(
                     "redcap_event_name": row.get("redcap_event_name", ""),
                 }
             )
-
     if not temp_rows:
         return None, None
-
     prepared_df = pd.DataFrame(temp_rows)
-
     # Fetch existing REDCap data for these fields to get valid MRN mappings
     try:
         # Include 'mrn' field to ensure we get the MRN lookup
@@ -243,13 +483,10 @@ def _prepare_mrn_lookup_data(
         redcap_fields = fetch_data(
             REDCAP_TOKEN, str(FieldList(fields_to_fetch)), all_or_any="any"
         )
-
         if redcap_fields.empty:
             logger.debug("No existing REDCap data found for fields in %s", csv_name)
             return None, None
-
         return prepared_df, redcap_fields
-
     except Exception as e:
         logger.warning("Could not fetch REDCap data for MRN validation: %s", e)
         return None, None
@@ -272,28 +509,22 @@ def _apply_mrn_mapping(
     """
     try:
         _, mrn_lookup = map_mrns_to_records(prepared_df, redcap_fields)
-
         if not mrn_lookup:
             logger.debug("No MRN lookup data available for %s", csv_path.name)
             return False
-
         # Check if any MRNs need to be mapped
         original_records = set(df["record_id"].astype(str).unique())
         mappable_mrns = original_records & set(mrn_lookup.keys())
-
         if not mappable_mrns:
             logger.debug("No MRNs found that need mapping in %s", csv_path.name)
             return False
-
         # Apply the mapping
         df["record_id"] = (
             df["record_id"].astype(str).map(lambda x: mrn_lookup.get(str(x), x))
         )
-
         # Convert back to polars and save
         df_polars_updated = pl.from_pandas(df)
         df_polars_updated.write_csv(csv_path)
-
         logger.info(
             "Mapped %d MRNs to record IDs in %s (out of %d total records)",
             len(mappable_mrns),
@@ -301,7 +532,6 @@ def _apply_mrn_mapping(
             len(original_records),
         )
         return True
-
     except Exception as e:
         logger.warning("Error during MRN mapping for %s: %s", csv_path.name, e)
         return False
@@ -328,24 +558,19 @@ def validate_and_map_mrns(csv_path: Path) -> bool:
     """
     # Read the CSV with polars first to check structure
     df_polars = pl.read_csv(csv_path)
-
     # Validate CSV structure
     is_valid, data_fields = _validate_csv_structure(df_polars, csv_path.name)
     if not is_valid:
         return False
-
     logger.info("Validating MRN mapping for %s", csv_path.name)
-
     # Convert to pandas for compatibility with map_mrns_to_records
     df = df_polars.to_pandas()
-
     # Prepare lookup data
     prepared_df, redcap_fields = _prepare_mrn_lookup_data(
         df, data_fields, csv_path.name
     )
     if prepared_df is None or redcap_fields is None:
         return False
-
     # Apply MRN mapping
     return _apply_mrn_mapping(df, prepared_df, redcap_fields, csv_path)
 
@@ -698,28 +923,100 @@ def split_csv_by_fields(
     return valid_path, unfound_path
 
 
-def push_to_redcap(csv_path: Path, retry_on_field_error: bool = True) -> None:
+def validate_fields_against_metadata(
+    df: pd.DataFrame, metadata: pd.DataFrame, instrument_name: str
+) -> tuple[list[str], list[str]]:
     """
-    Push data to RedCap.
+    Validate dataframe columns against REDCap metadata.
+
+    Returns:
+        tuple: (valid_fields, invalid_fields)
+
+    """
+    # Get all valid field names from metadata
+    valid_fields = set(metadata["field_name"].tolist())
+
+    # Get fields from dataframe (excluding record_id and redcap_event_name)
+    df_fields = set(df.columns) - {"record_id", "redcap_event_name"}
+
+    # Find invalid fields
+    invalid_fields = [f for f in df_fields if f not in valid_fields]
+    valid_df_fields = [f for f in df_fields if f in valid_fields]
+
+    if invalid_fields:
+        logger.warning(
+            "Found %d invalid fields in %s before upload: %s",
+            len(invalid_fields),
+            instrument_name,
+            ", ".join(invalid_fields),
+        )
+
+    return valid_df_fields, invalid_fields
+
+
+def chunk_dataframe_by_columns(
+    df: pl.DataFrame,
+    max_columns: int = 100,
+    required_columns: list[str] | None = None,
+) -> list[pl.DataFrame]:
+    """
+    Split a DataFrame into chunks by columns to avoid API timeouts.
 
     Parameters
     ----------
-    csv_path : Path
+    df
+        DataFrame to chunk
+    max_columns
+        Maximum number of data columns per chunk (excluding required columns)
+    required_columns
+        Columns that must be in every chunk (e.g., record_id, event)
+
+    Returns
+    -------
+    list[pl.DataFrame]
+        List of DataFrames, each with required columns plus a subset of data columns
+
+    """
+    if required_columns is None:
+        required_columns = ["record_id", "redcap_event_name"]
+
+    # Identify required vs data columns
+    required_cols = [col for col in required_columns if col in df.columns]
+    data_cols = [col for col in df.columns if col not in required_cols]
+
+    # If total columns is manageable, return as-is
+    if len(df.columns) <= max_columns + len(required_cols):
+        return [df]
+
+    # Chunk the data columns
+    chunks = []
+    for i in range(0, len(data_cols), max_columns):
+        chunk_data_cols = data_cols[i : i + max_columns]
+        chunk_df = df.select(required_cols + chunk_data_cols)
+        chunks.append(chunk_df)
+        logger.debug(
+            "Created chunk %d with %d columns (%d data + %d required)",
+            len(chunks),
+            len(chunk_df.columns),
+            len(chunk_data_cols),
+            len(required_cols),
+        )
+
+    return chunks
+
+
+def _upload_csv_to_redcap(csv_path: Path, retry_on_field_error: bool = True) -> None:
+    """
+    Upload a single CSV file to REDCap.
+
+    Parameters
+    ----------
+    csv_path
         Path to CSV file to upload
-    retry_on_field_error : bool
+    retry_on_field_error
         If True, will retry with only valid fields if field error occurs
 
     """
-    if not csv_path.stat().st_size:
-        logger.info("Skipping empty file: %s", csv_path)
-        return
-
-    # Validate and map MRNs if needed before adding alert fields
-    validate_and_map_mrns(csv_path)
-
-    # Add alert fields if needed before pushing
-    add_alert_fields_if_needed(csv_path)
-
     with csv_path.open("r") as csv_content:
         data = {
             "token": REDCAP_TOKEN,
@@ -733,7 +1030,9 @@ def push_to_redcap(csv_path: Path, retry_on_field_error: bool = True) -> None:
             "returnContent": "count",
             "returnFormat": "csv",
         }
-        r = requests.post(ENDPOINTS["REDCap"].base_url, data=data)
+        r = requests.post(
+            ENDPOINTS["REDCap"].base_url, data=data, timeout=180
+        )  # 3 minute timeout
         if r.status_code != requests.codes["okay"]:
             logger.error("Bad Request")
             logger.error(r.text)
@@ -773,10 +1072,236 @@ def push_to_redcap(csv_path: Path, retry_on_field_error: bool = True) -> None:
                     # Retry with valid fields only
                     if valid_path != csv_path:
                         logger.info("Retrying upload with only valid fields...")
-                        push_to_redcap(valid_path, retry_on_field_error=False)
+                        _upload_csv_to_redcap(valid_path, retry_on_field_error=False)
                         return
             # If we get here, either it's not a field error or retry failed
             r.raise_for_status()
+
+
+def _get_required_columns(df: pl.DataFrame) -> list[str]:
+    """Extract required REDCap columns from dataframe."""
+    required_cols = ["record_id"]
+    for col in [
+        "redcap_event_name",
+        "redcap_repeat_instrument",
+        "redcap_repeat_instance",
+    ]:
+        if col in df.columns:
+            required_cols.append(col)
+    return required_cols
+
+
+def _validate_and_filter_fields(
+    df: pl.DataFrame,
+    csv_path: Path,
+    required_cols: list[str],
+) -> pl.DataFrame:
+    """
+    Validate fields against REDCap metadata and filter out invalid ones.
+
+    Returns
+    -------
+    pl.DataFrame
+        DataFrame with only valid fields
+
+    """
+    instrument_name = csv_path.stem
+
+    try:
+        metadata = fetch_api_data(
+            ENDPOINTS["REDCap"].base_url,
+            redcap_variables.headers,
+            {
+                "token": REDCAP_TOKEN,
+                "content": "metadata",
+                "format": "csv",
+            },
+        )
+
+        if metadata.empty:
+            logger.warning("Empty metadata returned, proceeding without validation")
+            return df
+
+        # Convert polars to pandas for validation
+        df_pandas = df.to_pandas()
+        valid_fields, invalid_fields = validate_fields_against_metadata(
+            df_pandas, metadata, instrument_name
+        )
+
+        if not invalid_fields:
+            return df
+
+        # Save unfound fields immediately
+        unfound_path = split_csv_by_fields(csv_path, invalid_fields)[1]
+        if unfound_path:
+            logger.warning(
+                "Pre-upload validation: saved %d unfound fields to %s",
+                len(invalid_fields),
+                unfound_path,
+            )
+
+        # Filter dataframe to only valid fields
+        valid_cols = required_cols + [
+            f for f in valid_fields if f in df.columns and f not in required_cols
+        ]
+        df_filtered = df.select(valid_cols)
+
+        logger.info(
+            "Proceeding with upload of %d valid columns (removed %d invalid)",
+            len(df_filtered.columns),
+            len(invalid_fields),
+        )
+        return df_filtered
+
+    except Exception as e:
+        logger.warning("Could not perform pre-upload validation: %s", e)
+        logger.info("Proceeding with upload anyway...")
+        return df
+
+
+def _upload_chunked_data(
+    df: pl.DataFrame,
+    csv_path: Path,
+    required_cols: list[str],
+    retry_on_field_error: bool,
+) -> None:
+    """Upload data in chunks to avoid timeouts."""
+    logger.info(
+        "Large dataset detected (%d columns), chunking into smaller uploads...",
+        len(df.columns),
+    )
+    chunks = chunk_dataframe_by_columns(
+        df, max_columns=100, required_columns=required_cols
+    )
+    logger.info("Split into %d chunks for upload", len(chunks))
+
+    for i, chunk in enumerate(chunks, 1):
+        chunk_path = csv_path.with_stem(f"{csv_path.stem}_chunk_{i}")
+        chunk.write_csv(chunk_path)
+        logger.info(
+            "Uploading chunk %d/%d (%d columns)...",
+            i,
+            len(chunks),
+            len(chunk.columns),
+        )
+        try:
+            _upload_csv_to_redcap(chunk_path, retry_on_field_error)
+            logger.info("Successfully uploaded chunk %d/%d", i, len(chunks))
+        finally:
+            if chunk_path.exists():
+                chunk_path.unlink()
+
+
+def push_to_redcap(
+    csv_path: Path,
+    retry_on_field_error: bool = True,
+    skip_deduplication: bool = False,
+) -> None:
+    """
+    Push data to REDCap with preprocessing, validation, and deduplication.
+
+    Parameters
+    ----------
+    csv_path : Path
+        Path to CSV file to upload
+    retry_on_field_error : bool
+        If True, will retry with only valid fields if field error occurs
+    skip_deduplication : bool
+        If True, skip deduplication (for testing)
+
+    """
+    if not csv_path.stat().st_size:
+        logger.info("Skipping empty file: %s", csv_path)
+        return
+
+    # Preprocessing
+    validate_and_map_mrns(csv_path)
+    add_alert_fields_if_needed(csv_path)
+
+    # Load and validate
+    df = pl.read_csv(csv_path)
+    required_cols = [col for col in STANDARD_FIELDS if col in df.columns]
+
+    # Pre-upload validation
+    instrument_name = csv_path.stem
+    try:
+        metadata = fetch_api_data(
+            ENDPOINTS["REDCap"].base_url,
+            redcap_variables.headers,
+            {"token": REDCAP_TOKEN, "content": "metadata", "format": "csv"},
+        )
+
+        if not metadata.empty:
+            df_pandas = df.to_pandas()
+            valid_fields, invalid_fields = validate_fields_against_metadata(
+                df_pandas, metadata, instrument_name
+            )
+
+            if invalid_fields:
+                unfound_path = split_csv_by_fields(csv_path, invalid_fields)[1]
+                if unfound_path:
+                    logger.warning(
+                        "Pre-upload: saved %d unfound fields to %s",
+                        len(invalid_fields),
+                        unfound_path,
+                    )
+
+                valid_cols = required_cols + [
+                    f
+                    for f in valid_fields
+                    if f in df.columns and f not in required_cols
+                ]
+                df = df.select(valid_cols)
+                logger.info(
+                    "Proceeding with %d valid columns (removed %d invalid)",
+                    len(df.columns),
+                    len(invalid_fields),
+                )
+    except Exception as e:
+        logger.warning("Could not perform pre-upload validation: %s", e)
+
+    # Deduplication (can be skipped for testing)
+    if not skip_deduplication:
+        df, _num_duplicates = deduplicate_dataframe(
+            df,
+            REDCAP_TOKEN,
+            ENDPOINTS["REDCap"].base_url,
+            redcap_variables.headers,
+            instrument_name,
+        )
+
+        if df.is_empty():
+            logger.info("All rows in %s are duplicates, skipping upload", csv_path.name)
+            return
+
+    # Upload (chunked or single)
+    if len(df.columns) > Config.COLUMN_CHUNK_SIZE:
+        logger.info("Large dataset (%d columns), chunking...", len(df.columns))
+        chunks = chunk_dataframe_by_columns(
+            df, max_columns=100, required_columns=required_cols
+        )
+        logger.info("Split into %d chunks", len(chunks))
+
+        for i, chunk in enumerate(chunks, 1):
+            chunk_path = csv_path.with_stem(f"{csv_path.stem}_chunk_{i}")
+            chunk.write_csv(chunk_path)
+            logger.info(
+                "Uploading chunk %d/%d (%d columns)...",
+                i,
+                len(chunks),
+                len(chunk.columns),
+            )
+
+            try:
+                _upload_csv_to_redcap(chunk_path, retry_on_field_error)
+                logger.info("Successfully uploaded chunk %d/%d", i, len(chunks))
+            finally:
+                if chunk_path.exists():
+                    chunk_path.unlink()
+    else:
+        # Write df back to CSV path before upload
+        df.write_csv(csv_path)
+        _upload_csv_to_redcap(csv_path, retry_on_field_error)
 
 
 def save_for_redcap(outputs: list[NamedOutput], redcap_data_dir: Path):
@@ -826,6 +1351,7 @@ def send_to_redcap(
         for instrument in redcap_path.iterdir()
         if instrument.stem.lower() in list(instruments)
     ]
+
     logger.info(
         "Ready to send to REDCap: %s",
         "".join([f"\n\t- {file.stem}" for file in to_send]),
@@ -897,7 +1423,10 @@ def main() -> None:
         curious_export_file = data_dir_paths["curious"] / "responses_curious.csv"
         request_json["output"] = str(curious_export_file)
         get_curious_data(request_json)
+
+        # format_for_redcap now handles the REDCap metadata mapping internally
         outputs, _instrument_row_count = format_for_redcap(data_dir_paths["curious"])
+
         instrument_row_count: dict[str, int] = {
             k: v for k, v in _instrument_row_count.items() if v is not None
         }

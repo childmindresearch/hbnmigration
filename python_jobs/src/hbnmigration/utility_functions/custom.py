@@ -20,7 +20,8 @@ import requests
 
 from ..exceptions import TSVLoggedError
 from .cache import YESTERDAY_DATE
-from .logging import initialize_logging, setup_tsv_logger
+from .logging import initialize_logging, log_invalid_fields, setup_tsv_logger
+from .teams import send_alert
 
 logger = initialize_logging()
 
@@ -88,6 +89,24 @@ def fetch_and_save_api_data(
         logger.info(
             "Failed to export data: %d - %s", response.status_code, response.text
         )
+
+
+def _redcap_project_info(url: str, token: str) -> tuple[str, str]:
+    """Given a token, get project title and PID."""
+    response = requests.post(
+        url,
+        {
+            "token": token,
+            "content": "project",
+            "format": "json",
+            "returnFormat": "json",
+        },
+    )
+    if response.status_code == requests.codes["okay"]:
+        result = response.json()
+        return result["project_title"], result["project_id"]
+    response.raise_for_status()
+    raise requests.HTTPError
 
 
 @overload
@@ -159,12 +178,23 @@ def _fetch_api_data(  # noqa: PLR0911
         invalid_fields_message = (
             'The following values in the parameter "fields" are not valid: '
         )
+        invalid_fields = [
+            _[1:-1]
+            for _ in response.text.split(invalid_fields_message, 1)[1].split(",")
+            if _
+        ]
+        new_invald_fields = log_invalid_fields(invalid_fields)
+        if new_invald_fields:
+            msg = "These fields from Curious don't exist in REDCap project"
+            if isinstance(data, dict):
+                project_title, pid = _redcap_project_info(url, data["token"])
+                msg = f"{msg} {project_title} (PID {pid})"
+            send_alert(
+                f"{msg}: {new_invald_fields}",
+                "Send webhook alerts to 🔴 MS Fabric - Failures",
+            )
         if capture_invalid_fields and invalid_fields_message in response.text:
-            return [
-                _[1:-1]
-                for _ in response.text.split(invalid_fields_message, 1)[1].split(",")
-                if _
-            ]
+            return invalid_fields
         # Return an empty dataframe when the status code is not 200
         return pd.DataFrame()
     except Exception as e:
@@ -235,7 +265,11 @@ def fetch_api_data1(
 ) -> Optional[pd.DataFrame | list[str]]: ...
 @overload
 def fetch_api_data1(
-    url: str, headers: dict, data: dict | str, *, capture_invalid_fields: Literal[False]
+    url: str,
+    headers: dict,
+    data: dict | str,
+    *,
+    capture_invalid_fields: Literal[False] = False,
 ) -> Optional[pd.DataFrame]: ...
 def fetch_api_data1(
     url: str, headers: dict, data: dict | str, *, capture_invalid_fields: bool = False

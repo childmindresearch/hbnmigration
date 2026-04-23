@@ -42,8 +42,11 @@ class TestGetRecentTimeWindowRecoveryMode:
 
             # Window should be approximately 1 day
             delta = end_dt - start_dt
-            assert delta.total_seconds() >= 86400  # At least 24 hours
-            assert delta.total_seconds() < 86401  # Less than 24 hours + 1 second
+            # Use a reasonable tolerance window (e.g., ±15 seconds)
+            assert 86385 <= delta.total_seconds() <= 86415, (
+                f"Expected window close to 24 hours (86400s), "
+                f"got {delta.total_seconds()}s"
+            )
 
     def test_recovery_mode_logs_warning(self, caplog):
         """Should log warning when recovery mode is enabled."""

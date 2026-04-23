@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 import pandas as pd
 import polars as pl
 import pytest
+import requests
 
 from hbnmigration.from_curious.data_to_redcap import (
     _determine_event_column,
@@ -15,6 +16,16 @@ from hbnmigration.from_curious.data_to_redcap import (
     validate_and_map_mrns,
 )
 from mindlogger_data_export.outputs import NamedOutput
+
+from .conftest import (
+    assert_push_failed_no_retry,
+    assert_push_retried_on_field_error,
+    assert_push_succeeded_no_retry,
+    assert_unfound_path_logged,
+    create_field_error_response,
+    create_mock_response,
+    setup_push_to_redcap_test,
+)
 
 # ============================================================================
 # Fixtures
@@ -873,113 +884,106 @@ def test_extract_unfound_fields_multiline_error():
 # ============================================================================
 
 
-@patch("hbnmigration.from_curious.data_to_redcap.requests.post")
-@patch("hbnmigration.from_curious.data_to_redcap.validate_and_map_mrns")
-@patch("hbnmigration.from_curious.data_to_redcap.add_alert_fields_if_needed")
+# test_data_to_redcap.py - Refactored tests
+
+
 def test_push_to_redcap_success_no_retry(
-    mock_add_alerts, mock_validate_mrns, mock_post, sample_csv_with_mixed_fields
+    mock_push_to_redcap_dependencies,
+    sample_csv_with_mixed_fields,
 ):
     """Test push_to_redcap succeeds without retry."""
     from hbnmigration.from_curious.data_to_redcap import push_to_redcap
 
-    mock_validate_mrns.return_value = False
-    mock_response = MagicMock()
-    mock_response.status_code = 200
-    mock_post.return_value = mock_response
-    push_to_redcap(sample_csv_with_mixed_fields)
-    assert mock_post.call_count == 1
-    assert mock_validate_mrns.called
-    assert mock_add_alerts.called
+    mocks = mock_push_to_redcap_dependencies
+    success_response = create_mock_response(requests.codes["okay"])
+
+    with setup_push_to_redcap_test(mocks, response_sequence=[success_response]):
+        push_to_redcap(sample_csv_with_mixed_fields)
+
+    assert_push_succeeded_no_retry(mocks)
 
 
-@patch("hbnmigration.from_curious.data_to_redcap.split_csv_by_fields")
-@patch("hbnmigration.from_curious.data_to_redcap.requests.post")
-@patch("hbnmigration.from_curious.data_to_redcap.validate_and_map_mrns")
-@patch("hbnmigration.from_curious.data_to_redcap.add_alert_fields_if_needed")
 def test_push_to_redcap_retries_on_field_error(
-    mock_add_alerts,
-    mock_validate_mrns,
-    mock_post,
-    mock_split,
+    mock_push_to_redcap_dependencies,
     sample_csv_with_mixed_fields,
     tmp_path,
     mock_config_log_root,
+    mock_config_column_chunk_size,
 ):
     """Test push_to_redcap retries after splitting on field error."""
     from hbnmigration.from_curious.data_to_redcap import push_to_redcap
 
-    mock_validate_mrns.return_value = False
-    mock_error_response = MagicMock()
-    mock_error_response.status_code = 400
-    mock_error_response.text = (
-        "ERROR: The following fields were not found in the project as real data fields:"
-        " unfound_field_1, unfound_field_2"
-    )
-    mock_success_response = MagicMock()
-    mock_success_response.status_code = 200
-    mock_post.side_effect = [mock_error_response, mock_success_response]
+    mocks = mock_push_to_redcap_dependencies
+
+    # Create responses
+    error_response = create_field_error_response(["unfound_field_1", "unfound_field_2"])
+    success_response = create_mock_response(requests.codes["okay"])
+
+    # Create split paths
     valid_path = tmp_path / "valid.csv"
     pl.DataFrame({"record_id": ["001"], "valid_field": ["a"]}).write_csv(valid_path)
     unfound_path = mock_config_log_root / "unfound_fields" / "unfound.csv"
-    mock_split.return_value = (valid_path, unfound_path)
-    push_to_redcap(sample_csv_with_mixed_fields)
-    assert mock_post.call_count == 2
-    assert mock_split.called
+
+    with setup_push_to_redcap_test(
+        mocks,
+        response_sequence=[error_response, success_response],
+        split_return=(valid_path, unfound_path),
+    ):
+        push_to_redcap(sample_csv_with_mixed_fields)
+
+    assert_push_retried_on_field_error(mocks)
 
 
-@patch("hbnmigration.from_curious.data_to_redcap.requests.post")
-@patch("hbnmigration.from_curious.data_to_redcap.validate_and_map_mrns")
-@patch("hbnmigration.from_curious.data_to_redcap.add_alert_fields_if_needed")
 def test_push_to_redcap_no_retry_on_other_errors(
-    mock_add_alerts, mock_validate_mrns, mock_post, sample_csv_with_mixed_fields
+    mock_push_to_redcap_dependencies,
+    sample_csv_with_mixed_fields,
 ):
     """Test push_to_redcap doesn't retry on non-field errors."""
     from hbnmigration.from_curious.data_to_redcap import push_to_redcap
 
-    mock_validate_mrns.return_value = False
-    mock_response = MagicMock()
-    mock_response.status_code = 401
-    mock_response.text = "Unauthorized"
-    mock_response.raise_for_status.side_effect = Exception("401 Unauthorized")
-    mock_post.return_value = mock_response
-    with pytest.raises(Exception):
-        push_to_redcap(sample_csv_with_mixed_fields)
-    assert mock_post.call_count == 1
+    mocks = mock_push_to_redcap_dependencies
+    error_response = create_mock_response(
+        requests.codes["unauthorized"],
+        "Unauthorized",
+        raise_on_status=Exception("401 Unauthorized"),
+    )
+
+    with setup_push_to_redcap_test(mocks, response_sequence=[error_response]):
+        with pytest.raises(Exception):
+            push_to_redcap(sample_csv_with_mixed_fields)
+
+    assert_push_failed_no_retry(mocks)
 
 
-@patch("hbnmigration.from_curious.data_to_redcap.split_csv_by_fields")
-@patch("hbnmigration.from_curious.data_to_redcap.requests.post")
-@patch("hbnmigration.from_curious.data_to_redcap.validate_and_map_mrns")
-@patch("hbnmigration.from_curious.data_to_redcap.add_alert_fields_if_needed")
 def test_push_to_redcap_logs_unfound_path(
-    mock_add_alerts,
-    mock_validate_mrns,
-    mock_post,
-    mock_split,
+    mock_push_to_redcap_dependencies,
     sample_csv_with_mixed_fields,
     mock_config_log_root,
     caplog,
+    mock_config_column_chunk_size,
 ):
     """Test push_to_redcap logs the unfound fields file path."""
     from hbnmigration.from_curious.data_to_redcap import push_to_redcap
 
-    mock_validate_mrns.return_value = False
-    mock_error_response = MagicMock()
-    mock_error_response.status_code = 400
-    mock_error_response.text = (
-        "ERROR: The following fields were not found in the project as real data fields:"
-        " unfound_field_1"
-    )
-    mock_success_response = MagicMock()
-    mock_success_response.status_code = 200
-    mock_post.side_effect = [mock_error_response, mock_success_response]
+    mocks = mock_push_to_redcap_dependencies
+
+    # Create responses
+    error_response = create_field_error_response(["unfound_field_1"])
+    success_response = create_mock_response(requests.codes["okay"])
+
+    # Create unfound path
     unfound_path = mock_config_log_root / "unfound_fields" / "test_20240101_120000.csv"
     unfound_path.parent.mkdir(parents=True, exist_ok=True)
     unfound_path.touch()
-    mock_split.return_value = (sample_csv_with_mixed_fields, unfound_path)
-    push_to_redcap(sample_csv_with_mixed_fields)
-    assert "Unfound fields data saved to:" in caplog.text
-    assert str(unfound_path) in caplog.text
+
+    with setup_push_to_redcap_test(
+        mocks,
+        response_sequence=[error_response, success_response],
+        split_return=(sample_csv_with_mixed_fields, unfound_path),
+    ):
+        push_to_redcap(sample_csv_with_mixed_fields)
+
+    assert_unfound_path_logged(caplog, unfound_path)
 
 
 @patch("hbnmigration.from_curious.data_to_redcap.validate_and_map_mrns")

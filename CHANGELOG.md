@@ -5,11 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## 1.7.2
+## 1.8.0
+
+### Added
+
+- Alerts to Microsoft Teams on certain failures.
+
+### Changed
+
+- Look up indices for options in REDCap instead of following `{Curious index} + 1` heuristic.
+- Check for duplicate data and skip those records when copying data from Curious to REDCap.
 
 ### Fixed
 
-- Bug where MRNs & REDCap record IDs
+- Bug where MRNs & REDCap record IDs didn't match in data from Curious to REDCap (using MRN as record ID).
 
 ## 1.7.1
 

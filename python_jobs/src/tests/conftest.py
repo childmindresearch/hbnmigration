@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 import tempfile
 from typing import Any, cast, ContextManager, TypedDict
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pandas as pd
 import polars as pl
@@ -537,6 +537,15 @@ def create_mock_invalid_status(
     exc = InvalidStatus(mock_response)
     exc.response = mock_response
     return exc
+
+
+@pytest.fixture
+def mock_config_column_chunk_size():
+    """Mock Config.COLUMN_CHUNK_SIZE to return an integer."""
+    with patch("hbnmigration.from_curious.data_to_redcap.Config") as mock_config:
+        mock_config.COLUMN_CHUNK_SIZE = 100
+        mock_config.LOG_ROOT = Path("/tmp/test_logs")
+        yield mock_config
 
 
 # ============================================================================
@@ -1561,6 +1570,9 @@ def sample_invitation_df() -> pl.DataFrame:
 # ============================================================================
 
 
+# conftest.py - Update patch_invitations_module
+
+
 @contextmanager
 def patch_invitations_module(
     **overrides: str,
@@ -1588,13 +1600,19 @@ def patch_invitations_module(
         "get_applet_encryption": f"{INVITATIONS_MOD}.get_applet_encryption",
         "decrypt_single": f"{INVITATIONS_MOD}.decrypt_single",
         "endpoints": f"{INVITATIONS_MOD}.Endpoints",
+        "pull_data_from_curious": f"{INVITATIONS_MOD}.pull_data_from_curious",
+        "check_activity_responses": f"{INVITATIONS_MOD}.check_activity_responses",
+        "curious_authenticate": f"{INVITATIONS_MOD}.curious_authenticate",
     }
     default_patches.update(overrides)
+
     with ExitStack() as stack:
         mocks = {
             name: stack.enter_context(patch(path))
             for name, path in default_patches.items()
         }
+
+        # Configure curious_variables
         cv = mocks["curious_variables"]
         cv.headers.return_value = {"Content-Type": "application/json"}
         cv.applet_ids = {"Healthy Brain Network Questionnaires": SAMPLE_APPLET_ID}
@@ -1606,6 +1624,8 @@ def patch_invitations_module(
         cv.AppletCredentials.hbn_mindlogger = {
             "Healthy Brain Network Questionnaires": {"applet_password": "secret"}
         }
+
+        # Configure endpoints
         ep = mocks["endpoints"]
         ep.Curious.invitation_statuses.return_value = (
             "https://curious.test/api/invitations"
@@ -1615,10 +1635,18 @@ def patch_invitations_module(
             "https://curious.test/api/answers"
         )
         ep.Redcap.base_url = DEFAULT_REDCAP_BASE_URL
+
+        # Configure redcap_variables
         rv = mocks["redcap_variables"]
         rv.headers = {"Content-Type": "application/x-www-form-urlencoded"}
-        rv.Tokens.pid744 = "token_744"
+        rv.Tokens.pid625 = "token_625"  # Changed from pid744
         rv.Endpoints.return_value.base_url = DEFAULT_REDCAP_BASE_URL
+
+        # Configure curious_authenticate
+        mock_auth_tokens = Mock()
+        mock_auth_tokens.access = "test_token"
+        mocks["curious_authenticate"].return_value = mock_auth_tokens
+
         yield mocks
 
 
@@ -1963,6 +1991,122 @@ def mock_main_workflow_deps(
 ) -> dict[str, Any]:
     """Set up dependencies for main workflow tests."""
     return {"vars": mock_redcap_variables, "excel_file": temp_excel_file}
+
+
+@pytest.fixture
+def mock_push_to_redcap_dependencies():
+    """Patch all common dependencies for push_to_redcap tests."""
+    with (
+        patch(
+            "hbnmigration.from_curious.data_to_redcap.deduplicate_dataframe"
+        ) as mock_dedupe,
+        patch(
+            "hbnmigration.from_curious.data_to_redcap.fetch_api_data"
+        ) as mock_fetch_api,
+        patch("hbnmigration.from_curious.data_to_redcap.requests.post") as mock_post,
+        patch(
+            "hbnmigration.from_curious.data_to_redcap.validate_and_map_mrns"
+        ) as mock_validate_mrns,
+        patch(
+            "hbnmigration.from_curious.data_to_redcap.add_alert_fields_if_needed"
+        ) as mock_add_alerts,
+        patch(
+            "hbnmigration.from_curious.data_to_redcap.split_csv_by_fields"
+        ) as mock_split,
+    ):
+        # Set common defaults
+        mock_validate_mrns.return_value = False
+        mock_fetch_api.return_value = pd.DataFrame()
+
+        # Default deduplication: no duplicates removed
+        def dedupe_side_effect(df, *args, **kwargs):
+            return df, 0
+
+        mock_dedupe.side_effect = dedupe_side_effect
+
+        yield {
+            "dedupe": mock_dedupe,
+            "fetch_api": mock_fetch_api,
+            "post": mock_post,
+            "validate_mrns": mock_validate_mrns,
+            "add_alerts": mock_add_alerts,
+            "split": mock_split,
+        }
+
+
+def create_mock_response(
+    status_code: int, text: str = "", raise_on_status: Exception | None = None
+) -> MagicMock:
+    """Create a mock HTTP response."""
+    mock_response = MagicMock()
+    mock_response.status_code = status_code
+    mock_response.text = text
+    if raise_on_status:
+        mock_response.raise_for_status.side_effect = raise_on_status
+    return mock_response
+
+
+def create_field_error_response(fields: list[str]) -> MagicMock:
+    """Create a mock response for field not found errors."""
+    error_text = (
+        "ERROR: The following fields were not found in the project as "
+        f"real data fields: {', '.join(fields)}"
+    )
+    return create_mock_response(requests.codes["bad"], error_text)
+
+
+@contextmanager
+def setup_push_to_redcap_test(
+    mocks: dict[str, MagicMock],
+    response_sequence: list[MagicMock] | None = None,
+    split_return: tuple[Path, Path | None] | None = None,
+) -> Generator[None, None, None]:
+    """
+    Context manager for setting up push_to_redcap test scenarios.
+
+    Parameters
+    ----------
+    mocks : dict[str, MagicMock]
+        Dictionary of mocks from mock_push_to_redcap_dependencies fixture
+    response_sequence : list[MagicMock] | None
+        Sequence of HTTP responses (for side_effect)
+    split_return : tuple[Path, Path | None] | None
+        Return value for split_csv_by_fields mock
+
+    """
+    if response_sequence:
+        if len(response_sequence) == 1:
+            mocks["post"].return_value = response_sequence[0]
+        else:
+            mocks["post"].side_effect = response_sequence
+
+    if split_return:
+        mocks["split"].return_value = split_return
+
+    yield
+
+
+def assert_push_succeeded_no_retry(mocks: dict[str, MagicMock]) -> None:
+    """Assert push succeeded without retry."""
+    assert mocks["post"].call_count == 1
+    assert mocks["dedupe"].call_count == 1
+
+
+def assert_push_retried_on_field_error(mocks: dict[str, MagicMock]) -> None:
+    """Assert push retried after field error."""
+    assert mocks["post"].call_count == 2
+    assert mocks["split"].called
+
+
+def assert_push_failed_no_retry(mocks: dict[str, MagicMock]) -> None:
+    """Assert push failed without retry."""
+    assert mocks["post"].call_count == 1
+
+
+def assert_unfound_path_logged(caplog: pytest.LogCaptureFixture, path: Path) -> None:
+    """Assert unfound fields path was logged."""
+    assert "Unfound fields data saved to:" in caplog.text
+    assert str(path) in caplog.text
 
 
 # ============================================================================

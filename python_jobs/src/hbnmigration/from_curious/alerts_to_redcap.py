@@ -1,3 +1,5 @@
+# alerts_to_redcap.py
+
 """Monitor Curious alerts and send them to REDCap."""
 
 import argparse
@@ -5,6 +7,7 @@ import asyncio
 from contextlib import asynccontextmanager
 import json
 import logging
+import re
 from typing import Any, AsyncIterator, cast, Optional
 
 from numpy import intersect1d
@@ -33,17 +36,20 @@ from .utils import (
     alert_websocket_to_https,
     call_curious_api,
     create_choice_lookup,
+    deduplicate_dataframe,
     fetch_alerts_metadata,
     map_mrns_to_records,
 )
 
 initialize_logging()
 logger = logging.getLogger(__name__)
+
 REDCAP_ENDPOINTS = redcap_variables.Endpoints()
 
 # ============================================================================
 # Constants
 # ============================================================================
+
 ALERT_FIELD_PATTERN = r"alerts_([^_]+(?:_[^_]+)?)_\d+"
 PID_625 = redcap_variables.Tokens.pid625
 
@@ -118,10 +124,8 @@ def parse_alert(alert: CuriousAlert) -> pd.DataFrame:
     Note: 'record', 'value', and 'redcap_event_name' columns need further processing.
     """
     columns = ["record", "field_name", "value", "redcap_event_name"]
-
     alert = alert_websocket_to_https(alert)
     answer, item = _parse_alert_message(alert["message"])
-    # item = get_item(tokens, alert["activityId"], alert["activityItemId"])
     fields: list[tuple[str, Any]] = [("mrn", alert["secretId"]), (item, answer)]
     data: list[tuple[str, str, Any, Optional[str]]] = [
         (alert["secretId"], field_name, field_value, None)
@@ -149,6 +153,72 @@ def toggle_alerts(result: pd.DataFrame) -> pd.DataFrame:
     return pd.concat([result, summary], ignore_index=True)
 
 
+def derive_instrument_name(result: pd.DataFrame) -> str:
+    """
+    Derive instrument name from alert field columns.
+
+    Looks for fields matching patterns like:
+    - alerts_{instrument}_{number}
+    - {instrument}_alerts
+
+    Parameters
+    ----------
+    result : pd.DataFrame
+        DataFrame containing alert field columns
+
+    Returns
+    -------
+    str
+        Instrument name (e.g., "ra_alerts_parent", "ra_alerts_child")
+        Defaults to "ra_alerts_parent" if no match found
+
+    """
+
+    def _normalize_instrument_name(instrument_part: str) -> str:
+        """Convert instrument part to standard naming convention."""
+        if "parent" in instrument_part or instrument_part.endswith("_p"):
+            return "ra_alerts_parent"
+        if "child" in instrument_part or instrument_part.endswith("_c"):
+            return "ra_alerts_child"
+        if instrument_part.startswith("ra_alerts"):
+            return instrument_part
+        return f"ra_alerts_{instrument_part}"
+
+    # Strategy 1: Check field_name column for alerts_instrument_number pattern
+    alert_field_pattern = r"alerts_([a-z_]+)_\d+"
+    for col in result.get("field_name", []):
+        if pd.notna(col):
+            match = re.search(alert_field_pattern, str(col))
+            if match:
+                return _normalize_instrument_name(match.group(1))
+
+    # Strategy 2: Check field_name column for instrument_alerts pattern
+    alerts_suffix_pattern = r"^([a-z_]+)_alerts$"
+    for col in result.get("field_name", []):
+        if pd.notna(col):
+            match = re.search(alerts_suffix_pattern, str(col))
+            if match:
+                return _normalize_instrument_name(match.group(1))
+
+    # Strategy 3: Check DataFrame column names as fallback
+    for col in result.columns:
+        if col.endswith("_alerts"):
+            instrument_part = col.replace("_alerts", "")
+            return _normalize_instrument_name(instrument_part)
+        if col.startswith("alerts_"):
+            parts = col.split("_")
+            if len(parts) >= 2:  # noqa: PLR2004
+                return _normalize_instrument_name(parts[1])
+
+    # Default fallback
+    default_fallback = "ra_alerts_parent"
+    logger.warning(
+        "Could not derive instrument name from columns, defaulting to '%s'",
+        default_fallback,
+    )
+    return default_fallback
+
+
 def process_alerts_for_redcap(
     redcap_alerts: pd.DataFrame, partial_redcap_landing: bool = False
 ) -> pd.DataFrame:
@@ -162,18 +232,23 @@ def process_alerts_for_redcap(
     4. Toggles alert flags
     """
     alert_fields = redcap_alerts["field_name"].unique()
+
     # Fetch metadata
     alerts_instrument = fetch_alerts_metadata(REDCAP_ENDPOINTS.base_url)
+
     # Filter fields if partial landing
     if partial_redcap_landing:
         alert_fields = intersect1d(
             alert_fields, alerts_instrument["field_name"].unique()
         )
+
     # Fetch existing REDCap data
     redcap_fields = fetch_data(PID_625, str(FieldList(alert_fields)), all_or_any="any")
+
     # Map MRNs to records
     result, mrn_lookup = map_mrns_to_records(redcap_alerts, redcap_fields)
-    # Map response values to indices
+
+    # Map response values to indices using generalized function
     choice_lookup = create_choice_lookup(alerts_instrument)
     result["lookup_key"] = list(
         zip(result["field_name"], result["value"].str.strip().str.lower())
@@ -188,7 +263,31 @@ def process_alerts_for_redcap(
 
 
 def push_alerts_to_redcap(result: pd.DataFrame) -> None:
-    """Push processed alerts to REDCap."""
+    """Push processed alerts to REDCap with deduplication."""
+    if result.empty:
+        logger.info("No alerts to push (empty DataFrame)")
+        return
+
+    # Derive instrument name from the alert data
+    instrument_name = derive_instrument_name(result)
+    logger.info("Derived instrument name: %s", instrument_name)
+
+    # Deduplicate before pushing
+    result, num_duplicates = deduplicate_dataframe(
+        result,
+        PID_625,
+        REDCAP_ENDPOINTS.base_url,
+        redcap_variables.headers,
+        instrument_name,
+    )
+
+    if result.empty:
+        logger.info("All alert rows are duplicates, skipping upload")
+        return
+
+    if num_duplicates > 0:
+        logger.info("Removed %d duplicate alert rows before push", num_duplicates)
+
     try:
         redcap_api_push(
             result,
@@ -226,15 +325,18 @@ def _process_single_alert(
     if alert.get("type") != "answer":
         logger.debug("Skipping non-answer message type: %s", alert.get("type"))
         return None
+
     # Parse and process
     redcap_alert = parse_alert(alert)
     if redcap_alert.empty:
         result = redcap_alert
     else:
         result = process_alerts_for_redcap(redcap_alert, partial_redcap_landing)
+
     if result.empty:
         logger.warning("No valid data to push for alert ID: %s", alert.get("id"))
         return None
+
     return result
 
 
@@ -385,7 +487,6 @@ def synchronous_main(partial_redcap_landing: bool = False) -> None:
     """Send Curious alerts to REDCap (synchronous version via REST API)."""
     # Initialize cache for minute-by-minute transfers (TTL: 2 minutes)
     cache = DataCache("curious_alerts_to_redcap", ttl_minutes=2)
-
     tokens = curious_authenticate()
     results = call_curious_api(
         tokens.endpoints.alerts, tokens, return_type=list[CuriousAlertHttps]
@@ -412,9 +513,9 @@ def synchronous_main(partial_redcap_landing: bool = False) -> None:
 
     # Parse and concatenate all new alerts
     redcap_alerts = pd.concat([parse_alert(alert) for alert in unprocessed_alerts])
-    # Process and push to REDCap
-    result = process_alerts_for_redcap(redcap_alerts, partial_redcap_landing)
 
+    # Process and push to REDCap (deduplication happens inside push_alerts_to_redcap)
+    result = process_alerts_for_redcap(redcap_alerts, partial_redcap_landing)
     push_alerts_to_redcap(result)
 
     # Mark alerts as processed in cache
@@ -452,6 +553,7 @@ def cli() -> None:
     parser.set_defaults(partial=False, synchronous=False)
     namespace = _SynchronousArgs()
     args = parser.parse_args(namespace=namespace)
+
     if args.synchronous:
         synchronous_main(args.partial)
     else:
