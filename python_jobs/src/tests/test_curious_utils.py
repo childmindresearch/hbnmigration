@@ -122,7 +122,7 @@ def test_fetch_api_data_returns_list_when_requested():
     """Test that fetch_api_data can return a list when specified."""
     with patch("hbnmigration.utility_functions.custom.requests.post") as mock_post:
         mock_response = Mock()
-        mock_response.status_code = 200
+        mock_response.status_code = requests.codes["okay"]
         # Use strings that won't be converted to int
         mock_response.text = "record,field1\nAAA,value1\nBBB,value2\n"
         mock_post.return_value = mock_response

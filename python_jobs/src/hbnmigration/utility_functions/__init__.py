@@ -1,6 +1,16 @@
 """Utility functions."""
 
-from .cache import DataCache, get_cache_dir, get_recent_time_window, YESTERDAY
+from .cache import (
+    add_cache_keys,
+    compute_content_hash,
+    compute_dataframe_hash,
+    create_composite_cache_key,
+    DataCache,
+    filter_by_cache,
+    get_recent_time_window,
+    log_cache_statistics,
+    YESTERDAY,
+)
 from .custom import (
     create_tempory_file,
     execute_vars_file,
@@ -26,6 +36,7 @@ from .datatypes import (
     ApiProtocol,
     ApiProtocols,
     CliOptions,
+    ColumnRenameMapping,
     Credentials,
     CuriousActivity,
     CuriousActivityInfo,
@@ -45,13 +56,14 @@ from .datatypes import (
     FieldDescriptor,
     InstrumentRowCount,
     ProjectStatus,
+    Record,
     Results,
     T,
     Tokens,
     ValueClass,
     ValueField,
 )
-from .logging import initialize_logging, setup_tsv_logger
+from .logging import initialize_logging, safe_record_for_log, setup_tsv_logger
 from .secrets import ImportWithFallback
 from .typescript import tsx
 
@@ -60,6 +72,7 @@ __all__ = [
     "ApiProtocol",
     "ApiProtocols",
     "CliOptions",
+    "ColumnRenameMapping",
     "Credentials",
     "CuriousActivity",
     "CuriousActivityInfo",
@@ -80,11 +93,16 @@ __all__ = [
     "ImportWithFallback",
     "InstrumentRowCount",
     "ProjectStatus",
+    "Record",
     "Results",
     "T",
     "Tokens",
     "ValueClass",
     "ValueField",
+    "add_cache_keys",
+    "compute_content_hash",
+    "compute_dataframe_hash",
+    "create_composite_cache_key",
     "create_tempory_file",
     "deprecated_module_level",
     "execute_vars_file",
@@ -93,12 +111,13 @@ __all__ = [
     "fetch_api_data1",
     "fetch_api_data2",
     "fetch_api_data3",
+    "filter_by_cache",
     "flat_to_eav",
-    "get_cache_dir",
     "get_mindlogger_token",
     "get_recent_time_window",
     "get_redcap_event_names",
     "initialize_logging",
+    "log_cache_statistics",
     "new_curious_account",
     "peek_into_dataframe",
     "peek_into_dataframe2",
@@ -106,6 +125,7 @@ __all__ = [
     "print_module_variables",
     "read_vars_file_as_module",
     "redcap_api_push",
+    "safe_record_for_log",
     "setup_tsv_logger",
     "today",
     "tsx",

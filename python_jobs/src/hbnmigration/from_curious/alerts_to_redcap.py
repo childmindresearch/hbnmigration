@@ -1,5 +1,3 @@
-# alerts_to_redcap.py
-
 """Monitor Curious alerts and send them to REDCap."""
 
 import argparse
@@ -24,11 +22,14 @@ from .._config_variables import curious_variables, redcap_variables
 from ..from_redcap.config import FieldList
 from ..from_redcap.from_redcap import fetch_data
 from ..utility_functions import (
+    compute_content_hash,
+    create_composite_cache_key,
     CuriousAlert,
     CuriousAlertHttps,
     CuriousAlertWebsocket,
     DataCache,
     initialize_logging,
+    log_cache_statistics,
     redcap_api_push,
 )
 from .config import curious_authenticate
@@ -71,6 +72,32 @@ class _SynchronousArgs(argparse.Namespace):
     synchronous: bool
     partial: bool
     max_reconnect_attempts: Optional[int]
+
+
+# ============================================================================
+# Cache Key Utilities
+# ============================================================================
+
+
+def create_alert_cache_key(alert_id: str, message: str) -> str:
+    """
+    Create a unique cache key for an alert.
+
+    Parameters
+    ----------
+    alert_id : str
+        Alert ID from Curious
+    message : str
+        Alert message content
+
+    Returns
+    -------
+    str
+        Composite cache key like "alert_123:abc456"
+
+    """
+    message_hash = compute_content_hash(message, length=8)
+    return create_composite_cache_key(alert_id, message_hash)
 
 
 # ============================================================================
@@ -146,6 +173,9 @@ def parse_alert(alert: CuriousAlert) -> pd.DataFrame:
 
 def toggle_alerts(result: pd.DataFrame) -> pd.DataFrame:
     """Add an `{instrument}_alerts` row for each relevant respondent + instrument."""
+    if result.empty:
+        return result
+
     respondent_instruments = result["field_name"].str.extract(
         ALERT_FIELD_PATTERN, expand=False
     )
@@ -386,7 +416,7 @@ async def websocket_listener(
 
 
 async def main_with_reconnect(
-    tokens: curious_variables.Tokens,
+    applet_name: str,
     uri: str,
     partial_redcap_landing: bool = False,
     max_attempts: Optional[int] = WS_MAX_RECONNECT_ATTEMPTS,
@@ -396,8 +426,8 @@ async def main_with_reconnect(
 
     Parameters
     ----------
-    tokens
-        Authentication tokens for WebSocket connection
+    applet_name
+        Name of applet to authenticate to
     uri
         WebSocket URI to connect to
     partial_redcap_landing
@@ -407,6 +437,8 @@ async def main_with_reconnect(
 
     """
     attempt = 0
+    tokens = curious_authenticate(applet_name)
+
     while max_attempts is None or attempt < max_attempts:
         try:
             if attempt > 0:
@@ -416,7 +448,6 @@ async def main_with_reconnect(
                     f" of {max_attempts}" if max_attempts else "",
                 )
             async with connect_to_websocket(tokens.access, uri) as websocket:
-                # Reset attempt counter on successful connection
                 if attempt > 0:
                     logger.info("Successfully reconnected to WebSocket")
                 attempt = 0
@@ -425,7 +456,7 @@ async def main_with_reconnect(
                 break
         except ConnectionClosedError:
             attempt += 1
-            if max_attempts and attempt >= max_attempts:
+            if max_attempts is not None and attempt >= max_attempts:
                 logger.exception("Max reconnection attempts reached. Exiting.")
                 raise
             logger.warning(
@@ -433,16 +464,19 @@ async def main_with_reconnect(
             )
             await asyncio.sleep(WS_RECONNECT_DELAY)
         except InvalidStatus as e:
-            # Authentication or server errors
-            logger.exception(
-                "WebSocket connection failed with status %s", e.response.status_code
-            )
-            if e.response.status_code == requests.codes["unauthorized"]:
-                logger.exception(
-                    "Authentication failed. Token may be invalid or expired."
-                )
+            status = e.response.status_code
+            logger.exception("WebSocket connection failed with status %s", status)
+            if status == requests.codes["unauthorized"]:
+                # ── Re-authenticate ──
+                logger.warning("Token expired or invalid. Re-authenticating...")
+                try:
+                    tokens = curious_authenticate(applet_name)
+                    logger.info("Re-authentication successful")
+                except Exception:
+                    logger.exception("Re-authentication failed. Exiting.")
+                    raise
             attempt += 1
-            if max_attempts and attempt >= max_attempts:
+            if max_attempts is not None and attempt >= max_attempts:
                 logger.exception("Max reconnection attempts reached. Exiting.")
                 raise
             await asyncio.sleep(WS_RECONNECT_DELAY)
@@ -483,10 +517,9 @@ async def main(
 
     """
     for applet_name in applet_names:
-        tokens = curious_authenticate(applet_name)
         endpoints = curious_variables.Endpoints(protocol="wss")
         await main_with_reconnect(
-            tokens=tokens,
+            applet_name=applet_name,
             uri=endpoints.alerts,
             partial_redcap_landing=partial_redcap_landing,
             max_attempts=max_attempts,
@@ -499,24 +532,28 @@ def synchronous_main(
     """Send Curious alerts to REDCap (synchronous version via REST API)."""
     # Initialize cache for minute-by-minute transfers (TTL: 2 minutes)
     cache = DataCache("curious_alerts_to_redcap", ttl_minutes=2)
+
     for applet_name in applet_names:
         tokens = curious_authenticate(applet_name)
         results = call_curious_api(
             tokens.endpoints.alerts, tokens, return_type=list[CuriousAlertHttps]
         )
 
-        # Filter out alerts already processed
-        unprocessed_alerts: list[CuriousAlertHttps] = []
+        # Filter out alerts already processed with composite keys
+        unprocessed_alerts: list[tuple[CuriousAlertHttps, str]] = []
         for alert in results:
             alert_id = alert.get("id", "")
-            # if not cache.is_processed(alert_id):
-            unprocessed_alerts.append(alert)
-            # else:
-            #     logger.debug("Skipping already-processed alert: %s", alert_id)
+            message = alert.get("message", "")
+            cache_key = create_alert_cache_key(alert_id, message)
+
+            if not cache.is_processed(cache_key):
+                unprocessed_alerts.append((alert, cache_key))
+            else:
+                logger.debug("Skipping already-processed alert: %s", cache_key)
 
         if not unprocessed_alerts:
             logger.info("All alerts already processed in cache.")
-            return
+            continue
 
         logger.info(
             "Processing %d new alerts (skipped %d cached)",
@@ -525,26 +562,26 @@ def synchronous_main(
         )
 
         # Parse and concatenate all new alerts
-        redcap_alerts = pd.concat([parse_alert(alert) for alert in unprocessed_alerts])
+        redcap_alerts = pd.concat(
+            [parse_alert(alert) for alert, _ in unprocessed_alerts]
+        )
 
         # Process and push to REDCap
-        # (deduplication happens inside push_alerts_to_redcap)
         result = process_alerts_for_redcap(redcap_alerts, partial_redcap_landing)
         push_alerts_to_redcap(result)
 
         # Mark alerts as processed in cache
-        for alert in unprocessed_alerts:
-            alert_id = alert.get("id", "")
-            cache.mark_processed(alert_id, metadata={"processed": True})
+        for alert, cache_key in unprocessed_alerts:
+            cache.mark_processed(
+                cache_key,
+                metadata={
+                    "alert_id": alert.get("id", ""),
+                    "processed": True,
+                },
+            )
 
         # Log cache statistics
-        cache_stats = cache.get_stats()
-        logger.info(
-            "Cache statistics: %d entries, file size: %d bytes, last activity: %s",
-            cache_stats["total_entries"],
-            cache_stats["file_size_bytes"],
-            cache_stats.get("last_activity", "never"),
-        )
+        log_cache_statistics(cache, logger)
 
 
 # ============================================================================
@@ -566,8 +603,10 @@ def cli() -> None:
         help="Maximum number of reconnection attempts (default: infinite)",
     )
     parser.set_defaults(partial=False, synchronous=False)
+
     namespace = _SynchronousArgs()
     args = parser.parse_args(namespace=namespace)
+
     applet_names = _prepare_applet_names(args.applet_names)
 
     if args.synchronous:

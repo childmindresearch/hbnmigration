@@ -1,0 +1,12 @@
+branch: main
+compact: true
+quiet: false
+
+# No AWS resources to scan - only local file generation
+framework:
+  - terraform
+
+output:
+  - cli
+
+soft-fail: false

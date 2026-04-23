@@ -28,11 +28,13 @@ repos:
     - id: terraform_tflint
       args:
       - --init
-      - --config=__GIT_WORKING_DIR__/.tflint.hcl
+      - --config=__GIT_WORKING_DIR__/infrastructure/tests/.tflint.hcl
       files: ^infrastructure/
     - id: terraform_validate
       files: ^infrastructure/
     - id: terraform_checkov
+      args:
+      - --args=--config-file __GIT_WORKING_DIR__/infrastructure/tests/.checkov.yaml
       files: ^infrastructure/
 - repo: https://github.com/DavidAnson/markdownlint-cli2
   rev: v0.22.0
@@ -44,7 +46,7 @@ repos:
     - id: uv-sort
       files: pyproject.toml
 - repo: https://github.com/astral-sh/uv-pre-commit
-  rev: "0.11.6"
+  rev: "0.11.7"
   hooks:
     - id: uv-lock
       files: ^python_jobs/pyproject\.toml$

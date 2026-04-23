@@ -1,0 +1,47 @@
+name: Terraform Tests
+on:
+  pull_request:
+    paths:
+      - 'infrastructure/**'
+  push:
+    branches:
+      - main
+      - fix-alerts-more
+    paths:
+      - 'infrastructure/**'
+jobs:
+  terraform-tests:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: infrastructure
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install testing tools
+        run: |
+          pip install checkov
+          curl -s https://raw.githubusercontent.com/terraform-linters/tflint/master/install_linux.sh | bash
+
+      - name: Make test script executable
+        run: chmod +x tests/test-terraform.sh
+
+      - name: Run tests
+        run: ./tests/test-terraform.sh
+
+      - name: Terraform Plan
+        run: |
+          terraform init -backend=false
+          terraform plan -no-color
+        continue-on-error: true

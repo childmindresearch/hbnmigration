@@ -15,7 +15,6 @@ import pytest
 import requests
 from websockets.exceptions import InvalidStatus
 
-from hbnmigration._config_variables.curious_variables import Tokens
 from hbnmigration.from_curious.alerts_to_redcap import (
     parse_alert,
     synchronous_main,
@@ -56,13 +55,9 @@ def isolated_cache(tmp_path: Path) -> Generator[None, None, None]:
     """Isolate cache directory per test to prevent cross-test pollution."""
     cache_dir = tmp_path / "cache"
     cache_dir.mkdir(parents=True, exist_ok=True)
-
     old_cache_dir = os.environ.get("HBNMIGRATION_CACHE_DIR")
     os.environ["HBNMIGRATION_CACHE_DIR"] = str(cache_dir)
-
     yield
-
-    # Restore original value
     if old_cache_dir is None:
         os.environ.pop("HBNMIGRATION_CACHE_DIR", None)
     else:
@@ -183,32 +178,27 @@ def create_redcap_eav_df(
     records: list[str] | None = None,
     field_names: list[str] | None = None,
     values: list[str] | None = None,
-    repeat_instruments: list[str] | None = None,
-    repeat_instances: list[Any] | None = None,
     event_names: list[str] | None = None,
 ) -> pd.DataFrame:
-    """Create REDCap EAV format DataFrames with flexible defaults."""
-    if not any([records, field_names, values]):
-        return pd.DataFrame(
-            {
-                "record": pd.Series([], dtype=str),
-                "field_name": pd.Series([], dtype=str),
-                "value": pd.Series([], dtype=str),
-                "redcap_repeat_instrument": pd.Series([], dtype=str),
-                "redcap_repeat_instance": pd.Series([], dtype=str),
-            }
-        )
-    length = len(records or field_names or values or [0])
-    data: dict[str, Any] = {
-        "record": records or [""] * length,
-        "field_name": field_names or [""] * length,
-        "value": values or [""] * length,
-        "redcap_repeat_instrument": repeat_instruments or [""] * length,
-        "redcap_repeat_instance": repeat_instances or [""] * length,
-    }
-    if event_names is not None:
-        data["redcap_event_name"] = event_names
-    return pd.DataFrame(data)
+    """Create a test EAV DataFrame similar to REDCap API output."""
+    if records is None:
+        records = []
+    if field_names is None:
+        field_names = []
+    if values is None:
+        values = []
+    if event_names is None:
+        event_names = ["enrollment_arm_1"] * len(records)
+    return pd.DataFrame(
+        {
+            "record": records,
+            "field_name": field_names,
+            "value": values,
+            "redcap_repeat_instrument": [""] * len(records),
+            "redcap_event_name": event_names,
+            "redcap_repeat_instance": [""] * len(records),
+        }
+    )
 
 
 def create_curious_participant_df(
@@ -455,48 +445,6 @@ def make_api_respondent(
     }
 
 
-def make_ml_data(**overrides: Any) -> CuriousDecryptedAnswer:
-    """
-    Build a minimal CuriousDecryptedAnswer with overrides.
-
-    Parameters
-    ----------
-    **overrides
-        Keys to override in the base dict.
-
-    Returns
-    -------
-    CuriousDecryptedAnswer
-
-    """
-    base: dict[str, Any] = {
-        "activityId": SAMPLE_ACTIVITY_ID,
-        "activityHistoryId": "hist1234-ab12-cd34-ef56-abcdef123456",
-        "answerId": "answ1234-ab12-cd34-ef56-abcdef123456",
-        "createdAt": "2024-06-01T12:00:00.000",
-        "endDatetime": "2024-06-01T12:05:00.000",
-        "flowHistoryId": None,
-        "id": "id001234-ab12-cd34-ef56-abcdef123456",
-        "identifier": None,
-        "itemIds": [],
-        "items": [],
-        "migratedData": None,
-        "reviewCount": {},
-        "sourceSubject": {},
-        "startDatetime": "2024-06-01T12:00:00.000",
-        "submitId": SAMPLE_SUBMIT_ID,
-        "subscaleSetting": None,
-        "version": "1.0.0",
-        "userPublicKey": "fake_public_key",
-        "answer": [],
-        "events": [],
-        "respondentSecretId": "00001_P",
-        "sourceSecretId": "00001_P",
-    }
-    base.update(overrides)
-    return cast(CuriousDecryptedAnswer, base)
-
-
 # ============================================================================
 # Mock Configuration Functions
 # ============================================================================
@@ -703,16 +651,6 @@ def assert_pushed_data_contains_value(
     assert expected_value in pushed_data["value"].values
 
 
-def assert_reconnect_called_with_tokens_and_uri(
-    mock_reconnect: Mock, tokens: Tokens, uri_fragment: str
-) -> None:
-    """Assert reconnect was called with expected token and URI."""
-    assert mock_reconnect.called
-    call_kwargs = mock_reconnect.call_args[1]
-    assert call_kwargs["tokens"] == tokens
-    assert uri_fragment in call_kwargs["uri"]
-
-
 def assert_reconnect_called_with_max_attempts(
     mock_reconnect: Mock, expected_attempts: int
 ) -> None:
@@ -856,9 +794,13 @@ def setup_reconnect_mocks(
                     new_callable=AsyncMock,
                 )
             ),
+            "auth": stack.enter_context(
+                patch("hbnmigration.from_curious.alerts_to_redcap.curious_authenticate")
+            ),
         }
         mock_websocket = AsyncMock()
         mocks["ws"].return_value.__aenter__.return_value = mock_websocket
+        mocks["auth"].return_value = create_mock_tokens_ws()
         if listener_side_effect is not None:
             mocks["listener"].side_effect = listener_side_effect
         yield mocks
@@ -972,7 +914,7 @@ def create_sync_main_test_setup(
     mock_alerts_dependencies: dict[str, Mock],
     alerts: list[CuriousAlert | dict[str, Any]],
     parse_returns: list[pd.DataFrame] | None,
-    status_code: int = 200,
+    status_code: int = requests.codes["okay"],
     metadata: pd.DataFrame | None = None,
 ) -> ContextManager[dict[str, Mock]]:
     """
@@ -1507,6 +1449,28 @@ def sample_redcap_context() -> dict[str, Any]:
     }
 
 
+def make_ml_data(
+    items: list[dict] | None = None,
+    item_ids: list[str] | None = None,
+    answer: list[dict] | None = None,
+) -> CuriousDecryptedAnswer:
+    """Create a minimal CuriousDecryptedAnswer for testing."""
+    return cast(
+        CuriousDecryptedAnswer,
+        {
+            "submitId": "submit1234-ab12-cd34-ef56-abcdef123456",
+            "version": "1.0.0",
+            "startDatetime": "2024-01-01T12:00:00.000Z",
+            "endDatetime": "2024-01-01T12:05:00.000Z",
+            "respondentSecretId": "resp_123",
+            "sourceSecretId": "resp_123",
+            "items": items or [],
+            "itemIds": item_ids or [],
+            "answer": answer or [],
+        },
+    )
+
+
 @pytest.fixture
 def sample_decrypted_answer() -> CuriousDecryptedAnswer:
     """
@@ -1516,7 +1480,7 @@ def sample_decrypted_answer() -> CuriousDecryptedAnswer:
     strptime with format ``%Y-%m-%dT%H:%M:%S%.f`` which does not parse 'Z'.
     """
     return make_ml_data(
-        itemIds=["item1234-ab12-cd34-ef56-abcdef123456"],
+        item_ids=["item1234-ab12-cd34-ef56-abcdef123456"],
         items=[
             {
                 "id": "item1234-ab12-cd34-ef56-abcdef123456",
@@ -1563,91 +1527,6 @@ def sample_invitation_df() -> pl.DataFrame:
             ],
         }
     )
-
-
-# ============================================================================
-# Curious Invitation Context Managers
-# ============================================================================
-
-
-# conftest.py - Update patch_invitations_module
-
-
-@contextmanager
-def patch_invitations_module(
-    **overrides: str,
-) -> Generator[dict[str, Mock], None, None]:
-    """
-    Patch common dependencies in the invitations_to_redcap module.
-
-    Parameters
-    ----------
-    **overrides
-        Additional or replacement patch paths keyed by mock name.
-
-    Yields
-    ------
-    dict[str, Mock]
-        Dictionary of mock objects keyed by name.
-
-    """
-    default_patches = {
-        "curious_variables": f"{INVITATIONS_MOD}.curious_variables",
-        "redcap_variables": f"{INVITATIONS_MOD}.redcap_variables",
-        "requests_get": f"{INVITATIONS_MOD}.requests.get",
-        "requests_post": f"{INVITATIONS_MOD}.requests.post",
-        "fetch_api_data": f"{INVITATIONS_MOD}.fetch_api_data",
-        "get_applet_encryption": f"{INVITATIONS_MOD}.get_applet_encryption",
-        "decrypt_single": f"{INVITATIONS_MOD}.decrypt_single",
-        "endpoints": f"{INVITATIONS_MOD}.Endpoints",
-        "pull_data_from_curious": f"{INVITATIONS_MOD}.pull_data_from_curious",
-        "check_activity_responses": f"{INVITATIONS_MOD}.check_activity_responses",
-        "curious_authenticate": f"{INVITATIONS_MOD}.curious_authenticate",
-    }
-    default_patches.update(overrides)
-
-    with ExitStack() as stack:
-        mocks = {
-            name: stack.enter_context(patch(path))
-            for name, path in default_patches.items()
-        }
-
-        # Configure curious_variables
-        cv = mocks["curious_variables"]
-        cv.headers.return_value = {"Content-Type": "application/json"}
-        cv.applet_ids = {"Healthy Brain Network Questionnaires": SAMPLE_APPLET_ID}
-        cv.activity_ids = {"Curious Account Created": SAMPLE_ACTIVITY_ID}
-        cv.owner_ids = {
-            "Healthy Brain Network (HBN)": "owner123-ab12-cd34-ef56-abcdef123456"
-        }
-        cv.Credentials.hbn_mindlogger = {"username": "u", "password": "p"}
-        cv.AppletCredentials.hbn_mindlogger = {
-            "Healthy Brain Network Questionnaires": {"applet_password": "secret"}
-        }
-
-        # Configure endpoints
-        ep = mocks["endpoints"]
-        ep.Curious.invitation_statuses.return_value = (
-            "https://curious.test/api/invitations"
-        )
-        ep.Curious.applet.return_value = "https://curious.test/api/applet"
-        ep.Curious.applet_activity_answers_list.return_value = (
-            "https://curious.test/api/answers"
-        )
-        ep.Redcap.base_url = DEFAULT_REDCAP_BASE_URL
-
-        # Configure redcap_variables
-        rv = mocks["redcap_variables"]
-        rv.headers = {"Content-Type": "application/x-www-form-urlencoded"}
-        rv.Tokens.pid625 = "token_625"  # Changed from pid744
-        rv.Endpoints.return_value.base_url = DEFAULT_REDCAP_BASE_URL
-
-        # Configure curious_authenticate
-        mock_auth_tokens = Mock()
-        mock_auth_tokens.access = "test_token"
-        mocks["curious_authenticate"].return_value = mock_auth_tokens
-
-        yield mocks
 
 
 # ============================================================================
@@ -2215,7 +2094,6 @@ def patched_main_workflow() -> Generator[dict[str, Mock], None, None]:
 def patch_redcap_transfer_module(
     fetch_return: Any = None,
     push_return: Any = None,
-    update_return: Any = None,
 ) -> Generator[dict[str, Mock], None, None]:
     """Context manager for patching REDCap transfer module dependencies."""
     with ExitStack() as stack:
@@ -2226,26 +2104,19 @@ def patch_redcap_transfer_module(
             "push": stack.enter_context(
                 patch("hbnmigration.from_redcap.to_redcap.redcap_api_push")
             ),
-            "update": stack.enter_context(
-                patch("hbnmigration.from_redcap.to_redcap.update_source")
-            ),
             "redcap_vars": stack.enter_context(
                 patch("hbnmigration.from_redcap.to_redcap.redcap_variables")
             ),
-            "endpoints": stack.enter_context(
-                patch("hbnmigration.from_redcap.to_redcap.Endpoints")
-            ),
         }
-        mocks["redcap_vars"].Tokens.pid744 = "token_744"
+        mocks["redcap_vars"].Tokens.return_value.pid625 = "token_625"
+        mocks["redcap_vars"].Tokens.pid625 = "token_625"
         mocks["redcap_vars"].Tokens.pid247 = "token_247"
         mocks["redcap_vars"].headers = {}
-        mocks["endpoints"].return_value.base_url = DEFAULT_REDCAP_BASE_URL
+        mocks["redcap_vars"].Endpoints.return_value.base_url = DEFAULT_REDCAP_BASE_URL
         if fetch_return is not None:
             mocks["fetch"].return_value = fetch_return
         if push_return is not None:
             mocks["push"].return_value = push_return
-        if update_return is not None:
-            mocks["update"].return_value = update_return
         yield mocks
 
 

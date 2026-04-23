@@ -1,34 +1,54 @@
 """
-Transfer data from REDCap to Curious.
+Transfer data from REDCap to Curious via webhook triggers.
 
-For each subject in PID 625, if `enrollment_complete` == 1,
+When `ready_to_send_to_curious` field is set to 1 in REDCap,
 prepares and copies the reviewed and approved participants by the RAs to Curious.
+
+Can also be run manually via CLI to process all pending records:
+    python -m hbnmigration.from_redcap.to_curious
 """
 
-from typing import Literal
+from typing import Annotated, Any, cast, Literal
 
+from fastapi import BackgroundTasks, FastAPI, Form, Request
+from fastapi.responses import JSONResponse
 import numpy as np
 import pandas as pd
+from pydantic import Field
 import requests
+import uvicorn
 
 from .._config_variables import curious_variables, redcap_variables
 from ..exceptions import NoData
 from ..from_curious.config import AccountType
 from ..utility_functions import (
-    DataCache,
     initialize_logging,
     new_curious_account,
     redcap_api_push,
+    safe_record_for_log,
 )
 from .config import Fields, Values
-from .from_redcap import fetch_data, get_responder_ids
+from .from_redcap import fetch_data, RedcapRecord
 
 logger = initialize_logging(__name__)
 
-INDIVIDUALS: list[Literal["child", "parent"]] = ["parent", "child"]
-
+Individual = Literal["child", "parent"]
+INDIVIDUALS: list[Individual] = ["parent", "child"]
 _REDCAP_TOKENS = redcap_variables.Tokens()
-_REDCAP_PID = 247
+_REDCAP_PID = 625
+
+app = FastAPI(
+    title="REDCap to Curious Migration Service",
+    description="Handles REDCap Data Entry Triggers for pushing data to Curious",
+)
+
+
+class RedcapTriggerPayload(RedcapRecord):
+    """Payload from REDCap Data Entry Trigger."""
+
+    ready_to_send_to_curious: str | None = Field(
+        default=None, alias="ready_to_send_to_curious"
+    )
 
 
 def _in_set(x: set | int | str, required_value: int | str = 1) -> bool:
@@ -51,6 +71,26 @@ def _check_for_data_to_process(df: pd.DataFrame, account_type: AccountType) -> N
         )
 
 
+def event_map(redcap_data: pd.DataFrame) -> dict[str, str]:
+    """
+    Build a mapping from `field_name` to `redcap_event_name`.
+
+    In a longitudinal REDCap project, each field belongs to a specific event.
+    This extracts that pairing from the fetched data.
+
+    Returns:
+        A dict of {field_name: redcap_event_name}.
+
+    """
+    return cast(
+        dict[str, str],
+        redcap_data[["field_name", "redcap_event_name"]]
+        .drop_duplicates()
+        .set_index("field_name")["redcap_event_name"]
+        .to_dict(),
+    )
+
+
 def _format_redcap_data_for_curious(
     redcap_data: pd.DataFrame, individual: Literal["child", "parent"]
 ) -> pd.DataFrame:
@@ -58,9 +98,8 @@ def _format_redcap_data_for_curious(
     record_set: set[int | str] = set()
     df_temp = pd.DataFrame(redcap_data[["record", "field_name", "value"]]).copy()
     df_temp["field_name"] = df_temp["field_name"].replace(
-        getattr(Fields.rename.redcap247_to_curious, individual)
+        getattr(Fields.rename.redcap_operations_to_curious, individual)
     )
-
     # Filter to relevant fields
     individual_fields: dict[str, int | str | None] = getattr(
         Fields.import_curious, individual
@@ -72,7 +111,6 @@ def _format_redcap_data_for_curious(
         .apply(lambda x: set(x) if len(x) > 1 else x.iloc[0])
         .reset_index()
     )
-
     # Pivot
     df_pivoted = df_temp.pivot(index="record", columns="field_name", values="value")
     record_set = {*record_set, *df_pivoted.index.tolist()}
@@ -80,34 +118,6 @@ def _format_redcap_data_for_curious(
     for field, default_value in individual_fields.items():
         if field not in df_pivoted.columns:
             df_pivoted[field] = default_value
-
-    # For parent, modify secretUserId column
-    if individual == "parent" and "secretUserId" in df_pivoted.columns:
-        _r_lookups = redcap_data.copy()
-        for responder in [
-            "responder",
-            "responder2",
-            "responder_adult1",
-            "responder_adult2",
-        ]:
-            _r_lookups["field_name"] = _r_lookups["field_name"].replace(
-                getattr(
-                    Fields.rename.redcap_consent_to_redcap_responder_tracking, responder
-                )
-            )
-        _responder_ids = get_responder_ids(_r_lookups)
-        df_pivoted["secretUserId"] = (
-            df_pivoted["email"]
-            .str.lower()
-            .replace(
-                dict(
-                    zip(
-                        _responder_ids["resp_email"].str.lower(),
-                        _responder_ids["record"],
-                    )
-                )
-            )
-        )
     df = df_pivoted.reset_index(drop=True)
     return df.where(pd.notna(df), np.nan)
 
@@ -127,13 +137,11 @@ def format_redcap_data_for_curious(
                 | curious_participant_data["child"]["parent_involvement"].isna()
             ]
         ).dropna(axis=1, how="all")
-
     # Now drop `parent_involvement` column before we push to Curious.
     curious_participant_data["child"] = curious_participant_data["child"].drop(
         columns=["parent_involvement", "adult_enrollment_form_complete"],
         errors="ignore",
     )
-
     # Pad `secretUserId` with leading zeros to make it 5 characters long
     curious_participant_data["child"]["secretUserId"] = (
         curious_participant_data["child"]["secretUserId"].astype(str).str.zfill(5)
@@ -145,28 +153,17 @@ def send_to_curious(
     df: pd.DataFrame,
     tokens: curious_variables.Tokens,
     applet_id: str,
-    cache: DataCache | None = None,
 ) -> list[str]:
-    """Send new participants to Curious."""
+    """Send new participants to Curious (no caching)."""
     failures: list[str] = []
     headers = curious_variables.headers(tokens.access)
-
-    # Loop through each REDCap transformed record and sent it to MindLogger
+    # Loop through each REDCap transformed record and send it to MindLogger
     for record in [
         {k: v for k, v in record.items() if v is not None}
         for record in df.to_dict(orient="records")
     ]:
         secret_user_id = record.get("secretUserId", "")
         mrn = stringify_secret_user_id(secret_user_id) if secret_user_id else ""
-
-        # Check cache before sending
-        if cache and cache.is_processed(mrn):
-            logger.info(
-                "Skipping MRN %s (already sent to Curious)",
-                mrn,
-            )
-            continue
-
         try:
             logger.info(
                 "%s",
@@ -174,11 +171,8 @@ def send_to_curious(
                     tokens.endpoints.base_url, applet_id, record, headers
                 ),
             )
-            # Mark as processed in cache
-            if cache:
-                cache.mark_processed(mrn, metadata={"sent_to_curious": True})
         except requests.exceptions.RequestException:
-            logger.exception("Error")
+            logger.exception("Error sending MRN %s to Curious", mrn)
             failures.append(mrn)
     return failures
 
@@ -194,13 +188,17 @@ def stringify_secret_user_id(secret_user_id: int | str) -> str:
 def update_redcap(
     redcap_df: pd.DataFrame, curious_df: pd.DataFrame, failures: list[str]
 ) -> None:
-    """Update records in REDCap."""
-    # get updated records
+    """
+    Update records in REDCap.
+
+    Uses the field_name → redcap_event_name mapping from the original data so
+    that the enrollment_complete update is written to the correct event in PID 625.
+    """
+    # Get updated records
     records = [stringify_secret_user_id(x) for x in curious_df["secretUserId"]]
     df_update_redcap = redcap_df.query(
         f'field_name == "mrn" and value in {records}'
     ).copy()[["record", "field_name", "value"]]
-
     # Set updated `enrollment_complete`
     df_update_redcap["field_name"] = "enrollment_complete"
     df_update_redcap["value"] = Values.PID625.enrollment_complete[
@@ -211,11 +209,22 @@ def update_redcap(
             (redcap_df["field_name"] == "mrn") & (~redcap_df["value"].isin(failures))
         ]["record"]
     )
-    df_update_redcap = df_update_redcap[(df_update_redcap["record"].isin(successes))]
-
+    df_update_redcap = df_update_redcap[df_update_redcap["record"].isin(successes)]
+    # Look up the correct event for enrollment_complete
+    enrollment_event = event_map(redcap_df).get("enrollment_complete")
+    if enrollment_event is None:
+        logger.error(
+            "Could not determine redcap_event_name for 'enrollment_complete'. "
+            "Skipping REDCap update."
+        )
+        return
+    df_update_redcap["redcap_event_name"] = enrollment_event
+    if df_update_redcap.empty:
+        logger.info("No REDCap records to update.")
+        return
     try:
         rows_updated = redcap_api_push(
-            df=df_update_redcap,
+            df=df_update_redcap[["record", "redcap_event_name", "field_name", "value"]],
             token=_REDCAP_TOKENS.pid625,
             url=redcap_variables.Endpoints().base_url,
             headers=redcap_variables.headers,
@@ -228,107 +237,358 @@ def update_redcap(
         raise
 
 
-def main() -> None:
-    """Transfer data from REDCap to Curious."""
-    # Initialize cache for minute-by-minute transfers (TTL: 2 minutes)
-    cache = DataCache("redcap_to_curious", ttl_minutes=2)
+def clear_ready_flag(record_id: str) -> None:
+    """
+    Clear the ready-to-send flag after successful push.
 
+    Args:
+        record_id: The record ID to update.
+
+    """
     try:
-        # get triggers from PID625
-        data625 = fetch_data(
+        data = fetch_data(
             _REDCAP_TOKENS.pid625,
-            "mrn",
-            Values.PID625.enrollment_complete.filter_logic("Ready to Send to Curious"),
+            "ready_to_send_to_curious",
+            filter_logic=f"[record_id] = '{record_id}'",
         )
-        mrn_filter_logic = " OR ".join([f"[mrn] = '{mrn}'" for mrn in data625["value"]])
-        # get data from PID247
-        data247 = fetch_data(
-            _REDCAP_TOKENS.pid247,
-            str(Fields.export_247.for_curious),
-            mrn_filter_logic,
-        )
-        if data247.empty:
-            logger.info(
-                "REDCap PID 247: No participants marked 'Ready to Send to Curious'."
+        if data.empty:
+            logger.warning("Could not find record %s to clear flag", record_id)
+            return
+        event = event_map(data).get("ready_to_send_to_curious")
+        if event is None:
+            logger.error(
+                "Could not determine redcap_event_name for "
+                "'ready_to_send_to_curious'. "
+                "Skipping flag clear for record %s.",
+                record_id,
             )
-            raise NoData
-    except NoData:
-        logger.info("No data to transfer from REDCap PID 247 to Curious.")
-        return
-
-    curious_data = format_redcap_data_for_curious(data247)
-
-    if curious_data["child"].empty and curious_data["parent"].empty:
-        logger.info("All participants already sent to Curious")
-        return
-
-    curious_endpoints = curious_variables.Endpoints()
-    curious_credentials = curious_variables.AppletCredentials()
-    failures = [
-        *push_child_data(
-            curious_data["child"], curious_endpoints, curious_credentials, cache
-        ),
-        *push_parent_data(curious_data, curious_endpoints, curious_credentials, cache),
-    ]
-
-    # Log cache statistics
-    cache_stats = cache.get_stats()
-    logger.info(
-        "Cache statistics: %d entries, file size: %d bytes, last activity: %s",
-        cache_stats["total_entries"],
-        cache_stats["file_size_bytes"],
-        cache_stats.get("last_activity", "never"),
-    )
-
-    update_redcap(data247, curious_data["child"], failures)
+            return
+        update_data = pd.DataFrame(
+            [
+                {
+                    "record": record_id,
+                    "redcap_event_name": event,
+                    "field_name": "ready_to_send_to_curious",
+                    "value": "0",
+                }
+            ]
+        )
+        redcap_api_push(
+            df=update_data,
+            token=_REDCAP_TOKENS.pid625,
+            url=redcap_variables.Endpoints().base_url,
+            headers=redcap_variables.headers,
+        )
+        logger.info("Cleared ready flag for record %s", record_id)
+    except Exception:
+        logger.exception("Error clearing ready flag for record %s", record_id)
 
 
 def push_child_data(
-    curious_data: pd.DataFrame,
+    child_data: pd.DataFrame,
     curious_endpoints: curious_variables.Endpoints,
     curious_credentials: curious_variables.AppletCredentials,
-    cache: DataCache,
 ) -> list[str]:
-    """Push parent data to Curious."""
+    """
+    Push child (full) data to the child Curious applet.
+
+    Args:
+        child_data: Child DataFrame with ``accountType`` already set.
+        curious_endpoints: Curious API endpoints.
+        curious_credentials: Curious applet credentials.
+
+    Returns:
+        List of MRNs that failed to send.
+
+    """
     applet_name = "CHILD-Healthy Brain Network Questionnaires"
     curious_tokens = curious_variables.Tokens(
         curious_endpoints, curious_credentials[applet_name]
     )
-    child_data = curious_data.copy()
-    child_data["accountType"] = "full"
     return send_to_curious(
         child_data,
         curious_tokens,
         curious_variables.applets[applet_name].applet_id,
-        cache,
     )
 
 
 def push_parent_data(
-    curious_data: dict[Literal["child", "parent"], pd.DataFrame],
+    child_data_limited: pd.DataFrame,
+    parent_data: pd.DataFrame,
     curious_endpoints: curious_variables.Endpoints,
     curious_credentials: curious_variables.AppletCredentials,
-    cache: DataCache,
 ) -> list[str]:
-    """Push parent data to Curious."""
+    """
+    Push parent (full) and child (limited) data to the parent Curious applet.
+
+    Args:
+        child_data_limited: Child DataFrame with ``accountType`` set to
+            ``"limited"``.
+        parent_data: Parent DataFrame with ``accountType`` set to ``"full"``.
+        curious_endpoints: Curious API endpoints.
+        curious_credentials: Curious applet credentials.
+
+    Returns:
+        List of MRNs that failed to send.
+
+    """
     applet_name = "Healthy Brain Network Questionnaires"
     curious_tokens = curious_variables.Tokens(
         curious_endpoints, curious_credentials[applet_name]
     )
+    applet_id = curious_variables.applets[applet_name].applet_id
     return [
-        *send_to_curious(
-            curious_data["child"],
-            curious_tokens,
-            curious_variables.applets[applet_name].applet_id,
-            cache,
-        ),
-        *send_to_curious(
-            curious_data["parent"],
-            curious_tokens,
-            curious_variables.applets[applet_name].applet_id,
-            cache,
+        *send_to_curious(child_data_limited, curious_tokens, applet_id),
+        *send_to_curious(parent_data, curious_tokens, applet_id),
+    ]
+
+
+def _prepare_curious_data(
+    curious_data: dict[Literal["child", "parent"], pd.DataFrame],
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """
+    Prepare DataFrames with ``accountType`` set for each destination.
+
+    Args:
+        curious_data: Formatted child and parent DataFrames from
+            :func:`format_redcap_data_for_curious`.
+
+    Returns:
+        A tuple of (child_full, child_limited, parent_full).
+
+    """
+    child_full = curious_data["child"].copy()
+    child_full["accountType"] = "full"
+
+    child_limited = curious_data["child"].copy()
+    child_limited["accountType"] = "limited"
+
+    parent_full = curious_data["parent"].copy()
+    parent_full["accountType"] = "full"
+
+    return child_full, child_limited, parent_full
+
+
+def _push_to_curious(
+    data_operations: pd.DataFrame,
+    curious_data: dict[Literal["child", "parent"], pd.DataFrame],
+) -> list[str]:
+    """
+    Validate, push, and update REDCap for a batch of formatted records.
+
+    Args:
+        data_operations: Raw REDCap export data (used for the REDCap update).
+        curious_data: Formatted child and parent DataFrames from
+            :func:`format_redcap_data_for_curious`.
+
+    Returns:
+        List of MRNs that failed to send.
+
+    """
+    child_full, child_limited, parent_full = _prepare_curious_data(curious_data)
+    _check_for_data_to_process(child_full, "full")
+    _check_for_data_to_process(child_limited, "limited")
+    _check_for_data_to_process(parent_full, "full")
+
+    curious_endpoints = curious_variables.Endpoints()
+    curious_credentials = curious_variables.AppletCredentials()
+    failures = [
+        *push_child_data(child_full, curious_endpoints, curious_credentials),
+        *push_parent_data(
+            child_limited, parent_full, curious_endpoints, curious_credentials
         ),
     ]
+    update_redcap(data_operations, curious_data["child"], failures)
+    return failures
+
+
+def process_record_for_curious(record_id: str) -> dict[str, Any]:
+    """
+    Process a single record triggered by REDCap webhook.
+
+    Args:
+        record_id: The record ID from the trigger.
+
+    Returns:
+        Dictionary with status and message.
+
+    """
+    try:
+        logger.info("Processing record %s for Curious push", record_id)
+        data_operations = fetch_data(
+            _REDCAP_TOKENS.pid625,
+            str(Fields.export_operations.for_curious),
+            filter_logic=f"[record_id] = '{record_id}'",
+        )
+        if data_operations.empty:
+            logger.warning("No data found for record %s", record_id)
+            return {
+                "status": "error",
+                "record_id": record_id,
+                "message": "No data found in REDCap",
+            }
+
+        curious_data = format_redcap_data_for_curious(data_operations)
+        if curious_data["child"].empty and curious_data["parent"].empty:
+            logger.info("No processable data for record %s", record_id)
+            return {
+                "status": "error",
+                "record_id": record_id,
+                "message": "No processable data after formatting",
+            }
+
+        failures = _push_to_curious(data_operations, curious_data)
+        clear_ready_flag(record_id)
+
+        if failures:
+            return {
+                "status": "partial",
+                "record_id": record_id,
+                "message": f"Processed with {len(failures)} failure(s)",
+                "failures": failures,
+            }
+        return {
+            "status": "success",
+            "record_id": record_id,
+            "message": "Successfully pushed to Curious",
+        }
+    except Exception as e:
+        logger.exception("Error processing record %s for Curious", record_id)
+        return {
+            "status": "error",
+            "record_id": record_id,
+            "message": str(e),
+        }
+
+
+# ---------------------------------------------------------------------------
+# Webhook endpoints
+# ---------------------------------------------------------------------------
+
+
+@app.get("/")
+async def root() -> dict[str, str]:
+    """Root endpoint."""
+    return {"message": "REDCap to Curious Migration Service"}
+
+
+@app.get("/health")
+async def health() -> dict[str, str]:
+    """Health check endpoint."""
+    return {"status": "healthy"}
+
+
+@app.post("/webhook/redcap-to-curious")
+async def redcap_to_curious_webhook(
+    background_tasks: BackgroundTasks,
+    # project_id: Annotated[int, Form()],
+    instrument: Annotated[str, Form()],
+    record: Annotated[str, Form()],
+    # redcap_event_name: Annotated[str | None, Form()] = None,
+    # redcap_repeat_instance: Annotated[int | None, Form()] = None,
+    # redcap_repeat_instrument: Annotated[str | None, Form()] = None,
+    # redcap_data_access_group: Annotated[str | None, Form()] = None,
+    # redcap_url: Annotated[str | None, Form()] = None,
+    # project_url: Annotated[str | None, Form()] = None,
+    # username: Annotated[str | None, Form()] = None,
+    ready_to_send_to_curious: Annotated[str | None, Form()] = None,
+) -> dict[str, Any]:
+    """
+    Handle REDCap Data Entry Trigger for Curious updates.
+
+    This endpoint should be configured in REDCap as a Data Entry Trigger.
+    When the ``ready_to_send_to_curious`` field is set to ``1``, REDCap
+    will POST to this endpoint.
+
+    Configuration in REDCap:
+
+    1. Go to Project Setup → Additional Customizations
+    2. Enable "Data Entry Trigger"
+    3. Set URL to: ``https://your-domain.com/webhook/redcap-to-curious``
+
+    """
+    safe_record = safe_record_for_log(record)
+    logger.info(
+        "Received REDCap trigger for record %s (instrument: %s)",
+        safe_record,
+        safe_record_for_log(instrument),
+    )
+    if ready_to_send_to_curious != "1":
+        logger.debug("Ready flag not set for record %s, ignoring trigger", safe_record)
+        return {
+            "status": "ignored",
+            "message": "Ready flag not set to '1', ignoring trigger",
+            "record_id": record,
+        }
+    background_tasks.add_task(process_record_for_curious, record)
+    logger.info("Queued record %s for Curious push", safe_record)
+    return {
+        "status": "accepted",
+        "message": f"Trigger accepted for record {record}",
+        "record_id": record,
+    }
+
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    """Global exception handler."""
+    logger.exception("Unhandled exception in REDCap to Curious service")
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal server error"},
+    )
+
+
+# ---------------------------------------------------------------------------
+# CLI entry points
+# ---------------------------------------------------------------------------
+
+
+def main() -> None:
+    """
+    Process all pending 'Ready to Send to Curious' records (bulk/manual).
+
+    This is the original batch-processing entry point. Run manually or via
+    cron to process every record currently flagged in REDCap PID 625.
+
+    Usage::
+
+        python -m hbnmigration.from_redcap.to_curious
+    """
+    try:
+        data_operations = fetch_data(
+            _REDCAP_TOKENS.pid625,
+            str(Fields.export_operations.for_curious),
+            Values.PID625.enrollment_complete.filter_logic("Ready to Send to Curious"),
+        )
+        if data_operations.empty:
+            logger.info(
+                "REDCap PID %s: No participants marked 'Ready to Send to Curious'.",
+                _REDCAP_PID,
+            )
+            raise NoData
+    except NoData:
+        logger.info("No data to transfer from REDCap %s to Curious.", _REDCAP_PID)
+        return
+
+    curious_data = format_redcap_data_for_curious(data_operations)
+    if curious_data["child"].empty and curious_data["parent"].empty:
+        logger.info("All participants already sent to Curious")
+        return
+
+    _push_to_curious(data_operations, curious_data)
+
+
+def serve(host: str = "0.0.0.0", port: int = 8002) -> None:
+    """
+    Start the webhook server.
+
+    Args:
+        host: Bind address.
+        port: Bind port.
+
+    """
+    uvicorn.run(app, host=host, port=port)
 
 
 if __name__ == "__main__":

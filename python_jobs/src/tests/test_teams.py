@@ -22,7 +22,7 @@ def test_send_alert_success():
     """Test successful alert sending."""
     with patch("hbnmigration.utility_functions.teams.io.requests.post") as mock_post:
         mock_response = Mock()
-        mock_response.status_code = 200
+        mock_response.status_code = requests.codes["okay"]
         mock_post.return_value = mock_response
 
         send_alert("Test message", "Send webhook alerts to 🔴 MS Fabric - Failures")
@@ -37,7 +37,7 @@ def test_send_alert_raises_on_error():
     """Test that send_alert raises on HTTP error."""
     with patch("hbnmigration.utility_functions.teams.io.requests.post") as mock_post:
         mock_response = Mock()
-        mock_response.status_code = 500
+        mock_response.status_code = requests.codes["✗"]
         mock_response.raise_for_status.side_effect = requests.HTTPError("Server error")
         mock_post.return_value = mock_response
 

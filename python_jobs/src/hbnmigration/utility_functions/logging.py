@@ -9,8 +9,22 @@ from logging.handlers import RotatingFileHandler
 import os
 from pathlib import Path
 import platform
+import re
 import sys
 from typing import Optional, Set
+import unicodedata
+
+_ANSI_RE = re.compile(
+    r"\x1b\[[0-9;]*+[a-zA-Z]"  # CSI sequences:  ESC [ <params> <letter>
+    r"|\x1b\](?>[^\x07]*)\x07"  # OSC sequences:  ESC ] <payload> BEL
+)
+"""Possessive quantifier (*+) and atomic group ((?>...)) prevent catastrophic
+backtracking (ReDoS)."""
+
+_UNSAFE_CHARS = frozenset(("\u2028", "\u2029"))
+"""Line separator ↵ and paragraph separator ¶."""
+_UNSAFE_CATEGORIES = frozenset(("Cc", "Cf"))
+"""Control characters and format characters."""
 
 _initialized = False
 """Is logging initialized?"""
@@ -124,6 +138,46 @@ def initialize_logging(
     )
     _initialized = True
     return logging.getLogger(name)
+
+
+def safe_record_for_log(record: object) -> str:
+    r"""
+    Sanitize a value for safe inclusion in log output.
+
+    Mitigates CRLF log injection attacks by removing characters that could
+    be used to forge log entries, evade log analysis, or exploit log viewers.
+
+    Strips the following:
+        - CR/LF (\r, \n) — prevents basic log line injection
+        - Other ASCII control characters (\x00-\x1f, \x7f) — removes tabs,
+          backspaces, escape sequences, null bytes, etc.
+        - Unicode line separators (U+2028, U+2029) — prevents injection via
+          lesser-known Unicode newline characters
+        - ANSI escape sequences (ESC[...m, etc.) — prevents terminal escape
+          attacks in log viewers that interpret color/cursor codes
+        - Unicode control category characters (Cc, Cf) — catches remaining
+          control and formatting characters across all of Unicode
+
+    Parameters
+    ----------
+    record
+        The untrusted value to sanitize before logging.
+
+    Returns
+    -------
+    str
+        A sanitized copy of the value with dangerous characters removed.
+
+    """
+    text = str(record)
+    text = text.replace("\r", "").replace("\n", "")
+    result = _ANSI_RE.sub("", text)
+    return "".join(
+        ch
+        for ch in result
+        if ch not in _UNSAFE_CHARS
+        and unicodedata.category(ch) not in _UNSAFE_CATEGORIES
+    )
 
 
 def setup_tsv_logger(name="tsv_logger", filename="error_log.tsv", level=logging.ERROR):

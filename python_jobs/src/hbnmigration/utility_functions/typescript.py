@@ -46,6 +46,11 @@ def tsx(
         check=False,
     )
 
+    if result.stdout:
+        logger.info("[TS]: %s", result.stdout)
+    if result.stderr:
+        logger.info("[TS]: %s", result.stderr)
+
     # Log stderr (debug messages)
     if result.stderr:
         logger.debug("TypeScript stderr: %s", result.stderr)

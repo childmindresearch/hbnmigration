@@ -1,52 +1,45 @@
 variable "project_root" {
-  description = "Root directory of the project"
+  description = "Base directory for the application"
   type        = string
-  default     = "/opt/hbnmigration"
-}
-
-variable "venv_path" {
-  description = "Path to Python virtual environment (relative to project_root or absolute)"
-  type        = string
-  default     = "venv"
+  default     = "/data/hbnmigration"
 }
 
 variable "user_group" {
-  description = "User and group for running services (format: 'user' or 'user:group')"
+  description = "System user/group for running services"
   type        = string
-  validation {
-    condition     = can(regex("^[a-z_][a-z0-9_-]*[$]?(:[a-z_][a-z0-9_-]*[$]?)?$", var.user_group))
-    error_message = "The user_group must be a valid Unix username, optionally followed by ':groupname'."
-  }
+  default     = "hbnmigration"
 }
 
-variable "sync_interval_minutes" {
-  description = "How often to run the API sync (in minutes)"
-  type        = number
-  default     = 5
-  validation {
-    condition     = var.sync_interval_minutes > 0 && var.sync_interval_minutes <= 1440
-    error_message = "The sync_interval_minutes must be between 1 and 1440 (24 hours)."
-  }
+variable "venv_path" {
+  description = "Python virtual environment path (relative to project_root or absolute)"
+  type        = string
+  default     = "python_jobs/.venv"
 }
 
 variable "log_directory" {
-  description = "Directory for service logs (relative to project_root or absolute)"
+  description = "Where logs are stored"
   type        = string
-  default     = "/var/log/hbnmigration"
+  default     = "/data/logs/hbnmigration"
 }
 
-variable "project_status" {
-  description = "Project status (dev or prod) for HBN migration"
-  type        = string
-  default     = "prod"
+variable "sync_interval_minutes" {
+  description = "How often the batch sync timer runs (minutes)"
+  type        = number
+  default     = 1
   validation {
-    condition     = contains(["dev", "prod"], lower(var.project_status))
-    error_message = "The project_status must be either 'dev' or 'prod'."
+    condition     = var.sync_interval_minutes >= 1 && var.sync_interval_minutes <= 1440
+    error_message = "Must be between 1 and 1440 minutes"
   }
 }
 
+variable "project_status" {
+  description = "Project status (prod, dev, test)"
+  type        = string
+  default     = "prod"
+}
+
 variable "recovery_mode" {
-  description = "Enable recovery mode for full-day data pull on downtime"
+  description = "Enable recovery mode"
   type        = bool
   default     = false
 }

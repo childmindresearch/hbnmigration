@@ -45,6 +45,10 @@ class CliOptions(UserDict):
         return " ".join(f"--{key} {value}" for key, value in self.data.items())
 
 
+class ColumnRenameMapping:
+    """Base class for column rename mapping configurations."""
+
+
 class Credentials(ABC):
     """Class to store credentials."""
 
@@ -410,6 +414,8 @@ class FieldDescriptor(UserDict):
 InstrumentRowCount = dict[str, int | None]
 ProjectStatus = Literal["dev", "prod"]
 ProjectStatuses: list[ProjectStatus] = ["dev", "prod"]
+Record = dict[str, str | int | list[str | int] | set[str | int] | tuple[str | int, ...]]
+"""Record TypeAlias"""
 
 
 class Results:

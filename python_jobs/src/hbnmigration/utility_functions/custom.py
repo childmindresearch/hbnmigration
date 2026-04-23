@@ -20,6 +20,7 @@ import requests
 
 from ..exceptions import TSVLoggedError
 from .cache import YESTERDAY_DATE
+from .datatypes import Record
 from .logging import initialize_logging, log_invalid_fields, setup_tsv_logger
 from .teams import send_alert
 
@@ -224,7 +225,7 @@ def fetch_api_data(
     column: str | None = None,
     *,
     capture_invalid_fields: Literal[True],
-) -> pd.DataFrame | list[str]: ...
+) -> pd.DataFrame: ...
 
 
 @overload
@@ -549,7 +550,7 @@ def redcap_api_push(
     if response.status_code == requests.codes["okay"]:
         return int(response.text)
     if response.status_code == requests.codes["gateway_timeout"]:
-        logger.error("Failed to push data with shape %s", df.shape)
+        logger.exception("Failed to push data with shape %s", df.shape)
     try:
         response.raise_for_status()
     except requests.exceptions.HTTPError as http_error:
@@ -583,12 +584,20 @@ def new_curious_account(
             msg = f"No valid account type specified: {record.get('accountType')}"
             raise ValueError(msg)
     curious_url = f"{host}/invitations/{applet_id}/{account_type}"
-    new_record = {}
+    new_record: Record = {}
+
+    # Handle parent_involvement before single-element unpacking
     for key, value in record.items():
-        if isinstance(value, (list, set, tuple)) and len(value) == 1:
+        if key == "parent_involvement" and isinstance(value, (list, set)):
+            new_record[key] = sorted(value)
+        elif isinstance(value, (list, set, tuple)) and len(value) == 1:
             new_record[key] = next(iter(value))
+        elif isinstance(value, (list, set, tuple)):
+            # Skip isnan check for collections
+            new_record[key] = value
         elif not isnan(value):
             new_record[key] = value
+
     response = requests.post(curious_url, json=new_record, headers=headers)
     logger.info("Status Code: %d", response.status_code)
     response_body = response.json()
@@ -628,7 +637,7 @@ def get_redcap_event_names(
             "Failed to fetch data: %d - %s", response.status_code, response.text
         )
         tsv_logger = setup_tsv_logger("mrn_error_log", "mrn_error_log.tsv")
-        tsv_logger.error(
+        tsv_logger.exception(
             response.text, extra={"mrn": "", "attempt": "get_redcap_event_names"}
         )
         return {}
