@@ -140,9 +140,9 @@ def initialize_logging(
     return logging.getLogger(name)
 
 
-def safe_record_for_log(record: str) -> str:
+def safe_record_for_log(record: object) -> str:
     r"""
-    Sanitize a string for safe inclusion in log output.
+    Sanitize a value for safe inclusion in log output.
 
     Mitigates CRLF log injection attacks by removing characters that could
     be used to forge log entries, evade log analysis, or exploit log viewers.
@@ -161,15 +161,17 @@ def safe_record_for_log(record: str) -> str:
     Parameters
     ----------
     record
-        The untrusted string to sanitize before logging.
+        The untrusted value to sanitize before logging.
 
     Returns
     -------
     str
-        A sanitized copy of the string with dangerous characters removed.
+        A sanitized copy of the value with dangerous characters removed.
 
     """
-    result = _ANSI_RE.sub("", record)
+    text = str(record)
+    text = text.replace("\r", "").replace("\n", "")
+    result = _ANSI_RE.sub("", text)
     return "".join(
         ch
         for ch in result
