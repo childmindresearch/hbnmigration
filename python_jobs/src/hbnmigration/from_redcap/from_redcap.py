@@ -13,6 +13,13 @@ logger = initialize_logging(__name__)
 Endpoints = redcap_variables.Endpoints()
 
 
+def eav_to_wide(df: pd.DataFrame) -> pd.DataFrame:
+    """Pivot EAV DataFrame to wide format."""
+    return df.pivot_table(
+        index="record", columns="field_name", values="value", aggfunc="first"
+    ).reset_index()
+
+
 def fetch_data(
     token: str,
     export_fields: str,
@@ -100,6 +107,16 @@ def fetch_data(
     return df_redcap_participant_consent_data
 
 
+def get_responder_ids(df: pd.DataFrame) -> pd.DataFrame:
+    """Get responder IDs from REDCap."""
+    # TODO: Get responder IDs from PID 879.
+    from .to_redcap import transform_redcap_data_for_responder_tracking  # noqa: PLC0415
+
+    df, _u, _p = transform_redcap_data_for_responder_tracking()
+    df["record"] = "R" + df["record"].astype(str).str.zfill(6)
+    return df[["record", "resp_email"]]
+
+
 def response_index_reverse_lookup(row: pd.Series) -> list[tuple[str, str, int | str]]:
     """Get response index reverse lookups from REDCap metadata."""
     field = row["field_name"]
@@ -115,7 +132,7 @@ def response_index_reverse_lookup(row: pd.Series) -> list[tuple[str, str, int | 
                     lookups.append(
                         (field, label.strip().lower(), str(int(value.strip())))
                     )
-                except (TypeError, ValueError):
+                except TypeError, ValueError:
                     lookups.append((field, label.strip().lower(), value.strip()))
     return lookups
 

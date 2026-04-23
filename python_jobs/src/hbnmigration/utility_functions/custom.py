@@ -548,6 +548,8 @@ def redcap_api_push(
 
     if response.status_code == requests.codes["okay"]:
         return int(response.text)
+    if response.status_code == requests.codes["gateway_timeout"]:
+        logger.error("Failed to push data with shape %s", df.shape)
     try:
         response.raise_for_status()
     except requests.exceptions.HTTPError as http_error:

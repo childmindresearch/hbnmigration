@@ -3,9 +3,10 @@
 import importlib
 import inspect
 from types import FrameType
-from typing import Any, Optional, TypeVar
+from typing import Any, Optional
+from warnings import warn
 
-T = TypeVar("T")
+from .datatypes import T
 
 
 class ImportWithFallback:
@@ -23,6 +24,31 @@ class ImportWithFallback:
         return frame
 
     @classmethod
+    def _calculate_warning_stacklevel(cls) -> int:
+        """Calculate stacklevel to point to code outside this module and importlib."""
+        frame = inspect.currentframe()
+        level = 0
+
+        if frame:
+            # Skip frames in this module
+            while frame and "utility_functions.secrets" in frame.f_globals.get(
+                "__name__", ""
+            ):
+                frame = frame.f_back
+                level += 1
+
+            # Skip importlib internal frames
+            while frame and frame.f_code.co_filename.startswith("<frozen importlib"):
+                frame = frame.f_back
+                level += 1
+
+            # Now we should be at user code
+            level += 1  # One more to get to the actual import statement
+
+        del frame
+        return max(level, 1)  # Fallback to 1 if calculation fails
+
+    @classmethod
     def _get_caller___name__(cls) -> Optional[str]:
         """Get the `__name__` of the caller's module."""
         frame = cls._get_out_of_secrets()
@@ -35,13 +61,20 @@ class ImportWithFallback:
     @classmethod
     def _import_any(cls, module: str, name: str, caller_name: Optional[str]) -> Any:
         """Import `name` from `module`."""
-        return getattr(
+        item = getattr(
             importlib.import_module(
                 module,
                 package=caller_name if module.startswith(".") else None,
             ),
             name,
         )
+        if hasattr(item, "__deprecated__"):
+            warn(
+                "%s: %s" % (name, item.__deprecated__),
+                DeprecationWarning,
+                cls._calculate_warning_stacklevel(),
+            )
+        return item
 
     @classmethod
     def module(
@@ -55,7 +88,7 @@ class ImportWithFallback:
         caller_name = cls._get_caller___name__()
         try:
             return cls._import_any(module, name, caller_name)
-        except (ImportError, ModuleNotFoundError, AttributeError):
+        except ImportError, ModuleNotFoundError, AttributeError:
             return cls._import_any(
                 fallback_module, fallback_name if fallback_name else name, caller_name
             )
@@ -66,5 +99,5 @@ class ImportWithFallback:
         caller_name = cls._get_caller___name__()
         try:
             return cls._import_any(module, name, caller_name)
-        except (ImportError, ModuleNotFoundError, AttributeError):
+        except ImportError, ModuleNotFoundError, AttributeError:
             return fallback

@@ -179,7 +179,7 @@ def get_redcap_subjects_to_update(
 
     """
     redcap_participant_consent_data = {
-        "token": redcap_variables.Tokens.pid247,
+        "token": redcap_variables.Tokens().pid247,
         "content": "record",
         "action": "export",
         "format": "csv",
@@ -341,8 +341,8 @@ def main(project_status: ProjectStatus = "prod") -> None:
     cache = DataCache("ripple_to_redcap", ttl_minutes=2)
 
     project: dict[ProjectStatus, dict[str, str]] = {
-        "dev": {"token": redcap_variables.Tokens.pid757},
-        "prod": {"token": redcap_variables.Tokens.pid247},
+        "dev": {"token": redcap_variables.Tokens().pid757},
+        "prod": {"token": redcap_variables.Tokens().pid247},
     }
     ripple_import_files: dict[str, str] = {}
     try:

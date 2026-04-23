@@ -1110,7 +1110,7 @@ def run_synchronous_main_test(
         parse_returns,
         metadata=metadata,
     ) as test_mocks:
-        synchronous_main()
+        synchronous_main(applet_names=["Healthy Brain Network Questionnaires"])
 
         if expected_parse_count is not None:
             assert_mock_called_n_times(test_mocks["parse"], expected_parse_count)

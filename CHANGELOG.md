@@ -5,6 +5,50 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 1.9.4
+
+### Fixed
+
+- Split config for Curious invitations.
+
+## 1.9.3
+
+### Added
+
+- Exception handling for REDCap timeout.
+
+## 1.9.2
+
+### Fixed
+
+- Commented out missing fields.
+
+## 1.9.1
+
+### Fixed
+
+- Curious invitations CLI.
+- Config keys to set Curious applet credential environment variable names.
+
+## 1.9.0
+
+### Changed
+
+- Split parent-report and self-report into separate Curious applets.
+- Updated mappings for REDCap PID 247 to PID 625.
+- Moved `enrollment_complete` from PID 247 to PID 625.
+
+### Upgraded
+
+- Python@3.14
+
+### Deprecated
+
+- `._config_variables.curious_variables.curious_variables.activity_ids`
+- `._config_variables.curious_variables.curious_variables.applet_ids`
+- `._config_variables.curious_variables.curious_variables.Credentials`
+- `._config_variables.curious_variables.curious_variables.AppletCredentials.hbn_mindlogger`
+
 ## 1.8.0
 
 ### Added
