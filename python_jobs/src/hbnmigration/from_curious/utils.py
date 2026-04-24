@@ -836,3 +836,13 @@ def deduplicate_dataframe(
     if is_pandas:
         return df_filtered.to_pandas(), num_removed
     return df_filtered, num_removed
+
+
+def parse_dt(col_name: str) -> pl.Expr:
+    """Parse an ISO 8601 datetime string column to Datetime('ms', 'UTC')."""
+    return (
+        pl.col(col_name)
+        .str.replace("Z$", "")
+        .str.strptime(pl.Datetime("ms"), "%Y-%m-%dT%H:%M:%S%.f")
+        .dt.replace_time_zone("UTC")
+    )

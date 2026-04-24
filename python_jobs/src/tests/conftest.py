@@ -1499,8 +1499,8 @@ def sample_decrypted_answer() -> CuriousDecryptedAnswer:
     """
     Return a minimal CuriousDecryptedAnswer for testing.
 
-    Note: datetimes must NOT have trailing 'Z' — the production code uses
-    strptime with format ``%Y-%m-%dT%H:%M:%S%.f`` which does not parse 'Z'.
+    Note: datetimes use the no-trailing-Z format to match what parse_dt expects.
+    Both ``"…Z"`` and ``"…000"`` / ``"…000000"`` formats are supported.
     """
     return make_ml_data(
         item_ids=["item1234-ab12-cd34-ef56-abcdef123456"],

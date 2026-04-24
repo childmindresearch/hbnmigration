@@ -37,7 +37,7 @@ def tsx(
     if not script_args:
         script_args = []
     arg_list = ["npx", "tsx", str(script), *script_args]
-    logger.info("Calling %s", f"`{' '.join(arg_list)}`")
+    logger.info("Calling %s", f"`{' '.join(arg_list[:3])}`")
     result = subprocess.run(
         arg_list,
         capture_output=True,
@@ -47,9 +47,9 @@ def tsx(
     )
 
     if result.stdout:
-        logger.info("[TS]: %s", result.stdout)
+        logger.debug("[TS]: %s", result.stdout)
     if result.stderr:
-        logger.info("[TS]: %s", result.stderr)
+        logger.debug("[TS]: %s", result.stderr)
 
     # Log stderr (debug messages)
     if result.stderr:
