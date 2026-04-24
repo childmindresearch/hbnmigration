@@ -10,12 +10,14 @@ import requests
 
 from hbnmigration.from_curious.config import Fields as CuriousFields
 from hbnmigration.from_curious.invitations_to_redcap import (
+    _add_child_suffix,
     _field_suffix_for,
     _instrument_for,
     _prefixed_field,
     _process_accounts,
     _response_field_for,
     _status_field_for,
+    _strip_instrument_infix,
     ACCOUNT_CONTEXTS,
     AccountContext,
     check_activity_response,
@@ -215,11 +217,11 @@ class TestContextHelpers:
         [
             (
                 "responder",
-                "curious_account_created_responder_account_created_response",
+                "curious_account_created_account_created_response",
             ),
             (
                 "child",
-                "curious_account_created_child_account_created_response_c",
+                "curious_account_created_account_created_response_c",
             ),
         ],
     )
@@ -1115,3 +1117,97 @@ class TestProcessAccounts:
             mock_pull.return_value = pl.DataFrame()
             _process_accounts("Test Applet", ctx, "token", "lookup_token", cache, 625)
         assert f"No {ctx} invitations" in caplog.text
+
+
+# ============================================================================
+# Tests - _strip_instrument_infix
+# ============================================================================
+
+
+class TestStripInstrumentInfix:
+    """Tests for _strip_instrument_infix."""
+
+    @pytest.mark.parametrize(
+        "col,ctx,expected",
+        [
+            (
+                "curious_account_created_responder_account_created_response",
+                "responder",
+                "curious_account_created_account_created_response",
+            ),
+            (
+                "curious_account_created_responder_source_secret_id",
+                "responder",
+                "curious_account_created_source_secret_id",
+            ),
+            (
+                "curious_account_created_child_account_created_response",
+                "child",
+                "curious_account_created_account_created_response",
+            ),
+            (
+                "curious_account_created_child_source_secret_id",
+                "child",
+                "curious_account_created_source_secret_id",
+            ),
+        ],
+    )
+    def test_strips_infix(self, col: str, ctx: AccountContext, expected: str) -> None:
+        """Instrument infix should be removed from data fields."""
+        assert _strip_instrument_infix(col, ctx) == expected
+
+    @pytest.mark.parametrize("ctx", ACCOUNT_CONTEXTS)
+    def test_preserves_complete_field(self, ctx: AccountContext) -> None:
+        """_complete fields should be left untouched."""
+        instrument = _instrument_for(ctx)
+        complete = f"{instrument}_complete"
+        assert _strip_instrument_infix(complete, ctx) == complete
+
+    @pytest.mark.parametrize(
+        "col",
+        ["record_id", "redcap_event_name", "some_unrelated_field"],
+    )
+    def test_leaves_non_prefixed_columns_alone(self, col: str) -> None:
+        """Columns without the curious prefix should pass through unchanged."""
+        assert _strip_instrument_infix(col, "responder") == col
+
+    def test_does_not_strip_wrong_context(self) -> None:
+        """Responder infix should not be stripped when context is child."""
+        col = "curious_account_created_responder_account_created_response"
+        # child context looks for "child_" infix, not "responder_"
+        assert _strip_instrument_infix(col, "child") == col
+
+
+# ============================================================================
+# Tests - _add_child_suffix
+# ============================================================================
+
+
+class TestAddChildSuffix:
+    """Tests for _add_child_suffix."""
+
+    def test_appends_suffix_to_data_field(self) -> None:
+        """Data fields should get the suffix appended."""
+        assert (
+            _add_child_suffix("curious_account_created_source_secret_id", "_c")
+            == "curious_account_created_source_secret_id_c"
+        )
+
+    def test_preserves_complete_field(self) -> None:
+        """_complete fields should not get the suffix."""
+        assert (
+            _add_child_suffix("curious_account_created_child_complete", "_c")
+            == "curious_account_created_child_complete"
+        )
+
+    @pytest.mark.parametrize(
+        "col",
+        ["record_id", "redcap_event_name"],
+    )
+    def test_preserves_structural_columns(self, col: str) -> None:
+        """record_id and redcap_event_name should never get a suffix."""
+        assert _add_child_suffix(col, "_c") == col
+
+    def test_leaves_non_prefixed_columns_alone(self) -> None:
+        """Columns without the curious prefix should pass through unchanged."""
+        assert _add_child_suffix("some_other_field", "_c") == "some_other_field"

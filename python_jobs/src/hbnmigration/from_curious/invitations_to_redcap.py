@@ -103,7 +103,8 @@ def _status_field_for(ctx: AccountContext) -> str:
 
 
 def _response_field_for(ctx: AccountContext) -> str:
-    return f"{_instrument_for(ctx)}_account_created_response{_field_suffix_for(ctx)}"
+    suffix = _field_suffix_for(ctx)
+    return f"curious_account_created_account_created_response{suffix}"
 
 
 def _complete_value(label: str) -> str:
@@ -421,6 +422,71 @@ def check_activity_responses(
 # ---------------------------------------------------------------------------
 
 
+def _strip_instrument_infix(
+    col: str,
+    account_context: AccountContext,
+) -> str:
+    """
+    Remove the instrument-specific infix that ``RedcapImportFormat`` inserts.
+
+    ``RedcapImportFormat`` produces field names like
+    ``curious_account_created_responder_account_created_response``
+    but the actual REDCap field is
+    ``curious_account_created_account_created_response``.
+
+    The ``_complete`` field keeps its instrument infix because REDCap
+    genuinely uses ``curious_account_created_responder_complete``.
+
+    Parameters
+    ----------
+    col : str
+        Column name to transform.
+    account_context : AccountContext
+        ``"responder"`` or ``"child"``.
+
+    Returns
+    -------
+    str
+        Transformed column name.
+
+    """
+    if col.endswith("_complete"):
+        return col
+    infix = "responder_" if account_context == "responder" else "child_"
+    prefix_with = f"curious_account_created_{infix}"
+    if col.startswith(prefix_with):
+        return f"curious_account_created_{col[len(prefix_with) :]}"
+    return col
+
+
+def _add_child_suffix(col: str, suffix: str) -> str:
+    """
+    Append *suffix* to ``curious_account_created_`` data fields.
+
+    Leaves ``_complete``, ``record_id``, and ``redcap_event_name`` untouched.
+
+    Parameters
+    ----------
+    col : str
+        Column name to transform.
+    suffix : str
+        Suffix to append (e.g. ``"_c"``).
+
+    Returns
+    -------
+    str
+        Transformed column name.
+
+    """
+    if (
+        col.startswith("curious_account_created_")
+        and not col.endswith("_complete")
+        and col not in ("record_id", "redcap_event_name")
+    ):
+        return f"{col}{suffix}"
+    return col
+
+
 def format_for_redcap(
     ml_data: CuriousDecryptedAnswer,
     redcap_context: dict,
@@ -527,23 +593,16 @@ def format_for_redcap(
     valid_fields = CuriousFields.for_context(account_context)
 
     for result in results:
+        # Strip the instrument infix (responder_ / child_) that the formatter
+        # inserts, except for _complete which genuinely carries it in REDCap.
         result.output = result.output.rename(
-            lambda col: (
-                col.replace("curiousaccountcreated", instrument, 1)
-                if col.startswith("curiousaccountcreated")
-                else col
-            )
+            lambda col: _strip_instrument_infix(col, account_context)
         )
 
+        # Append _c suffix for child data fields
         if field_suffix:
             result.output = result.output.rename(
-                lambda col: (
-                    f"{col}{field_suffix}"
-                    if col.startswith("curious_account_created_")
-                    and not col.endswith("_complete")
-                    and col not in ("record_id", "redcap_event_name")
-                    else col
-                )
+                lambda col: _add_child_suffix(col, field_suffix)
             )
 
         context_columns: list[pl.Expr] = [
@@ -759,7 +818,6 @@ def _process_accounts(  # noqa: PLR0913
     invitation_df = _add_cache_keys_to_df(invitation_df, actual_status, response_field)
 
     invitation_df = invitation_df.unique(subset=["record_id"], keep="last")
-
     n_records = push_to_redcap(invitation_df.drop("cache_key"), token, cache)
     logger.info(
         "%d %s records updated in REDCap (PID %d)",

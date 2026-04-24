@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Harmonized conflicting datetime formats.
+- Removed reduplicitave field names in REDCap invitation instruments.
 
 ## 1.10.8
 
