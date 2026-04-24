@@ -37,7 +37,7 @@ repos:
       - --args=--config-file __GIT_WORKING_DIR__/infrastructure/tests/.checkov.yaml
       files: ^infrastructure/
 - repo: https://github.com/DavidAnson/markdownlint-cli2
-  rev: v0.22.0
+  rev: v0.22.1
   hooks:
   - id: markdownlint-cli2
 - repo: https://github.com/ninoseki/uv-sort
@@ -52,13 +52,13 @@ repos:
       files: ^python_jobs/pyproject\.toml$
       args: [--project, python_jobs]
 - repo: https://github.com/astral-sh/ruff-pre-commit
-  rev: v0.15.10
+  rev: v0.15.11
   hooks:
     - id: ruff-check
       args: [ --fix ]
     - id: ruff-format
 - repo: https://github.com/pre-commit/mirrors-mypy
-  rev: v1.20.1
+  rev: v1.20.2
   hooks:
   - id: mypy
     exclude: \**/_config_variables/.*_variables/__init__\.py$

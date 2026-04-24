@@ -7,6 +7,7 @@ from warnings import deprecated
 from ..utility_functions import (
     ColumnRenameMapping,
     FieldDescriptor,
+    RangeConstraint,
     ValueClass,
     ValueField,
 )
@@ -15,6 +16,19 @@ RedcapComplete = FieldDescriptor(
     {"Incomplete": "0", "Unverified": "1", "Complete": "2"}
 )
 """Common `*_complete` values."""
+
+
+class Constraints:
+    """Return constraints on REDCap fields."""
+
+    class PID625:
+        """Constraints for REDCap PID 625."""
+
+        class permission_audiovideo_participant:
+            """Constraints for `permission_audiovideo_participant`."""
+
+            age = RangeConstraint(11, 18, True, False)
+            """Applicable age range."""
 
 
 class FieldList(UserList):
@@ -601,6 +615,15 @@ class Values:
             }
         )
         """Is enrollment complete and we can create parent and participant profiles in Curious?"""  # noqa: E501
+
+        permission_audiovideo_participant = FieldDescriptor(
+            {
+                "Not Applicable: no assent required": "0",
+                "YES, you may record me during participation": "1",
+                "NO, you may not record me during participation": "2",
+            }
+        )
+        """Participant giving permission to audio and/or video record during study activities."""  # noqa: E501
 
         permission_collab = FieldDescriptor({"Yes": "0", "No": "1"})
         """Permission to share your child's records with partnering scientific institution(s)."""  # noqa: E501

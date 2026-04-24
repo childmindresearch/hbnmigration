@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 1.10.8
+
+### Changed
+
+- Set `permission_audiovideo_participant` to "Not Applicable" when participant's age is < 11 or ≥ 18 years.
+
 ## 1.10.7
 
 ### Fixed
