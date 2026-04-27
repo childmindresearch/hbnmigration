@@ -9,7 +9,6 @@ from ..utility_functions import (
     FieldDescriptor,
     RangeConstraint,
     ValueClass,
-    ValueField,
 )
 
 RedcapComplete = FieldDescriptor(
@@ -527,27 +526,7 @@ class Fields:
 class Values:
     """Values for REDCap fields."""
 
-    class _PID247Meta(type):
-        """Metaclass for deprecating `PID247` attribute."""
-
-        _enrollment_complete = FieldDescriptor(
-            {
-                "Not Sent": "0",
-                "Ready to Send to Curious": "1",
-                "Parent and Participant information already sent to Curious": "2",
-            }
-        )
-        """Is enrollment complete and we can create parent and participant profiles in Curious?"""  # noqa: E501
-
-        @property
-        @deprecated("Deprecated in v1.9.0. Use `Values.PID625.enrollment_complete`.")
-        def enrollment_complete(cls) -> ValueField:
-            """Is enrollment complete and we can create parent and participant profiles in Curious?"""  # noqa: D400,E501
-            _ = cls._enrollment_complete
-            _._field_name = "enrollment_complete"
-            return _
-
-    class PID247(ValueClass, metaclass=_PID247Meta):
+    class PID247(ValueClass):
         """Values for PID 247 ― Healthy Brain Network Study Consent (IRB Approved)."""
 
         guardian2_consent = FieldDescriptor(

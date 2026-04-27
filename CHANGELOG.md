@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 1.11.0
+
+### Removed
+
+- `._config_variables.curious_variables.curious_variables.activity_ids`
+- `._config_variables.curious_variables.curious_variables.applet_ids`
+- `._config_variables.curious_variables.curious_variables.Credentials`
+- `._config_variables.curious_variables.curious_variables.AppletCredentials.hbn_mindlogger`
+- `.from_redcap.config.Values.PID247.enrollment_complete`
+
 ## 1.10.9
 
 ### Fixed
@@ -141,6 +151,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `._config_variables.curious_variables.curious_variables.applet_ids`
 - `._config_variables.curious_variables.curious_variables.Credentials`
 - `._config_variables.curious_variables.curious_variables.AppletCredentials.hbn_mindlogger`
+- `.from_redcap.config.Values.PID247.enrollment_complete`
 
 ## 1.8.0
 

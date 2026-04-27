@@ -1,6 +1,6 @@
 {
   "name": "hbnmigration",
-  "version": "1.10.9",
+  "version": "1.11.0",
   "private": true,
   "description": "HBN data migration monitoring infrastructure with Python and Node.js services",
   "workspaces": [
