@@ -21,16 +21,6 @@ applets: CuriousApplets = ImportWithFallback.literal(
     ".curious_variables", "applets", CuriousApplets()
 )
 
-
-Credentials: type[CredentialsABC] = ImportWithFallback.module(
-    ".curious_variables", "Credentials", "...utility_functions.datatypes"
-)
-"""Curious credentials.
-
-.. version-deprecated:: 1.9.0
-   Use `AppletCredentials`.
-"""
-
 Endpoints: type[EndpointsType] = ImportWithFallback.module(
     ".curious_variables", "Endpoints", "...utility_functions.datatypes"
 )
@@ -50,15 +40,6 @@ owner_ids: dict[str, CuriousId] = ImportWithFallback.literal(
 )
 """Curious project owner IDs."""
 
-applet_ids: dict[str, CuriousId] = ImportWithFallback.literal(
-    ".curious_variables", "applet_ids", {}
-)
-"""Curious applet IDs."""
-
-activity_ids: dict[str, CuriousId] = ImportWithFallback.literal(
-    ".curious_variables", "activity_ids", {}
-)
-"""Curious activity IDs."""
 
 Tokens: type[TokensType] = ImportWithFallback.module(
     ".curious_variables", "Tokens", "...utility_functions", "Tokens"
@@ -67,11 +48,8 @@ Tokens: type[TokensType] = ImportWithFallback.module(
 
 __all__ = [
     "AppletCredentials",
-    "Credentials",
     "Endpoints",
     "Tokens",
-    "activity_ids",
-    "applet_ids",
     "headers",
     "owner_ids",
 ]
