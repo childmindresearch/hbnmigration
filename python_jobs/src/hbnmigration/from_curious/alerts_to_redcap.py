@@ -34,32 +34,36 @@ from ..utility_functions import (
 )
 from .config import curious_authenticate
 from .utils import (
+    alert_form_for_instrument,
     alert_websocket_to_https,
     call_curious_api,
     create_choice_lookup,
     deduplicate_dataframe,
     fetch_alerts_metadata,
+    get_redcap_token,
     map_mrns_to_records,
+    REDCAP_ENDPOINTS,
 )
 
 initialize_logging()
 logger = logging.getLogger(__name__)
-
-REDCAP_ENDPOINTS = redcap_variables.Endpoints()
 
 # ============================================================================
 # Constants
 # ============================================================================
 
 ALERT_FIELD_PATTERN = r"alerts_([^_]+(?:_[^_]+)?)_\d+"
-PID_625 = redcap_variables.Tokens().pid625
 
-# WebSocket configuration constants
-WS_RECONNECT_DELAY = 5  # seconds
-WS_MAX_RECONNECT_ATTEMPTS = None  # None = infinite retries
-WS_PING_INTERVAL = 20  # seconds
-WS_PING_TIMEOUT = 10  # seconds
-WS_CLOSE_TIMEOUT = 5  # seconds
+PID_625_TOKEN = get_redcap_token(625)
+"""Token for PID 625 (alerts always go here)."""
+
+# WebSocket configuration
+WS_RECONNECT_DELAY = 5
+WS_MAX_RECONNECT_ATTEMPTS: int | None = None
+WS_PING_INTERVAL = 20
+WS_PING_TIMEOUT = 10
+WS_CLOSE_TIMEOUT = 5
+
 
 # ============================================================================
 # Type Definitions
@@ -80,24 +84,8 @@ class _SynchronousArgs(argparse.Namespace):
 
 
 def create_alert_cache_key(alert_id: str, message: str) -> str:
-    """
-    Create a unique cache key for an alert.
-
-    Parameters
-    ----------
-    alert_id : str
-        Alert ID from Curious
-    message : str
-        Alert message content
-
-    Returns
-    -------
-    str
-        Composite cache key like "alert_123:abc456"
-
-    """
-    message_hash = compute_content_hash(message, length=8)
-    return create_composite_cache_key(alert_id, message_hash)
+    """Create a unique cache key for an alert."""
+    return create_composite_cache_key(alert_id, compute_content_hash(message, length=8))
 
 
 # ============================================================================
@@ -107,9 +95,10 @@ def create_alert_cache_key(alert_id: str, message: str) -> str:
 
 @asynccontextmanager
 async def connect_to_websocket(
-    token: str, uri: str
+    token: str,
+    uri: str,
 ) -> AsyncIterator[websockets.ClientConnection]:
-    """Connect to a websocket with an auth token and proper configuration."""
+    """Connect to a websocket with auth token and proper configuration."""
     websocket = await websockets.connect(
         uri,
         subprotocols=[cast(websockets.typing.Subprotocol, f"bearer|{token}")],
@@ -124,7 +113,7 @@ async def connect_to_websocket(
 
 
 def _prepare_applet_names(applet_names: Optional[list[str]]) -> list[str]:
-    """Give list of applet names from commandline or fallback on all applets."""
+    """Return *applet_names* or all configured applets."""
     return list(curious_variables.applets.keys()) if not applet_names else applet_names
 
 
@@ -134,34 +123,26 @@ def _prepare_applet_names(applet_names: Optional[list[str]]) -> list[str]:
 
 
 def _parse_alert_message(message: str) -> tuple[str, str]:
-    """
-    Parse alert message to extract answer and item.
-
-    Returns
-    -------
-    tuple[str, str]
-        (answer, item_name) tuple
-
-    """
-    _color, message_remainder = message.split(': "', 1)
-    answer, message_remainder = message_remainder.split('" to', 1)
-    message_remainder, item = message_remainder.rsplit(" ", 1)
+    """Parse alert message; return ``(answer, item_field_name)``."""
+    _color, remainder = message.split(': "', 1)
+    answer, remainder = remainder.split('" to', 1)
+    _, item = remainder.rsplit(" ", 1)
     return answer, f"alerts_{item.lower()}"
 
 
 def parse_alert(alert: CuriousAlert) -> pd.DataFrame:
     """
-    Parse an alert from Curious into REDCap format.
+    Parse a Curious alert into REDCap EAV format.
 
-    Note: 'record', 'value', and 'redcap_event_name' columns need further processing.
+    Columns: ``record``, ``field_name``, ``value``, ``redcap_event_name``
+    (``record``, ``value``, ``redcap_event_name`` need further processing).
     """
     columns = ["record", "field_name", "value", "redcap_event_name"]
     alert = alert_websocket_to_https(alert)
     answer, item = _parse_alert_message(alert["message"])
-    fields: list[tuple[str, Any]] = [("mrn", alert["secretId"]), (item, answer)]
-    data: list[tuple[str, str, Any, Optional[str]]] = [
-        (alert["secretId"], field_name, field_value, None)
-        for field_name, field_value in fields
+    data: list[tuple[str, str, Any, None]] = [
+        (alert["secretId"], field, val, None)
+        for field, val in [("mrn", alert["secretId"]), (item, answer)]
     ]
     return pd.DataFrame(data, columns=columns)
 
@@ -172,167 +153,109 @@ def parse_alert(alert: CuriousAlert) -> pd.DataFrame:
 
 
 def toggle_alerts(result: pd.DataFrame) -> pd.DataFrame:
-    """Add an `{instrument}_alerts` row for each relevant respondent + instrument."""
+    """Add ``{instrument}_alerts = 'yes'`` for each respondent + instrument."""
     if result.empty:
         return result
-
-    respondent_instruments = result["field_name"].str.extract(
-        ALERT_FIELD_PATTERN, expand=False
-    )
-    summary = result[respondent_instruments.notna()].copy()
-    summary["field_name"] = (
-        respondent_instruments[respondent_instruments.notna()] + "_alerts"
-    )
+    instruments = result["field_name"].str.extract(ALERT_FIELD_PATTERN, expand=False)
+    summary = result[instruments.notna()].copy()
+    summary["field_name"] = instruments[instruments.notna()] + "_alerts"
     summary = summary.drop_duplicates(["record", "field_name", "redcap_event_name"])
     summary["value"] = "yes"
     return pd.concat([result, summary], ignore_index=True)
 
 
+def _normalize_instrument_name(instrument_part: str) -> str:
+    """Convert an extracted instrument part to the standard alert form name."""
+    if "parent" in instrument_part or instrument_part.endswith("_p"):
+        return "ra_alerts_parent"
+    if "child" in instrument_part or instrument_part.endswith("_c"):
+        return "ra_alerts_child"
+    if instrument_part.startswith("ra_alerts"):
+        return instrument_part
+    # Delegate to the shared helper for edge cases
+    return alert_form_for_instrument(instrument_part)
+
+
 def derive_instrument_name(result: pd.DataFrame) -> str:
     """
-    Derive instrument name from alert field columns.
+    Derive the alert-form instrument name from alert field columns.
 
-    Looks for fields matching patterns like:
-    - alerts_{instrument}_{number}
-    - {instrument}_alerts
-
-    Parameters
-    ----------
-    result : pd.DataFrame
-        DataFrame containing alert field columns
-
-    Returns
-    -------
-    str
-        Instrument name (e.g., "ra_alerts_parent", "ra_alerts_child")
-        Defaults to "ra_alerts_parent" if no match found
-
+    Returns ``'ra_alerts_parent'`` or ``'ra_alerts_child'``
+    (defaults to ``'ra_alerts_parent'``).
     """
-
-    def _normalize_instrument_name(instrument_part: str) -> str:
-        """Convert instrument part to standard naming convention."""
-        if "parent" in instrument_part or instrument_part.endswith("_p"):
-            return "ra_alerts_parent"
-        if "child" in instrument_part or instrument_part.endswith("_c"):
-            return "ra_alerts_child"
-        if instrument_part.startswith("ra_alerts"):
-            return instrument_part
-        return f"ra_alerts_{instrument_part}"
-
-    # Strategy 1: Check field_name column for alerts_instrument_number pattern
-    alert_field_pattern = r"alerts_([a-z_]+)_\d+"
-    for col in result.get("field_name", []):
-        if pd.notna(col):
-            match = re.search(alert_field_pattern, str(col))
-            if match:
-                return _normalize_instrument_name(match.group(1))
-
-    # Strategy 2: Check field_name column for instrument_alerts pattern
-    alerts_suffix_pattern = r"^([a-z_]+)_alerts$"
-    for col in result.get("field_name", []):
-        if pd.notna(col):
-            match = re.search(alerts_suffix_pattern, str(col))
-            if match:
-                return _normalize_instrument_name(match.group(1))
-
-    # Strategy 3: Check DataFrame column names as fallback
+    field_col = result.get("field_name", pd.Series(dtype=str))
+    for pattern in (r"alerts_([a-z_]+)_\d+", r"^([a-z_]+)_alerts$"):
+        for val in field_col:
+            if pd.notna(val):
+                m = re.search(pattern, str(val))
+                if m:
+                    return _normalize_instrument_name(m.group(1))
+    # Column-name fallback
     for col in result.columns:
         if col.endswith("_alerts"):
-            instrument_part = col.replace("_alerts", "")
-            return _normalize_instrument_name(instrument_part)
+            return _normalize_instrument_name(col.replace("_alerts", ""))
         if col.startswith("alerts_"):
             parts = col.split("_")
             if len(parts) >= 2:  # noqa: PLR2004
                 return _normalize_instrument_name(parts[1])
-
-    # Default fallback
-    default_fallback = "ra_alerts_parent"
-    logger.warning(
-        "Could not derive instrument name from columns, defaulting to '%s'",
-        default_fallback,
-    )
-    return default_fallback
+    logger.warning("Could not derive instrument name, defaulting to 'ra_alerts_parent'")
+    return "ra_alerts_parent"
 
 
 def process_alerts_for_redcap(
-    redcap_alerts: pd.DataFrame, partial_redcap_landing: bool = False
+    pid: int,
+    redcap_alerts: pd.DataFrame,
+    partial_redcap_landing: bool = False,
 ) -> pd.DataFrame:
     """
-    Process alerts and prepare them for REDCap push.
+    Process alerts for REDCap push.
 
-    This function:
-    1. Fetches relevant REDCap metadata and data
-    2. Maps MRNs to record IDs
-    3. Converts response values to REDCap indices
-    4. Toggles alert flags
+    Fetches metadata, maps MRNs → record IDs, converts response values
+    to REDCap indices, and toggles alert flags.
     """
     alert_fields = redcap_alerts["field_name"].unique()
-
-    # Fetch metadata
-    alerts_instrument = fetch_alerts_metadata(REDCAP_ENDPOINTS.base_url)
-
-    # Filter fields if partial landing
+    alerts_instrument = fetch_alerts_metadata(REDCAP_ENDPOINTS.base_url, pid)
     if partial_redcap_landing:
         alert_fields = intersect1d(
             alert_fields, alerts_instrument["field_name"].unique()
         )
-
-    # Fetch existing REDCap data
-    redcap_fields = fetch_data(PID_625, str(FieldList(alert_fields)), all_or_any="any")
-
-    # Map MRNs to records
+    redcap_fields = fetch_data(
+        PID_625_TOKEN, str(FieldList(alert_fields)), all_or_any="any"
+    )
     result, mrn_lookup = map_mrns_to_records(redcap_alerts, redcap_fields)
-
-    # Map response values to indices using generalized function
     choice_lookup = create_choice_lookup(alerts_instrument)
     result["lookup_key"] = list(
-        zip(result["field_name"], result["value"].str.strip().str.lower())
+        zip(result["field_name"], result["value"].str.strip().str.lower()),
     )
     result["value"] = result["lookup_key"].map(choice_lookup).fillna(result["value"])
-
-    # Map record IDs BEFORE toggle_alerts
     result["record"] = result["record"].map(mrn_lookup)
-
-    # Toggle alerts (now working with record IDs, not MRNs)
     return toggle_alerts(result.drop("lookup_key", axis=1))
 
 
 def push_alerts_to_redcap(result: pd.DataFrame) -> None:
-    """Push processed alerts to REDCap with deduplication."""
+    """Push processed alerts to REDCap (PID 625) with deduplication."""
     if result.empty:
         logger.info("No alerts to push (empty DataFrame)")
         return
-
-    # Derive instrument name from the alert data
     instrument_name = derive_instrument_name(result)
     logger.info("Derived instrument name: %s", instrument_name)
-
-    # Deduplicate before pushing
-    result, num_duplicates = deduplicate_dataframe(
+    result, n_dup = deduplicate_dataframe(
         result,
-        PID_625,
+        PID_625_TOKEN,
         REDCAP_ENDPOINTS.base_url,
         redcap_variables.headers,
         instrument_name,
     )
-
     if result.empty:
-        logger.info("All alert rows are duplicates, skipping upload")
+        logger.info("All alert rows are duplicates, skipping")
         return
-
-    if num_duplicates > 0:
-        logger.info("Removed %d duplicate alert rows before push", num_duplicates)
-
+    if n_dup:
+        logger.info("Removed %d duplicate alert rows", n_dup)
     try:
         redcap_api_push(
-            result,
-            PID_625,
-            REDCAP_ENDPOINTS.base_url,
-            redcap_variables.headers,
+            result, PID_625_TOKEN, REDCAP_ENDPOINTS.base_url, redcap_variables.headers
         )
-        logger.info(
-            "%d rows successfully updated for alerts in PID 625.", result.shape[0]
-        )
+        logger.info("%d rows updated for alerts in PID 625.", result.shape[0])
     except Exception:
         logger.exception("Pushing alerts from Curious to REDCap failed.")
         raise
@@ -344,45 +267,34 @@ def push_alerts_to_redcap(result: pd.DataFrame) -> None:
 
 
 def _process_single_alert(
+    pid: int,
     alert: CuriousAlert,
     partial_redcap_landing: bool = False,
-) -> Optional[pd.DataFrame]:
-    """
-    Process a single alert and return result DataFrame or None if invalid.
-
-    Returns
-    -------
-    Optional[pd.DataFrame]
-        Processed alert data ready for REDCap push, or None if no valid data
-
-    """
-    # Validate message type
+) -> pd.DataFrame | None:
+    """Process one alert; return result or ``None`` if invalid."""
     if alert.get("type") != "answer":
-        logger.debug("Skipping non-answer message type: %s", alert.get("type"))
+        logger.debug("Skipping non-answer type: %s", alert.get("type"))
         return None
-
-    # Parse and process
     redcap_alert = parse_alert(alert)
-    if redcap_alert.empty:
-        result = redcap_alert
-    else:
-        result = process_alerts_for_redcap(redcap_alert, partial_redcap_landing)
-
+    result = (
+        process_alerts_for_redcap(pid, redcap_alert, partial_redcap_landing)
+        if not redcap_alert.empty
+        else redcap_alert
+    )
     if result.empty:
-        logger.warning("No valid data to push for alert ID: %s", alert.get("id"))
+        logger.warning("No valid data for alert ID: %s", alert.get("id"))
         return None
-
     return result
 
 
 def _handle_alert_errors(message: str, error: Exception) -> None:
-    """Centralized error handling for alert processing."""
+    """Centralised error handling for alert processing."""
     if isinstance(error, json.JSONDecodeError):
-        logger.exception("Failed to parse message as JSON: %s", message)
+        logger.exception("Failed to parse JSON: %s", message)
     elif isinstance(error, KeyError):
-        logger.exception("Missing expected field in alert message")
+        logger.exception("Missing expected field in alert")
     else:
-        logger.exception("Error processing alert message: %s", message)
+        logger.exception("Error processing alert: %s", message)
 
 
 # ============================================================================
@@ -394,13 +306,14 @@ async def websocket_listener(
     websocket: websockets.ClientConnection,
     partial_redcap_landing: bool = False,
 ) -> None:
-    """Listen to websocket messages and process alerts."""
+    """Listen to websocket and process alerts (PID 625 only)."""
+    pid = 625
     try:
         async for message in websocket:
             logger.info("Received alert: %s", message)
             try:
                 alert: CuriousAlertWebsocket = json.loads(message)
-                result = _process_single_alert(alert, partial_redcap_landing)
+                result = _process_single_alert(pid, alert, partial_redcap_landing)
                 if result is not None:
                     push_alerts_to_redcap(result)
             except Exception as e:
@@ -415,76 +328,55 @@ async def websocket_listener(
         raise
 
 
-async def main_with_reconnect(
+async def _reconnect_loop(
     applet_name: str,
     uri: str,
-    partial_redcap_landing: bool = False,
-    max_attempts: Optional[int] = WS_MAX_RECONNECT_ATTEMPTS,
+    partial_redcap_landing: bool,
+    max_attempts: int | None,
 ) -> None:
-    """
-    Automatically reconnect when websocket connection breaks.
-
-    Parameters
-    ----------
-    applet_name
-        Name of applet to authenticate to
-    uri
-        WebSocket URI to connect to
-    partial_redcap_landing
-        Whether to use partial REDCap landing
-    max_attempts
-        Maximum number of reconnection attempts. None = infinite.
-
-    """
+    """Connect / reconnect to websocket in a loop."""
     attempt = 0
     tokens = curious_authenticate(applet_name)
-
     while max_attempts is None or attempt < max_attempts:
         try:
-            if attempt > 0:
+            if attempt:
                 logger.info(
-                    "Reconnection attempt %d%s",
+                    "Reconnect attempt %d%s",
                     attempt,
                     f" of {max_attempts}" if max_attempts else "",
                 )
-            async with connect_to_websocket(tokens.access, uri) as websocket:
-                if attempt > 0:
-                    logger.info("Successfully reconnected to WebSocket")
+            async with connect_to_websocket(tokens.access, uri) as ws:
+                if attempt:
+                    logger.info("Reconnected to WebSocket")
                 attempt = 0
-                await websocket_listener(websocket, partial_redcap_landing)
-                logger.info("WebSocket listener completed normally")
+                await websocket_listener(ws, partial_redcap_landing)
                 break
         except ConnectionClosedError:
             attempt += 1
             if max_attempts is not None and attempt >= max_attempts:
-                logger.exception("Max reconnection attempts reached. Exiting.")
+                logger.exception("Max reconnect attempts reached.")
                 raise
-            logger.warning(
-                "Connection lost. Reconnecting in %d seconds...", WS_RECONNECT_DELAY
-            )
+            logger.warning("Connection lost. Reconnecting in %ds…", WS_RECONNECT_DELAY)
             await asyncio.sleep(WS_RECONNECT_DELAY)
         except InvalidStatus as e:
-            status = e.response.status_code
-            logger.exception("WebSocket connection failed with status %s", status)
-            if status == requests.codes["unauthorized"]:
-                # ── Re-authenticate ──
-                logger.warning("Token expired or invalid. Re-authenticating...")
+            logger.exception("WebSocket failed with status %s", e.response.status_code)
+            if e.response.status_code == requests.codes["unauthorized"]:
+                logger.warning("Re-authenticating…")
                 try:
                     tokens = curious_authenticate(applet_name)
-                    logger.info("Re-authentication successful")
                 except Exception:
-                    logger.exception("Re-authentication failed. Exiting.")
+                    logger.exception("Re-authentication failed.")
                     raise
             attempt += 1
             if max_attempts is not None and attempt >= max_attempts:
-                logger.exception("Max reconnection attempts reached. Exiting.")
+                logger.exception("Max reconnect attempts reached.")
                 raise
             await asyncio.sleep(WS_RECONNECT_DELAY)
         except asyncio.CancelledError:
             logger.info("Operation cancelled")
             raise
         except KeyboardInterrupt:
-            logger.info("WebSocket listener cancelled manually")
+            logger.info("Listener cancelled manually")
             break
         except Exception:
             logger.exception("Fatal error in main loop")
@@ -499,88 +391,52 @@ async def main_with_reconnect(
 async def main(
     applet_names: list[str],
     partial_redcap_landing: bool = False,
-    max_attempts: Optional[int] = None,
+    max_attempts: int | None = None,
 ) -> None:
-    """
-    Send Curious alerts to REDCap (async version via websocket).
-
-    This version includes automatic reconnection on connection failures.
-
-    Parameters
-    ----------
-    applet_names
-        List of applet names for which to process alerts
-    partial_redcap_landing
-        Whether to use partial REDCap landing
-    max_attempts
-        Maximum number of reconnection attempts. None = infinite.
-
-    """
+    """Send Curious alerts to REDCap (async, PID 625 only)."""
+    endpoints = curious_variables.Endpoints(protocol="wss")
     for applet_name in applet_names:
-        endpoints = curious_variables.Endpoints(protocol="wss")
-        await main_with_reconnect(
-            applet_name=applet_name,
-            uri=endpoints.alerts,
-            partial_redcap_landing=partial_redcap_landing,
-            max_attempts=max_attempts,
+        await _reconnect_loop(
+            applet_name, endpoints.alerts, partial_redcap_landing, max_attempts
         )
 
 
 def synchronous_main(
-    applet_names: list[str], partial_redcap_landing: bool = False
+    applet_names: list[str],
+    partial_redcap_landing: bool = False,
 ) -> None:
-    """Send Curious alerts to REDCap (synchronous version via REST API)."""
-    # Initialize cache for minute-by-minute transfers (TTL: 2 minutes)
+    """Send Curious alerts to REDCap (synchronous REST, PID 625 only)."""
     cache = DataCache("curious_alerts_to_redcap", ttl_minutes=2)
-
+    pid = 625
     for applet_name in applet_names:
         tokens = curious_authenticate(applet_name)
         results = call_curious_api(
-            tokens.endpoints.alerts, tokens, return_type=list[CuriousAlertHttps]
+            tokens.endpoints.alerts,
+            tokens,
+            return_type=list[CuriousAlertHttps],
         )
-
-        # Filter out alerts already processed with composite keys
-        unprocessed_alerts: list[tuple[CuriousAlertHttps, str]] = []
+        unprocessed: list[tuple[CuriousAlertHttps, str]] = []
         for alert in results:
-            alert_id = alert.get("id", "")
-            message = alert.get("message", "")
-            cache_key = create_alert_cache_key(alert_id, message)
-
-            if not cache.is_processed(cache_key):
-                unprocessed_alerts.append((alert, cache_key))
+            ck = create_alert_cache_key(alert.get("id", ""), alert.get("message", ""))
+            if cache.is_processed(ck):
+                logger.debug("Skipping cached alert: %s", ck)
             else:
-                logger.debug("Skipping already-processed alert: %s", cache_key)
-
-        if not unprocessed_alerts:
-            logger.info("All alerts already processed in cache.")
+                unprocessed.append((alert, ck))
+        if not unprocessed:
+            logger.info("All alerts already processed.")
             continue
-
         logger.info(
             "Processing %d new alerts (skipped %d cached)",
-            len(unprocessed_alerts),
-            len(results) - len(unprocessed_alerts),
+            len(unprocessed),
+            len(results) - len(unprocessed),
         )
-
-        # Parse and concatenate all new alerts
-        redcap_alerts = pd.concat(
-            [parse_alert(alert) for alert, _ in unprocessed_alerts]
-        )
-
-        # Process and push to REDCap
-        result = process_alerts_for_redcap(redcap_alerts, partial_redcap_landing)
+        redcap_alerts = pd.concat([parse_alert(a) for a, _ in unprocessed])
+        result = process_alerts_for_redcap(pid, redcap_alerts, partial_redcap_landing)
         push_alerts_to_redcap(result)
-
-        # Mark alerts as processed in cache
-        for alert, cache_key in unprocessed_alerts:
+        for alert, ck in unprocessed:
             cache.mark_processed(
-                cache_key,
-                metadata={
-                    "alert_id": alert.get("id", ""),
-                    "processed": True,
-                },
+                ck, metadata={"alert_id": alert.get("id", ""), "processed": True}
             )
-
-        # Log cache statistics
         log_cache_statistics(cache, logger)
 
 
@@ -600,22 +456,19 @@ def cli() -> None:
         "--max-reconnect-attempts",
         type=int,
         default=None,
-        help="Maximum number of reconnection attempts (default: infinite)",
+        help="Max reconnection attempts (default: infinite)",
     )
     parser.set_defaults(partial=False, synchronous=False)
-
     namespace = _SynchronousArgs()
     args = parser.parse_args(namespace=namespace)
-
     applet_names = _prepare_applet_names(args.applet_names)
-
     if args.synchronous:
         synchronous_main(applet_names, args.partial)
     else:
         try:
             asyncio.run(main(applet_names, args.partial, args.max_reconnect_attempts))
         except KeyboardInterrupt:
-            logger.info("Asynchronous connection cancelled manually.")
+            logger.info("Async connection cancelled manually.")
 
 
 if __name__ == "__main__":
