@@ -535,6 +535,17 @@ class Fields:
         """Columns to rename from REDCap PID 247 to REDCap PID 625."""
 
 
+PIDS = {
+    "Healthy Brain Network Study Consent (IRB Approved)": 247,
+    "HBN - Operations and Data Collection": 625,
+    "HBN - Intake and Curious (TEMP for Transition)": 744,
+    "SANDBOX - Healthy Brain Network Study Consent (IRB Approved) PID 757.": 757,
+    "HBN - Responder Tracking": 879,
+    "HBN - Curious outputs": 891,
+}
+"""REDCap project IDs."""
+
+
 class Values:
     """Values for REDCap fields."""
 

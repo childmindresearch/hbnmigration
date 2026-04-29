@@ -85,6 +85,9 @@ exclude = [
     ".*_config_variables/.*_variables/__init__\\.py$"
 ]
 
+[tool.pyright]
+pythonVersion = "3.14"
+
 [tool.setuptools]
 include-package-data = true
 

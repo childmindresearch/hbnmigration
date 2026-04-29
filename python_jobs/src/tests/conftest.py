@@ -33,7 +33,6 @@ from hbnmigration.utility_functions.datatypes import (
 # ============================================================================
 # Constants - General
 # ============================================================================
-
 DEFAULT_ENCRYPTION: CuriousEncryption = {
     "base": "base_value",
     "prime": "prime_value",
@@ -41,7 +40,6 @@ DEFAULT_ENCRYPTION: CuriousEncryption = {
     "publicKey": "public_key_value",
 }
 DEFAULT_REDCAP_BASE_URL = "https://redcap.test/api/"
-
 # Curious invitation test IDs
 SAMPLE_APPLET_ID = "abcd1234-ab12-cd34-ef56-abcdef123456"
 SAMPLE_ACTIVITY_ID = "actv1234-ab12-cd34-ef56-abcdef123456"
@@ -78,7 +76,6 @@ def mock_config_log_root(tmp_path: Path) -> Generator[Path, None, None]:
 # ============================================================================
 # Constants - Alert Testing
 # ============================================================================
-
 EMPTY_ALERT_COLUMNS = ["record", "field_name", "value", "redcap_event_name"]
 DEFAULT_ALERT_METADATA_FIELDS = [
     "mrn",
@@ -86,11 +83,9 @@ DEFAULT_ALERT_METADATA_FIELDS = [
     "parent_baseline_alerts",
 ]
 DEFAULT_ALERT_METADATA_CHOICES = ["", "0, No | 1, Yes", "0, No | 1, Yes"]
-
 # ============================================================================
 # Constants - Permission Audio/Video
 # ============================================================================
-
 PERM_AV_NOT_APPLICABLE = str(
     RedcapValues.PID625.permission_audiovideo_participant[
         "Not Applicable: no assent required"
@@ -107,7 +102,6 @@ PERM_AV_NO = str(
     ]
 )
 PERM_AV_CONSTRAINT = Constraints.PID625.permission_audiovideo_participant.age
-
 
 # ============================================================================
 # File System Fixtures
@@ -379,34 +373,7 @@ def create_curious_alert_with_message(
     subject_id: str | None = None,
     **kwargs: Any,
 ) -> CuriousAlertHttps:
-    """
-    Create CuriousAlert with properly formatted message.
-
-    Parameters
-    ----------
-    alert_id : str
-        Alert identifier
-    secret_id : str
-        Secret ID (MRN)
-    item_name : str
-        Item name (e.g., "parent_baseline")
-    answer : str
-        Answer text (e.g., "Yes")
-    color : str
-        Alert color prefix
-    respondent_id : str | None
-        Respondent ID, defaults to f"respondent_{alert_id}"
-    subject_id : str | None
-        Subject ID, defaults to f"subject_{alert_id}"
-    **kwargs
-        Additional CuriousAlert fields
-
-    Returns
-    -------
-    CuriousAlert
-        Alert with formatted message and optional secretId
-
-    """
+    """Create CuriousAlert with properly formatted message."""
     message = f'{color}: "{answer}" to Question text {item_name}'
     return cast(
         CuriousAlertHttps,
@@ -434,27 +401,7 @@ def make_api_respondent(
     last_seen: str | None = None,
     applet_id: str = SAMPLE_APPLET_ID,
 ) -> dict[str, Any]:
-    """
-    Build a respondent dict matching the Curious invitation API shape.
-
-    Parameters
-    ----------
-    secret_id
-        The ``respondentSecretId`` value.
-    subject_id
-        The ``subjectId`` value.
-    status
-        Invitation status string.
-    last_seen
-        ISO datetime or ``None``.
-    applet_id
-        Applet ID for the detail record.
-
-    Returns
-    -------
-    dict[str, Any]
-
-    """
+    """Build a respondent dict matching the Curious invitation API shape."""
     return {
         "status": status,
         "lastSeen": last_seen,
@@ -743,11 +690,7 @@ def setup_alert_test_with_metadata(
     metadata: pd.DataFrame | None = None,
     existing_data: pd.DataFrame | None = None,
 ) -> None:
-    """
-    Set up for alert processing tests.
-
-    Consolidates common setup pattern used across multiple tests.
-    """
+    """Set up for alert processing tests."""
     setup_standard_alert_mocks(
         mock_alerts_dependencies,
         metadata if metadata is not None else create_alert_metadata_default(),
@@ -769,22 +712,12 @@ def setup_websocket_listener_test(
     metadata: pd.DataFrame | None = None,
     parse_returns: list[pd.DataFrame] | None = None,
 ) -> Generator[AsyncMock, None, None]:
-    """
-    Set up context for websocket listener tests.
-
-    Yields
-    ------
-    AsyncMock
-        Configured mock websocket
-
-    """
+    """Set up context for websocket listener tests."""
     setup_alert_test_with_metadata(mock_alerts_dependencies, metadata)
-
     if alerts:
         mock_websocket = create_mock_websocket_with_alerts(alerts)
     else:
         mock_websocket = AsyncMock()
-
     if parse_returns:
         with patch(
             "hbnmigration.from_curious.alerts_to_redcap.parse_alert",
@@ -799,7 +732,7 @@ def setup_websocket_listener_test(
 def setup_reconnect_mocks(
     listener_side_effect: Any = None,
 ) -> Generator[dict[str, Mock], None, None]:
-    """Set up mocks for main_with_reconnect tests."""
+    """Set up mocks for _reconnect_loop tests."""
     with ExitStack() as stack:
         mocks = {
             "ws": stack.enter_context(
@@ -940,13 +873,8 @@ def create_sync_main_test_setup(
     status_code: int = requests.codes["okay"],
     metadata: pd.DataFrame | None = None,
 ) -> ContextManager[dict[str, Mock]]:
-    """
-    Create complete setup for synchronous_main tests.
-
-    Consolidates the repetitive setup pattern.
-    """
+    """Create complete setup for synchronous_main tests."""
     setup_alert_test_with_metadata(mock_alerts_dependencies, metadata)
-
     return setup_sync_main_mocks(
         mock_alerts_dependencies,
         alerts,
@@ -966,26 +894,8 @@ def run_parse_alert_test(
     should_be_empty: bool,
     caplog: pytest.LogCaptureFixture | None = None,
 ) -> pd.DataFrame:
-    """
-    Run standard parse_alert test.
-
-    Parameters
-    ----------
-    alert : CuriousAlert
-        Alert to parse
-    should_be_empty : bool
-        Whether result should be empty
-    caplog : pytest.LogCaptureFixture | None
-        Log capture fixture for validation
-
-    Returns
-    -------
-    pd.DataFrame
-        Parse result
-
-    """
+    """Run standard parse_alert test."""
     result = parse_alert(alert)
-
     if should_be_empty:
         assert_empty_alert_dataframe(result)
         if caplog:
@@ -994,7 +904,6 @@ def run_parse_alert_test(
         assert_valid_parsed_alert(result, alert["secretId"])
         assert_alert_contains_mrn(result, alert["secretId"])
         assert_alert_field_name_format(result)
-
     return result
 
 
@@ -1005,30 +914,13 @@ async def run_websocket_listener_test(
     should_push: bool = True,
     caplog: pytest.LogCaptureFixture | None = None,
 ) -> None:
-    """
-    Run standard websocket listener test.
-
-    Parameters
-    ----------
-    mock_alerts_dependencies : dict[str, Mock]
-        Mock dependencies
-    alerts : list[CuriousAlert | dict[str, Any]]
-        Alerts to process
-    metadata : pd.DataFrame | None
-        Optional metadata
-    should_push : bool
-        Whether push should be called
-    caplog : pytest.LogCaptureFixture | None
-        Log capture for validation
-
-    """
+    """Run standard websocket listener test."""
     with setup_websocket_listener_test(
         mock_alerts_dependencies,
         alerts=alerts,
         metadata=metadata,
     ) as mock_websocket:
         await websocket_listener(mock_websocket, partial_redcap_landing=False)
-
         if should_push:
             assert_websocket_push_called(mock_alerts_dependencies)
         else:
@@ -1045,30 +937,7 @@ def run_synchronous_main_test(
     expected_parse_count: int | None = None,
     should_push: bool = True,
 ) -> dict[str, Mock]:
-    """
-    Run standard synchronous_main test.
-
-    Parameters
-    ----------
-    mock_alerts_dependencies : dict[str, Mock]
-        Mock dependencies
-    alerts : list[CuriousAlert | dict[str, Any]]
-        Alerts to process
-    parse_returns : list[pd.DataFrame] | None
-        Parse return values
-    metadata : pd.DataFrame | None
-        Optional metadata
-    expected_parse_count : int | None
-        Expected number of parse calls
-    should_push : bool
-        Whether push should be called
-
-    Returns
-    -------
-    dict[str, Mock]
-        Test mocks
-
-    """
+    """Run standard synchronous_main test."""
     with create_sync_main_test_setup(
         mock_alerts_dependencies,
         alerts,
@@ -1076,15 +945,12 @@ def run_synchronous_main_test(
         metadata=metadata,
     ) as test_mocks:
         synchronous_main(applet_names=["Healthy Brain Network Questionnaires"])
-
         if expected_parse_count is not None:
             assert_mock_called_n_times(test_mocks["parse"], expected_parse_count)
-
         if should_push:
             assert_websocket_push_called(mock_alerts_dependencies)
         else:
             assert_websocket_push_not_called(mock_alerts_dependencies)
-
     return test_mocks
 
 
@@ -1496,12 +1362,7 @@ def make_ml_data(
 
 @pytest.fixture
 def sample_decrypted_answer() -> CuriousDecryptedAnswer:
-    """
-    Return a minimal CuriousDecryptedAnswer for testing.
-
-    Note: datetimes use the no-trailing-Z format to match what parse_dt expects.
-    Both ``"…Z"`` and ``"…000"`` / ``"…000000"`` formats are supported.
-    """
+    """Return a minimal CuriousDecryptedAnswer for testing."""
     return make_ml_data(
         item_ids=["item1234-ab12-cd34-ef56-abcdef123456"],
         items=[
@@ -1925,7 +1786,6 @@ def mock_push_to_redcap_dependencies():
             return df, 0
 
         mock_dedupe.side_effect = dedupe_side_effect
-
         yield {
             "dedupe": mock_dedupe,
             "fetch_api": mock_fetch_api,
@@ -1963,28 +1823,14 @@ def setup_push_to_redcap_test(
     response_sequence: list[MagicMock] | None = None,
     split_return: tuple[Path, Path | None] | None = None,
 ) -> Generator[None, None, None]:
-    """
-    Context manager for setting up push_to_redcap test scenarios.
-
-    Parameters
-    ----------
-    mocks : dict[str, MagicMock]
-        Dictionary of mocks from mock_push_to_redcap_dependencies fixture
-    response_sequence : list[MagicMock] | None
-        Sequence of HTTP responses (for side_effect)
-    split_return : tuple[Path, Path | None] | None
-        Return value for split_csv_by_fields mock
-
-    """
+    """Context manager for setting up push_to_redcap test scenarios."""
     if response_sequence:
         if len(response_sequence) == 1:
             mocks["post"].return_value = response_sequence[0]
         else:
             mocks["post"].side_effect = response_sequence
-
     if split_return:
         mocks["split"].return_value = split_return
-
     yield
 
 
@@ -2007,7 +1853,6 @@ def assert_push_failed_no_retry(mocks: dict[str, MagicMock]) -> None:
 
 def assert_unfound_path_logged(caplog: pytest.LogCaptureFixture, path: Path) -> None:
     """Assert unfound fields path was logged."""
-    assert "Unfound fields data saved to:" in caplog.text
     assert str(path) in caplog.text
 
 

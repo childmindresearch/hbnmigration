@@ -10,9 +10,9 @@ import requests
 from websockets.exceptions import ConnectionClosedError, InvalidStatus
 
 from hbnmigration.from_curious.alerts_to_redcap import (
+    _reconnect_loop,
     cli,
     main,
-    main_with_reconnect,
     parse_alert,
     process_alerts_for_redcap,
     push_alerts_to_redcap,
@@ -37,6 +37,8 @@ from .conftest import (
     setup_reconnect_mocks,
     setup_standard_alert_mocks,
 )
+
+_REDCAP_PID = 625
 
 # ============================================================================
 # Tests - toggle_alerts
@@ -173,7 +175,7 @@ def test_process_alerts_fetches_metadata(
     setup_standard_alert_mocks(
         mock_alerts_dependencies, redcap_alerts_metadata, redcap_existing_alert_data
     )
-    process_alerts_for_redcap(redcap_alert_df)
+    process_alerts_for_redcap(_REDCAP_PID, redcap_alert_df)
     assert mock_alerts_dependencies["fetch_metadata"].called
 
 
@@ -181,7 +183,7 @@ def test_process_alerts_calls_required_functions(mock_alerts_dependencies):
     """Test that process_alerts_for_redcap calls the necessary functions."""
     setup_standard_alert_mocks(mock_alerts_dependencies)
     alert_data = create_alert_df(["12345"], ["alerts_parent_baseline_1"], ["yes"])
-    result = process_alerts_for_redcap(alert_data)
+    result = process_alerts_for_redcap(_REDCAP_PID, alert_data)
     assert isinstance(result, pd.DataFrame)
     assert mock_alerts_dependencies["fetch_metadata"].called
     assert mock_alerts_dependencies["fetch"].called
@@ -193,7 +195,7 @@ def test_process_alerts_returns_dataframe_with_required_columns(
     """Test that result has required REDCap columns."""
     setup_standard_alert_mocks(mock_alerts_dependencies)
     alert_data = create_alert_df(["12345"], ["alerts_parent_baseline_1"], ["yes"])
-    result = process_alerts_for_redcap(alert_data)
+    result = process_alerts_for_redcap(_REDCAP_PID, alert_data)
     for col in ["record", "field_name", "value"]:
         assert col in result.columns
 
@@ -204,7 +206,7 @@ def test_process_alerts_toggles_summary_flags(
     """Test that instrument-level alert flags are toggled."""
     setup_standard_alert_mocks(mock_alerts_dependencies, redcap_alerts_metadata)
     alert_data = create_alert_df(["MRN12345"], ["alerts_parent_baseline_1"], ["yes"])
-    result = process_alerts_for_redcap(alert_data)
+    result = process_alerts_for_redcap(_REDCAP_PID, alert_data)
     if len(result) > 0:
         summary_rows = result[result["field_name"].str.endswith("_alerts")]
         if len(summary_rows) > 0:
@@ -221,7 +223,9 @@ def test_process_alerts_partial_redcap_landing(
         ["alerts_parent_baseline_1", "alerts_nonexistent_field"],
         ["yes", "Yes"],
     )
-    result = process_alerts_for_redcap(alert_df, partial_redcap_landing=True)
+    result = process_alerts_for_redcap(
+        _REDCAP_PID, alert_df, partial_redcap_landing=True
+    )
     assert "alerts_nonexistent_field" not in result["field_name"].values
 
 
@@ -231,7 +235,7 @@ def test_process_alerts_handles_missing_mrn(
     """Test handling of alerts with MRN not found in REDCap."""
     setup_standard_alert_mocks(mock_alerts_dependencies, redcap_alerts_metadata)
     alert_df = create_alert_df(["MRN99999"], ["alerts_parent_baseline_1"], ["yes"])
-    result = process_alerts_for_redcap(alert_df)
+    result = process_alerts_for_redcap(_REDCAP_PID, alert_df)
     assert len(result) == 0 or result["record"].isna().all()
 
 
@@ -252,7 +256,7 @@ def test_process_alerts_maps_records_before_toggle(mock_alerts_dependencies):
     )
     setup_standard_alert_mocks(mock_alerts_dependencies, metadata, existing_data)
     alert_df = create_alert_df(["12345"], ["alerts_parent_baseline_1"], ["yes"])
-    result = process_alerts_for_redcap(alert_df)
+    result = process_alerts_for_redcap(_REDCAP_PID, alert_df)
     # Should have record ID, not MRN
     assert "001" in result["record"].values
     assert "12345" not in result["record"].values
@@ -276,7 +280,7 @@ def test_push_alerts_logs_success(
 ):
     """Test that successful push logs appropriate message."""
     push_alerts_to_redcap(processed_alerts_for_push)
-    assert "successfully updated" in caplog.text
+    assert "rows updated" in caplog.text
     assert "PID 625" in caplog.text
 
 
@@ -348,7 +352,7 @@ async def test_websocket_listener_skips_non_answer_messages(mock_alerts_dependen
 
 @pytest.mark.asyncio
 async def test_main_with_reconnect_reauths_on_401_then_succeeds(caplog):
-    """Test that main_with_reconnect re-authenticates on 401 and succeeds."""
+    """Test that _reconnect_loop re-authenticates on 401 and succeeds."""
     with (
         patch(
             "hbnmigration.from_curious.alerts_to_redcap.connect_to_websocket"
@@ -374,18 +378,21 @@ async def test_main_with_reconnect_reauths_on_401_then_succeeds(caplog):
             mock_ctx,
         ]
 
-        await main_with_reconnect(
-            applet_name="test_applet", uri="wss://test.com/alerts", max_attempts=2
+        await _reconnect_loop(
+            applet_name="test_applet",
+            uri="wss://test.com/alerts",
+            partial_redcap_landing=False,
+            max_attempts=2,
         )
         # Initial auth + re-auth on 401
         assert mock_auth.call_count == 2
         assert mock_listener.called
-        assert "Re-authentication successful" in caplog.text
+        assert "Re-authenticating" in caplog.text
 
 
 @pytest.mark.asyncio
 async def test_main_with_reconnect_reauth_failure_raises(caplog):
-    """Test that main_with_reconnect raises when re-authentication itself fails."""
+    """Test that _reconnect_loop raises when re-authentication itself fails."""
     with (
         patch(
             "hbnmigration.from_curious.alerts_to_redcap.connect_to_websocket"
@@ -406,14 +413,17 @@ async def test_main_with_reconnect_reauth_failure_raises(caplog):
         mock_ws.side_effect = create_mock_invalid_status(requests.codes["unauthorized"])
 
         with pytest.raises(Exception, match="Auth server down"):
-            await main_with_reconnect(
-                applet_name="test_applet", uri="wss://test.com/alerts", max_attempts=2
+            await _reconnect_loop(
+                applet_name="test_applet",
+                uri="wss://test.com/alerts",
+                partial_redcap_landing=False,
+                max_attempts=2,
             )
         assert "Re-authentication failed" in caplog.text
 
 
 # ============================================================================
-# Tests - main_with_reconnect
+# Tests - _reconnect_loop
 # ============================================================================
 
 
@@ -421,11 +431,14 @@ async def test_main_with_reconnect_reauth_failure_raises(caplog):
 async def test_main_with_reconnect_successful_connection(
     mock_alerts_dependencies, redcap_alerts_metadata
 ):
-    """Test that main_with_reconnect handles successful connection."""
+    """Test that _reconnect_loop handles successful connection."""
     setup_standard_alert_mocks(mock_alerts_dependencies, redcap_alerts_metadata)
     with setup_reconnect_mocks() as mocks:
-        await main_with_reconnect(
-            applet_name="test_applet", uri="wss://test.com/alerts", max_attempts=1
+        await _reconnect_loop(
+            applet_name="test_applet",
+            uri="wss://test.com/alerts",
+            partial_redcap_landing=False,
+            max_attempts=1,
         )
         assert mocks["ws"].called
         assert mocks["listener"].called
@@ -433,30 +446,36 @@ async def test_main_with_reconnect_successful_connection(
 
 @pytest.mark.asyncio
 async def test_main_with_reconnect_handles_connection_error(caplog):
-    """Test that main_with_reconnect reconnects on ConnectionClosedError."""
+    """Test that _reconnect_loop reconnects on ConnectionClosedError."""
     with setup_reconnect_mocks([ConnectionClosedError(None, None), None]) as mocks:
-        await main_with_reconnect(
-            applet_name="test_applet", uri="wss://test.com/alerts", max_attempts=2
+        await _reconnect_loop(
+            applet_name="test_applet",
+            uri="wss://test.com/alerts",
+            partial_redcap_landing=False,
+            max_attempts=2,
         )
         assert mocks["listener"].call_count == 2
         assert "Reconnecting in" in caplog.text
-        assert "Successfully reconnected" in caplog.text
+        assert "Reconnected to WebSocket" in caplog.text
 
 
 @pytest.mark.asyncio
 async def test_main_with_reconnect_max_attempts_exceeded():
-    """Test that main_with_reconnect stops after max attempts."""
+    """Test that _reconnect_loop stops after max attempts."""
     with setup_reconnect_mocks(ConnectionClosedError(None, None)) as mocks:
         with pytest.raises(ConnectionClosedError):
-            await main_with_reconnect(
-                applet_name="test_applet", uri="wss://test.com/alerts", max_attempts=1
+            await _reconnect_loop(
+                applet_name="test_applet",
+                uri="wss://test.com/alerts",
+                partial_redcap_landing=False,
+                max_attempts=1,
             )
         assert mocks["listener"].call_count == 1
 
 
 @pytest.mark.asyncio
 async def test_main_with_reconnect_handles_auth_error(caplog):
-    """Test that main_with_reconnect handles 401 authentication errors."""
+    """Test that _reconnect_loop handles 401 authentication errors."""
     with (
         patch(
             "hbnmigration.from_curious.alerts_to_redcap.connect_to_websocket"
@@ -474,22 +493,28 @@ async def test_main_with_reconnect_handles_auth_error(caplog):
             create_mock_tokens_ws(),
         ]
         with pytest.raises(InvalidStatus):
-            await main_with_reconnect(
-                applet_name="test_applet", uri="wss://test.com/alerts", max_attempts=1
+            await _reconnect_loop(
+                applet_name="test_applet",
+                uri="wss://test.com/alerts",
+                partial_redcap_landing=False,
+                max_attempts=1,
             )
         assert (
-            "Token expired or invalid" in caplog.text
-            or "Authentication failed" in caplog.text
+            "Re-authenticating" in caplog.text
+            or "Max reconnect attempts reached" in caplog.text
         )
 
 
 @pytest.mark.asyncio
 async def test_main_with_reconnect_infinite_retries():
-    """Test that main_with_reconnect runs indefinitely with None max_attempts."""
+    """Test that _reconnect_loop runs indefinitely with None max_attempts."""
     side_effects = [ConnectionClosedError(None, None)] * 5 + [None]
     with setup_reconnect_mocks(side_effects) as mocks:
-        await main_with_reconnect(
-            applet_name="test_applet", uri="wss://test.com/alerts", max_attempts=None
+        await _reconnect_loop(
+            applet_name="test_applet",
+            uri="wss://test.com/alerts",
+            partial_redcap_landing=False,
+            max_attempts=None,
         )
         assert mocks["listener"].call_count == 6
         assert mocks["sleep"].call_count == 5
@@ -515,21 +540,21 @@ async def test_main_processes_websocket_messages(
         metadata_return=redcap_alerts_metadata,
     ):
         with patch(
-            "hbnmigration.from_curious.alerts_to_redcap.main_with_reconnect"
+            "hbnmigration.from_curious.alerts_to_redcap._reconnect_loop"
         ) as mock_reconnect:
             mock_reconnect.return_value = None
             await main(applet_names=["Healthy Brain Network Questionnaires"])
             assert mock_reconnect.called
-            call_kwargs = mock_reconnect.call_args[1]
-            assert "applet_name" in call_kwargs
-            assert "wss://" in call_kwargs["uri"]
+            call_args = mock_reconnect.call_args[0]
+            assert call_args[0] == "Healthy Brain Network Questionnaires"
+            assert "wss://" in call_args[1]
 
 
 @pytest.mark.asyncio
 async def test_main_passes_max_attempts():
     """Test that main() passes max_attempts parameter."""
     with patch(
-        "hbnmigration.from_curious.alerts_to_redcap.main_with_reconnect"
+        "hbnmigration.from_curious.alerts_to_redcap._reconnect_loop"
     ) as mock_reconnect:
         mock_reconnect.return_value = None
         await main(
@@ -537,8 +562,8 @@ async def test_main_passes_max_attempts():
             partial_redcap_landing=False,
             max_attempts=10,
         )
-        call_kwargs = mock_reconnect.call_args[1]
-        assert call_kwargs["max_attempts"] == 10
+        call_args = mock_reconnect.call_args[0]
+        assert call_args[3] == 10  # max_attempts is 4th positional arg
 
 
 @pytest.mark.asyncio
@@ -547,7 +572,7 @@ async def test_main_skips_non_answer_messages(mock_alerts_dependencies):
     non_answer = {"type": "heartbeat", "timestamp": "2024-01-01T00:00:00Z"}
     with setup_main_test_mocks(mock_alerts_dependencies, sample_alert=non_answer):
         with patch(
-            "hbnmigration.from_curious.alerts_to_redcap.main_with_reconnect"
+            "hbnmigration.from_curious.alerts_to_redcap._reconnect_loop"
         ) as mock_reconnect:
             mock_reconnect.return_value = None
             await main(applet_names=["Healthy Brain Network Questionnaires"])
@@ -739,7 +764,7 @@ def test_fetch_alerts_metadata_called_in_process_alerts(
     """Test that fetch_alerts_metadata is called during alert processing."""
     setup_standard_alert_mocks(mock_alerts_dependencies, redcap_alerts_metadata)
     alert_df = create_alert_df(["MRN12345"], ["alerts_parent_baseline_1"], ["yes"])
-    process_alerts_for_redcap(alert_df)
+    process_alerts_for_redcap(_REDCAP_PID, alert_df)
     # The fetch_alerts_metadata should be called (it's the imported function)
     assert mock_alerts_dependencies["fetch_metadata"].called
 
@@ -812,7 +837,7 @@ def test_process_alerts_creates_summary_fields(
     """Test that process_alerts creates appropriate summary fields."""
     setup_standard_alert_mocks(mock_alerts_dependencies, redcap_alerts_metadata)
     alert_df = create_alert_df(records, field_names, ["yes"] * len(field_names))
-    result = process_alerts_for_redcap(alert_df)
+    result = process_alerts_for_redcap(_REDCAP_PID, alert_df)
     # Should have summary field if metadata contains the instrument
     summary_rows = result[result["field_name"] == expected_summary]
     assert len(summary_rows) > 0
