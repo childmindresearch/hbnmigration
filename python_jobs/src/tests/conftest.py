@@ -2,6 +2,7 @@
 
 from collections.abc import Generator
 from contextlib import contextmanager, ExitStack
+from datetime import date, timedelta
 import json
 import os
 from pathlib import Path
@@ -20,7 +21,7 @@ from hbnmigration.from_curious.alerts_to_redcap import (
     synchronous_main,
     websocket_listener,
 )
-from hbnmigration.from_redcap.config import Values
+from hbnmigration.from_redcap.config import Constraints, Values, Values as RedcapValues
 from hbnmigration.utility_functions.datatypes import (
     ApiProtocol,
     CuriousAlert,
@@ -85,6 +86,28 @@ DEFAULT_ALERT_METADATA_FIELDS = [
     "parent_baseline_alerts",
 ]
 DEFAULT_ALERT_METADATA_CHOICES = ["", "0, No | 1, Yes", "0, No | 1, Yes"]
+
+# ============================================================================
+# Constants - Permission Audio/Video
+# ============================================================================
+
+PERM_AV_NOT_APPLICABLE = str(
+    RedcapValues.PID625.permission_audiovideo_participant[
+        "Not Applicable: no assent required"
+    ]
+)
+PERM_AV_YES = str(
+    RedcapValues.PID625.permission_audiovideo_participant[
+        "YES, you may record me during participation"
+    ]
+)
+PERM_AV_NO = str(
+    RedcapValues.PID625.permission_audiovideo_participant[
+        "NO, you may not record me during participation"
+    ]
+)
+PERM_AV_CONSTRAINT = Constraints.PID625.permission_audiovideo_participant.age
+
 
 # ============================================================================
 # File System Fixtures
@@ -1476,8 +1499,8 @@ def sample_decrypted_answer() -> CuriousDecryptedAnswer:
     """
     Return a minimal CuriousDecryptedAnswer for testing.
 
-    Note: datetimes must NOT have trailing 'Z' — the production code uses
-    strptime with format ``%Y-%m-%dT%H:%M:%S%.f`` which does not parse 'Z'.
+    Note: datetimes use the no-trailing-Z format to match what parse_dt expects.
+    Both ``"…Z"`` and ``"…000"`` / ``"…000000"`` formats are supported.
     """
     return make_ml_data(
         item_ids=["item1234-ab12-cd34-ef56-abcdef123456"],
@@ -2472,3 +2495,20 @@ def create_mock_module_in_sys(
             setattr(mock_mod, key, value)
     with patch.dict("sys.modules", {module_path: mock_mod}):
         yield mock_mod
+
+
+# ============================================================================
+# Date / Age Helpers
+# ============================================================================
+
+
+def dob_for_age(age: int) -> str:
+    """Return a ``YYYY-MM-DD`` string for someone who is exactly *age* today."""
+    today = date.today()
+    return today.replace(year=today.year - age).isoformat()
+
+
+def dob_for_age_tomorrow(age: int) -> str:
+    """Return DOB such that the person turns *age* tomorrow (currently age - 1)."""
+    tomorrow = date.today() + timedelta(days=1)
+    return tomorrow.replace(year=tomorrow.year - age).isoformat()

@@ -49,8 +49,100 @@ class ColumnRenameMapping:
     """Base class for column rename mapping configurations."""
 
 
+class ConstraintABC(ABC):
+    """Base class for constraints."""
+
+
 class Credentials(ABC):
     """Class to store credentials."""
+
+
+class RangeConstraint(ConstraintABC):
+    """Range constraint defining [min, max], (min, max), [min, max), or (min, max]."""
+
+    def __init__(
+        self,
+        minimum: float,
+        maximum: float,
+        left_inclusive: bool = True,
+        right_inclusive: bool = True,
+    ) -> None:
+        """Initialize range constraint."""
+        self._min = (minimum, left_inclusive)
+        self._max = (maximum, right_inclusive)
+
+    def in_range(self, value: float) -> bool:
+        """Check if value in range with short-circuiting logic."""
+        min_val, left_inc = self._min
+        max_val, right_inc = self._max
+
+        # Lower bound check
+        lower_ok = (value >= min_val) if left_inc else (value > min_val)
+        if not lower_ok:
+            return False
+
+        # Upper bound check
+        return (value <= max_val) if right_inc else (value < max_val)
+
+    # --- Minimum Properties ---
+
+    @property
+    def minimum(self) -> float:
+        """Return minimum value."""
+        return self._min[0]
+
+    @minimum.setter
+    def minimum(self, value: float) -> None:
+        """Set minimum value while preserving inclusiveness."""
+        self._min = (value, self._min[1])
+
+    @property
+    def left_inclusive(self) -> bool:
+        """Return True if left bound is inclusive [."""
+        return self._min[1]
+
+    @left_inclusive.setter
+    def left_inclusive(self, value: bool) -> None:
+        """Set whether left bound is inclusive."""
+        self._min = (self._min[0], value)
+
+    # --- Maximum Properties ---
+
+    @property
+    def maximum(self) -> float:
+        """Return maximum value."""
+        return self._max[0]
+
+    @maximum.setter
+    def maximum(self, value: float) -> None:
+        """Set maximum value while preserving inclusiveness."""
+        self._max = (value, self._max[1])
+
+    @property
+    def right_inclusive(self) -> bool:
+        """Return True if right bound is inclusive ]."""
+        return self._max[1]
+
+    @right_inclusive.setter
+    def right_inclusive(self, value: bool) -> None:
+        """Set whether right bound is inclusive."""
+        self._max = (self._max[0], value)
+
+    # --- Representations ---
+
+    def __repr__(self) -> str:
+        """Return reproducible string representation."""
+        return (
+            f"RangeConstraint(minimum={self.minimum}, maximum={self.maximum}, "
+            f"left_inclusive={self.left_inclusive}, "
+            f"right_inclusive={self.right_inclusive})"
+        )
+
+    def __str__(self) -> str:
+        """Return standard mathematical interval notation (e.g., [0, 11))."""
+        left_bracket = "[" if self.left_inclusive else "("
+        right_bracket = "]" if self.right_inclusive else ")"
+        return f"{left_bracket}{self.minimum}, {self.maximum}{right_bracket}"
 
 
 class CuriousActivity(TypedDict):

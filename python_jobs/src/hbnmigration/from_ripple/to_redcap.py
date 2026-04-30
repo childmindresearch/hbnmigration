@@ -74,7 +74,7 @@ def extract_last_modified(ripple_df: pd.DataFrame) -> pd.Series:
 
     Parameters
     ----------
-    ripple_df : pd.DataFrame
+    ripple_df
         Ripple DataFrame
 
     Returns
@@ -258,15 +258,8 @@ def get_redcap_subjects_to_update(
 
 def prepare_redcap_data(df: pd.DataFrame, cache: DataCache | None = None) -> None:
     """Prepare Ripple API returned data to be imported into REDCap."""
-    # Inject lastModified into the source df BEFORE transforming,
-    # so it flows through set_redcap_columns naturally.
-    if "lastModified" not in df.columns:
-        df = df.copy()
-        df["lastModified"] = extract_last_modified(df)
-
-    copy_selected_redcap_df = set_redcap_columns(
-        df, columns_to_keep=["mrn", "email_consent", "lastModified"]
-    )
+    copy_selected_redcap_df = set_redcap_columns(df)
+    copy_selected_redcap_df["lastModified"] = extract_last_modified(df)
 
     # Filter out records already processed by cache
     if cache:

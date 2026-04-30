@@ -1575,7 +1575,7 @@ class TestLastModifiedInjectionOnSourceDf:
     def test_extract_last_modified_called_before_set_redcap_columns(
         self, mock_vars, mock_extract, mock_set_columns, mock_get_updates, temp_dir
     ):
-        """extract_last_modified should be called before set_redcap_columns."""
+        """extract_last_modified should be called after set_redcap_columns."""
         mock_vars.redcap_update_file = temp_dir / "update.csv"
         mock_vars.redcap_import_file = temp_dir / "import.csv"
 
@@ -1588,7 +1588,7 @@ class TestLastModifiedInjectionOnSourceDf:
         def track_set_columns(df, **kwargs):
             call_order.append("set_columns")
             # At this point, df should already have lastModified
-            assert "lastModified" in df.columns
+            assert "lastModified" not in df.columns
             return pd.DataFrame(
                 {
                     "record_id": [90001],
@@ -1614,7 +1614,7 @@ class TestLastModifiedInjectionOnSourceDf:
         input_df = pd.DataFrame({"customId": [90001], "globalId": ["ORD001"]})
         prepare_redcap_data(input_df)
 
-        assert call_order == ["extract", "set_columns"]
+        assert call_order == ["set_columns", "extract"]
 
     @patch("hbnmigration.from_ripple.to_redcap.get_redcap_subjects_to_update")
     @patch("hbnmigration.from_ripple.to_redcap.set_redcap_columns")
@@ -1698,3 +1698,50 @@ class TestLastModifiedInjectionOnSourceDf:
         # Original df should not have lastModified added
         assert list(input_df.columns) == original_columns
         assert "lastModified" not in input_df.columns
+
+    @patch("hbnmigration.from_ripple.to_redcap.get_redcap_subjects_to_update")
+    @patch("hbnmigration.from_ripple.to_redcap.set_redcap_columns")
+    @patch("hbnmigration.from_ripple.to_redcap.redcap_variables")
+    def test_prepare_redcap_data_does_not_pass_lastmodified_to_set_redcap_columns(
+        self, mock_vars, mock_set_columns, mock_get_updates, temp_dir
+    ):
+        """Test default columns_to_keep."""
+        mock_vars.redcap_update_file = temp_dir / "update.csv"
+        mock_vars.redcap_import_file = temp_dir / "import.csv"
+
+        mock_set_columns.return_value = pd.DataFrame(
+            {
+                "record_id": [12345],
+                "mrn": [12345],
+                "email_consent": ["test@example.com"],
+                "lastModified": ["2024-01-15T12:00:00"],
+            }
+        )
+        mock_get_updates.return_value = (
+            pd.DataFrame(columns=["record_id", "mrn", "email_consent"]),
+            pd.DataFrame(
+                {
+                    "record_id": [12345],
+                    "mrn": [12345],
+                    "email_consent": ["test@example.com"],
+                }
+            ),
+        )
+
+        input_df = pd.DataFrame(
+            {
+                "customId": [12345],
+                "globalId": ["TEST001"],
+                "contact.1.infos.1.contactType": ["email"],
+                "contact.1.infos.1.information": ["test@example.com"],
+            }
+        )
+
+        prepare_redcap_data(input_df)
+
+        # Verify set_redcap_columns was NOT called with lastModified in columns_to_keep
+        call_args = mock_set_columns.call_args
+        if call_args.kwargs.get("columns_to_keep"):
+            assert "lastModified" not in call_args.kwargs["columns_to_keep"]
+        elif len(call_args.args) > 1:
+            assert "lastModified" not in call_args.args[1]

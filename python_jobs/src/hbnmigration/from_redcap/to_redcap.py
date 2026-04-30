@@ -10,6 +10,7 @@ Can also be run manually via CLI to process all pending records::
     python -m hbnmigration.from_redcap.to_redcap
 """
 
+from datetime import date
 from typing import Annotated, Any, cast
 
 from fastapi import BackgroundTasks, FastAPI, Form, Request
@@ -21,11 +22,10 @@ import uvicorn
 from .._config_variables import redcap_variables
 from ..exceptions import NoData
 from ..utility_functions import initialize_logging, redcap_api_push, safe_record_for_log
-from .config import Fields, Values
+from .config import Constraints, Fields, Values
 from .from_redcap import fetch_data, RedcapRecord
 
 logger = initialize_logging(__name__)
-
 _REDCAP_TOKENS = redcap_variables.Tokens()
 _REDCAP_ENDPOINTS = redcap_variables.Endpoints()
 _SOURCE_PID = 247
@@ -66,6 +66,101 @@ def event_map(redcap_data: pd.DataFrame) -> dict[str, str]:
     )
 
 
+def _compute_age(dob_str: str) -> int | None:
+    """
+    Compute age in years from a date-of-birth string.
+
+    Parameters
+    ----------
+    dob_str
+        Date of birth in ``YYYY-MM-DD`` format.
+
+    Returns
+    -------
+    Age in whole years, or ``None`` if the string cannot be parsed.
+
+    """
+    try:
+        dob = date.fromisoformat(str(dob_str).strip())
+    except ValueError, TypeError:
+        return None
+    today = date.today()
+    return today.year - dob.year - ((today.month, today.day) < (dob.month, dob.day))
+
+
+def _apply_permission_audiovideo_age_rule(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Set ``permission_audiovideo_participant`` based on participant age.
+
+    * Age < 11 **or** age ≥ 18 → ``"0"`` ("Not Applicable: no assent required")
+    * Otherwise the value already present (from the
+      ``permission_audiovideo_1113`` / ``permission_audiovideo_1417`` rename)
+      is kept.
+
+    If a record has no parseable DOB, the existing value is left unchanged.
+
+    Parameters
+    ----------
+    df
+        Long-format DataFrame with columns ``[record, field_name, value, ...]``.
+        Field renaming must have already been applied so that DOB appears as
+        ``"dob"`` and the audio/video field appears as
+        ``"permission_audiovideo_participant"``.
+
+    Returns
+    -------
+    DataFrame with adjusted ``permission_audiovideo_participant`` values.
+
+    """
+    not_applicable = str(
+        Values.PID625.permission_audiovideo_participant[
+            "Not Applicable: no assent required"
+        ]
+    )
+
+    # Build a record → age mapping from the (already-renamed) dob field.
+    dob_rows = df.loc[df["field_name"] == "dob", ["record", "value"]]
+    if dob_rows.empty:
+        return df
+
+    record_age: dict[Any, int | None] = {
+        row["record"]: _compute_age(row["value"]) for _, row in dob_rows.iterrows()
+    }
+
+    age_constraint = Constraints.PID625.permission_audiovideo_participant.age
+    records_not_applicable = {
+        rec
+        for rec, age in record_age.items()
+        if age is not None and not age_constraint.in_range(age)
+    }
+
+    if not records_not_applicable:
+        return df
+
+    perm_field = "permission_audiovideo_participant"
+
+    # Update existing rows for these records.
+    mask = (df["field_name"] == perm_field) & (
+        df["record"].isin(records_not_applicable)
+    )
+    df.loc[mask, "value"] = not_applicable
+
+    # Append rows for records that don't yet have the field.
+    existing_records = set(df.loc[df["field_name"] == perm_field, "record"])
+    missing_records = records_not_applicable - existing_records
+    if missing_records:
+        new_rows = pd.DataFrame(
+            {
+                "record": list(missing_records),
+                "field_name": perm_field,
+                "value": not_applicable,
+            }
+        )
+        df = pd.concat([df, new_rows], ignore_index=True)
+
+    return df
+
+
 def format_data_for_redcap_operations(redcap_data: pd.DataFrame) -> pd.DataFrame:
     """
     Format data from intake (PID 247) for operations (PID 625).
@@ -94,25 +189,28 @@ def format_data_for_redcap_operations(redcap_data: pd.DataFrame) -> pd.DataFrame
     # Step 2: Update complete_parent_second_guardian_consent based on guardian2_consent
     df = update_complete_parent_second_guardian_consent(df)
 
-    # Step 3: Filter to only fields needed for operations project
+    # Step 3: Apply age-based permission_audiovideo_participant rule
+    df = _apply_permission_audiovideo_age_rule(df)
+
+    # Step 4: Filter to only fields needed for operations project
     if hasattr(Fields, "import_625"):
         df = df[df["field_name"].str.startswith(tuple(Fields.import_625))]
 
-    # Step 4: Build record ID mapping using MRN
+    # Step 5: Build record ID mapping using MRN
     record_ids: dict[int | str, int | str] = {
         row["record"]: row["value"]
         for _, row in df[df["field_name"] == "mrn"].iterrows()
     }
 
-    # Step 5: Remap record IDs
+    # Step 6: Remap record IDs
     df["record"] = df["record"].replace(record_ids)
 
-    # Step 6: Update record_id field values to match new record numbers
+    # Step 7: Update record_id field values to match new record numbers
     df.loc[df["field_name"] == "record_id", "value"] = df.loc[
         df["field_name"] == "record_id", "record"
     ]
 
-    # Step 7: Deduplicate by keeping most recent repeat instance
+    # Step 8: Deduplicate by keeping most recent repeat instance
     df = (
         df.sort_values("redcap_repeat_instance", ascending=False, na_position="last")
         .drop_duplicates(subset=["record", "field_name"], keep="first")
@@ -123,7 +221,7 @@ def format_data_for_redcap_operations(redcap_data: pd.DataFrame) -> pd.DataFrame
         .reset_index(drop=True)
     )
 
-    # Step 8: Decrement permission_collab values by 1
+    # Step 9: Decrement permission_collab values by 1
     decrement_mask = df["field_name"] == "permission_collab"
     if decrement_mask.any():
         decremented = (
@@ -161,7 +259,6 @@ def update_complete_parent_second_guardian_consent(df: pd.DataFrame) -> pd.DataF
         .map(mapping)
         .dropna()
     )
-
     if record_to_value.empty:
         return df
 
@@ -179,7 +276,6 @@ def update_complete_parent_second_guardian_consent(df: pd.DataFrame) -> pd.DataF
             df["field_name"] == "complete_parent_second_guardian_consent", "record"
         ].tolist()
     )
-
     if len(missing_records):
         df = pd.concat(
             [
@@ -296,6 +392,7 @@ def clear_ready_flag(record_id: str) -> None:
                 _SOURCE_PID,
             )
             return
+
         event = event_map(data).get("intake_ready")
         if event is None:
             logger.error(
@@ -305,6 +402,7 @@ def clear_ready_flag(record_id: str) -> None:
                 record_id,
             )
             return
+
         update_source_redcap_status(record_id, "0", event)
     except Exception:
         logger.exception("Error clearing ready flag for record %s", record_id)
@@ -395,7 +493,6 @@ def process_record_for_redcap_operations(record_id: str) -> dict[str, Any]:
             "message": f"Pushed {rows_pushed} row(s) to Operations (PID {_TARGET_PID})",
             "rows_pushed": rows_pushed,
         }
-
     except Exception as e:
         logger.exception("Error processing record %s for Operations REDCap", record_id)
         return {
@@ -437,19 +534,17 @@ async def redcap_to_intake_webhook(
     REDCap will POST to this endpoint.
 
     Configuration in REDCap:
-
     1. Go to Project Setup → Additional Customizations
     2. Enable "Data Entry Trigger"
     3. Set URL to: ``https://your-domain.com/webhook/redcap-to-intake``
-
     """
     safe_record = safe_record_for_log(record)
-
     logger.info(
         "Received REDCap trigger for record %s (instrument: %s)",
         safe_record,
         safe_record_for_log(instrument),
     )
+
     if intake_ready != "1":
         logger.debug("Ready flag not set for record %s, ignoring trigger", safe_record)
         return {
@@ -457,6 +552,7 @@ async def redcap_to_intake_webhook(
             "message": "Ready flag not set to '1', ignoring trigger",
             "record_id": record,
         }
+
     background_tasks.add_task(process_record_for_redcap_operations, record)
     logger.info("Queued record %s for Intake REDCap push", safe_record)
     return {
@@ -489,6 +585,7 @@ def main() -> None:
     process every record currently flagged in REDCap PID 247.
 
     Usage::
+
         python -m hbnmigration.from_redcap.to_redcap
     """
     try:
@@ -498,6 +595,7 @@ def main() -> None:
             fields_to_export = str(Fields.export_247.for_redcap_operations)
         else:
             fields_to_export = None
+
         data_operations = fetch_data(
             _REDCAP_TOKENS.pid247,
             fields_to_export,
@@ -534,9 +632,11 @@ def main() -> None:
         ].to_dict()
 
     formatted_data = format_data_for_redcap_operations(data_operations)
+
     if formatted_data.empty:
         logger.info("No data to push after formatting.")
         return
+
     try:
         push_to_intake_redcap(formatted_data)
     except Exception:

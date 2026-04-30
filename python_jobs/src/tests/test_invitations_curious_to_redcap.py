@@ -1,14 +1,25 @@
 """Tests for invitations_to_redcap module."""
 
 from contextlib import contextmanager
-from typing import Any, cast, Iterator, Literal
+from typing import Any, cast, Iterator
 from unittest.mock import Mock, patch
 
 import polars as pl
 import pytest
 import requests
 
+from hbnmigration.from_curious.config import Fields as CuriousFields
 from hbnmigration.from_curious.invitations_to_redcap import (
+    _add_child_suffix,
+    _field_suffix_for,
+    _instrument_for,
+    _prefixed_field,
+    _process_accounts,
+    _response_field_for,
+    _status_field_for,
+    _strip_instrument_infix,
+    ACCOUNT_CONTEXTS,
+    AccountContext,
     check_activity_response,
     check_activity_responses,
     create_invitation_record,
@@ -133,8 +144,8 @@ def make_ml_data(
         {
             "submitId": "submit1234-ab12-cd34-ef56-abcdef123456",
             "version": "1.0.0",
-            "startDatetime": "2024-01-01T12:00:00.000Z",
-            "endDatetime": "2024-01-01T12:05:00.000Z",
+            "startDatetime": "2024-01-01T12:00:00.000",
+            "endDatetime": "2024-01-01T12:05:00.000",
             "respondentSecretId": "resp_123",
             "sourceSecretId": "resp_123",
             "items": items or [],
@@ -142,6 +153,131 @@ def make_ml_data(
             "answer": answer or [],
         },
     )
+
+
+# ============================================================================
+# Tests - context helpers
+# ============================================================================
+
+
+class TestContextHelpers:
+    """Tests for account-context helper functions."""
+
+    @pytest.mark.parametrize(
+        "ctx,expected",
+        [
+            ("responder", "curious_account_created_responder"),
+            ("child", "curious_account_created_child"),
+        ],
+    )
+    def test_instrument_for(self, ctx: AccountContext, expected: str) -> None:
+        """Verify instrument name for each context."""
+        assert _instrument_for(ctx) == expected
+
+    @pytest.mark.parametrize(
+        "ctx,expected",
+        [("responder", ""), ("child", "_c")],
+    )
+    def test_field_suffix_for(self, ctx: AccountContext, expected: str) -> None:
+        """Verify field suffix for each context."""
+        assert _field_suffix_for(ctx) == expected
+
+    @pytest.mark.parametrize(
+        "base,ctx,expected",
+        [
+            (
+                "source_secret_id",
+                "responder",
+                "curious_account_created_source_secret_id",
+            ),
+            ("source_secret_id", "child", "curious_account_created_source_secret_id_c"),
+            ("invite_status", "responder", "curious_account_created_invite_status"),
+            ("invite_status", "child", "curious_account_created_invite_status_c"),
+        ],
+    )
+    def test_prefixed_field(
+        self, base: str, ctx: AccountContext, expected: str
+    ) -> None:
+        """Verify prefixed field construction."""
+        assert _prefixed_field(base, ctx) == expected
+
+    @pytest.mark.parametrize(
+        "ctx,expected",
+        [
+            ("responder", "curious_account_created_invite_status"),
+            ("child", "curious_account_created_invite_status_c"),
+        ],
+    )
+    def test_status_field_for(self, ctx: AccountContext, expected: str) -> None:
+        """Verify status field name for each context."""
+        assert _status_field_for(ctx) == expected
+
+    @pytest.mark.parametrize(
+        "ctx,expected",
+        [
+            (
+                "responder",
+                "curious_account_created_account_created_response",
+            ),
+            (
+                "child",
+                "curious_account_created_account_created_response_c",
+            ),
+        ],
+    )
+    def test_response_field_for(self, ctx: AccountContext, expected: str) -> None:
+        """Verify response field name for each context."""
+        assert _response_field_for(ctx) == expected
+
+
+# ============================================================================
+# Tests - CuriousFields config
+# ============================================================================
+
+
+class TestCuriousFieldsConfig:
+    """Tests for the Fields config class."""
+
+    def test_responder_fields_include_common(self) -> None:
+        """Responder fields should include common fields."""
+        fields = CuriousFields.for_context("responder")
+        assert "record_id" in fields
+        assert "redcap_event_name" in fields
+
+    def test_child_fields_include_common(self) -> None:
+        """Child fields should include common fields."""
+        fields = CuriousFields.for_context("child")
+        assert "record_id" in fields
+        assert "redcap_event_name" in fields
+
+    def test_responder_fields_have_no_suffix(self) -> None:
+        """Responder-specific fields should not have _c suffix."""
+        fields = CuriousFields.for_context("responder")
+        responder_only = [f for f in fields if f not in CuriousFields.common]
+        assert all(not f.endswith("_c") for f in responder_only)
+
+    def test_child_data_fields_have_suffix(self) -> None:
+        """Child data fields should have _c suffix (except _complete)."""
+        fields = CuriousFields.for_context("child")
+        child_only = [f for f in fields if f not in CuriousFields.common]
+        data_fields = [f for f in child_only if not f.endswith("_complete")]
+        assert all(f.endswith("_c") for f in data_fields)
+
+    def test_responder_includes_response_field(self) -> None:
+        """Responder should include the account_created_response field."""
+        fields = CuriousFields.for_context("responder")
+        assert "curious_account_created_account_created_response" in fields
+
+    def test_child_excludes_response_field(self) -> None:
+        """Child should not include a response field."""
+        fields = CuriousFields.for_context("child")
+        assert not any("response" in f for f in fields)
+
+    def test_responder_and_child_have_different_fields(self) -> None:
+        """Responder and child field lists should differ."""
+        responder = CuriousFields.for_context("responder")
+        child = CuriousFields.for_context("child")
+        assert set(responder) != set(child)
 
 
 # ============================================================================
@@ -157,19 +293,15 @@ class TestCreateInvitationRecord:
         self, mock_lookup: Mock, sample_respondent: dict[str, Any]
     ) -> None:
         """Verify all expected keys are present for responder account."""
-        mock_lookup.return_value = "1234567"  # MRN
-
+        mock_lookup.return_value = "1234567"
         result = create_invitation_record(
             sample_respondent, SAMPLE_APPLET_ID, "responder", SAMPLE_TOKEN
         )
-
         assert result is not None
-        assert result["record_id"] == "1234567"  # Should be MRN
-        assert "curious_account_created_source_secret_id" in result  # Fixed field name
-        assert "curious_account_created_invite_status" in result  # Fixed field name
-        assert (
-            result["curious_account_created_source_secret_id"] == "resp_123"
-        )  # Should be r_id
+        assert result["record_id"] == "1234567"
+        assert "curious_account_created_source_secret_id" in result
+        assert "curious_account_created_invite_status" in result
+        assert result["curious_account_created_source_secret_id"] == "resp_123"
         assert result["instrument"] == "curious_account_created_responder"
         assert result["redcap_event_name"] == "admin_arm_1"
         assert "curious_account_created_responder_complete" in result
@@ -179,17 +311,14 @@ class TestCreateInvitationRecord:
         self, sample_respondent: dict[str, Any]
     ) -> None:
         """Verify all expected keys are present for child account."""
-        # Child uses MRN directly (no lookup needed)
         sample_respondent["details"][0]["respondentSecretId"] = "1234567"
-
         result = create_invitation_record(
             sample_respondent, SAMPLE_APPLET_ID, "child", SAMPLE_TOKEN
         )
-
         assert result is not None
-        assert result["record_id"] == "1234567"  # MRN used directly
-        assert "curious_account_created_source_secret_id_c" in result  # With _c suffix
-        assert "curious_account_created_invite_status_c" in result  # With _c suffix
+        assert result["record_id"] == "1234567"
+        assert "curious_account_created_source_secret_id_c" in result
+        assert "curious_account_created_invite_status_c" in result
         assert result["curious_account_created_source_secret_id_c"] == "1234567"
         assert result["instrument"] == "curious_account_created_child"
         assert result["redcap_event_name"] == "admin_arm_1"
@@ -214,8 +343,7 @@ class TestCreateInvitationRecord:
         self, mock_lookup: Mock, sample_respondent: dict[str, Any]
     ) -> None:
         """Responder with no MRN found should return None."""
-        mock_lookup.return_value = None  # No MRN found
-
+        mock_lookup.return_value = None
         assert (
             create_invitation_record(
                 sample_respondent, SAMPLE_APPLET_ID, "responder", SAMPLE_TOKEN
@@ -230,13 +358,10 @@ class TestCreateInvitationRecord:
         """Numeric secret IDs should be handled correctly."""
         mock_lookup.return_value = "1234567"
         sample_respondent["details"][0]["respondentSecretId"] = "12345"
-
         result = create_invitation_record(
             sample_respondent, SAMPLE_APPLET_ID, "responder", SAMPLE_TOKEN
         )
-
         assert result is not None
-        # FIX: Use correct field name
         assert result["curious_account_created_source_secret_id"] == "12345"
 
     @patch(f"{INVITATIONS_MOD}.lookup_mrn_from_r_id")
@@ -252,13 +377,10 @@ class TestCreateInvitationRecord:
                 "subjectId": "subj9999-ab12-cd34-ef56-abcdef123456",
             }
         )
-
         result = create_invitation_record(
             sample_respondent, SAMPLE_APPLET_ID, "responder", SAMPLE_TOKEN
         )
-
         assert result is not None
-        # FIX: Use correct field name
         assert result["curious_account_created_source_secret_id"] == "resp_999"
         assert result["respondent_id"] == "subj9999-ab12-cd34-ef56-abcdef123456"
 
@@ -277,13 +399,10 @@ class TestCreateInvitationRecord:
         """Each Curious status maps to the correct numeric value."""
         mock_lookup.return_value = "1234567"
         sample_respondent["status"] = status
-
         result = create_invitation_record(
             sample_respondent, SAMPLE_APPLET_ID, "responder", SAMPLE_TOKEN
         )
-
         assert result is not None
-        # FIX: Use correct field name
         assert result["curious_account_created_invite_status"] == expected
 
     def test_empty_details_returns_none(
@@ -291,12 +410,32 @@ class TestCreateInvitationRecord:
     ) -> None:
         """Respondent with no details should return None."""
         sample_respondent["details"] = []
-
         assert (
             create_invitation_record(
                 sample_respondent, SAMPLE_APPLET_ID, "responder", SAMPLE_TOKEN
             )
             is None
+        )
+
+    @patch(f"{INVITATIONS_MOD}.lookup_mrn_from_r_id")
+    @pytest.mark.parametrize("ctx", ACCOUNT_CONTEXTS)
+    def test_record_keys_match_fields_config(
+        self, mock_lookup: Mock, sample_respondent: dict[str, Any], ctx: AccountContext
+    ) -> None:
+        """Record keys for REDCap fields should be a subset of Fields.for_context."""
+        mock_lookup.return_value = "1234567"
+        if ctx == "child":
+            sample_respondent["details"][0]["respondentSecretId"] = "1234567"
+        result = create_invitation_record(
+            sample_respondent, SAMPLE_APPLET_ID, ctx, SAMPLE_TOKEN
+        )
+        assert result is not None
+        valid_fields = set(CuriousFields.for_context(ctx))
+        # internal-only keys that never go to REDCap
+        internal = {"respondent_id", "instrument", "account_context"}
+        redcap_keys = set(result.keys()) - internal
+        assert redcap_keys.issubset(valid_fields), (
+            f"Unexpected keys for {ctx}: {redcap_keys - valid_fields}"
         )
 
 
@@ -307,15 +446,7 @@ class TestCreateInvitationRecord:
 
 @contextmanager
 def patch_invitations_module() -> Iterator[dict[str, Mock]]:
-    """
-    Context manager providing commonly-mocked targets.
-
-    Yields
-    ------
-    dict[str, Mock]
-        Dictionary of mock objects keyed by short names
-
-    """
+    """Context manager providing commonly-mocked targets."""
     targets = {
         "requests_get": f"{INVITATIONS_MOD}.requests.get",
         "requests_post": f"{INVITATIONS_MOD}.requests.post",
@@ -325,18 +456,13 @@ def patch_invitations_module() -> Iterator[dict[str, Mock]]:
         "curious_authenticate": f"{INVITATIONS_MOD}.curious_authenticate",
         "lookup_mrn_from_r_id": f"{INVITATIONS_MOD}.lookup_mrn_from_r_id",
     }
-
     patches = {name: patch(target) for name, target in targets.items()}
     mocks = {}
-
-    # Start all patches
     for name, p in patches.items():
         mocks[name] = p.start()
-
     try:
         yield mocks
     finally:
-        # Stop all patches
         for p in patches.values():
             p.stop()
 
@@ -356,7 +482,6 @@ class TestUpdateAlreadyCompleted:
     ) -> None:
         """Records already complete in REDCap should be filtered out."""
         result = self._run(sample_invitation_df, ["00001"])
-
         assert result.shape[0] == 1
         assert result["record_id"].to_list() == ["00002"]
 
@@ -384,7 +509,6 @@ class TestUpdateAlreadyCompleted:
                 "respondent_id": [SAMPLE_SUBJECT_ID, None, SAMPLE_SUBJECT_ID],
             }
         )
-
         assert self._run(df, []).shape[0] == 2
 
 
@@ -436,7 +560,6 @@ class TestCheckActivityResponse:
         with patch_invitations_module() as mocks:
             mocks["requests_get"].return_value = _mock_http_response(404)
             mocks["get_applet_encryption"].return_value = {}
-
             check_activity_response(
                 "token",
                 sample_redcap_context,
@@ -444,7 +567,6 @@ class TestCheckActivityResponse:
                 SAMPLE_ACTIVITY_ID,
                 "responder",
             )
-
             call_args = mocks["requests_get"].call_args
             assert "targetSubjectId" in call_args[0][0]
 
@@ -488,14 +610,12 @@ class TestCheckActivityResponses:
                 SAMPLE_ACTIVITY_ID,
                 "responder",
             )
-
             assert mock_check.call_count == len(sample_invitation_df)
 
     def test_concatenates_responses(self, sample_invitation_df: pl.DataFrame) -> None:
         """Output DataFrames from responses are concatenated."""
         named_output = Mock()
         named_output.output = pl.DataFrame({"record_id": ["00001"], "value": ["test"]})
-
         with patch(
             f"{INVITATIONS_MOD}.check_activity_response", return_value=[named_output]
         ):
@@ -506,7 +626,6 @@ class TestCheckActivityResponses:
                 SAMPLE_ACTIVITY_ID,
                 "responder",
             )
-
             assert "value" in result.columns
 
     def test_handles_empty_df(self) -> None:
@@ -553,7 +672,6 @@ class TestFormatForRedcap:
         results = format_for_redcap(
             sample_decrypted_answer, sample_redcap_context, "responder"
         )
-
         assert len(results) > 0
         assert all(hasattr(r, "output") for r in results)
         assert all(isinstance(r.output, pl.DataFrame) for r in results)
@@ -588,11 +706,9 @@ class TestFormatForRedcap:
     ) -> None:
         """Child account context adds _c suffix to data fields (not complete)."""
         sample_redcap_context["instrument"] = "curious_account_created_child"
-
         for result in format_for_redcap(
             sample_decrypted_answer, sample_redcap_context, "child"
         ):
-            # Data fields should have _c suffix
             data_fields = [
                 col
                 for col in result.output.columns
@@ -601,9 +717,58 @@ class TestFormatForRedcap:
             ]
             assert all(col.endswith("_c") for col in data_fields)
 
-            # Complete field should NOT have _c suffix
-            if "curious_account_created_child_complete" in result.output.columns:
-                assert True  # Just verify it doesn't have extra suffix
+    @pytest.mark.parametrize("ctx", ACCOUNT_CONTEXTS)
+    def test_output_only_contains_valid_fields(
+        self,
+        sample_decrypted_answer: CuriousDecryptedAnswer,
+        sample_redcap_context: dict[str, Any],
+        ctx: AccountContext,
+    ) -> None:
+        """Output columns should be a subset of Fields.for_context."""
+        if ctx == "child":
+            sample_redcap_context["instrument"] = "curious_account_created_child"
+        valid = set(CuriousFields.for_context(ctx))
+        for result in format_for_redcap(
+            sample_decrypted_answer, sample_redcap_context, ctx
+        ):
+            assert set(result.output.columns).issubset(valid), (
+                f"Unexpected columns for {ctx}: {set(result.output.columns) - valid}"
+            )
+
+    @pytest.mark.parametrize(
+        "dt_str",
+        [
+            "2024-01-01T12:00:00.000Z",
+            "2024-01-01T12:00:00.000",
+            "2026-04-24T16:36:42.042000",
+        ],
+        ids=["3_frac_with_Z", "3_frac_no_Z", "6_frac_no_Z"],
+    )
+    def test_handles_various_datetime_formats(
+        self,
+        sample_redcap_context: dict[str, Any],
+        dt_str: str,
+    ) -> None:
+        """format_for_redcap should not crash on various datetime formats."""
+        ml_data = make_ml_data(
+            items=[
+                {
+                    "id": "item1",
+                    "name": "test_item",
+                    "question": {"en": "Test?"},
+                    "responseType": "singleSelect",
+                    "responseValues": {
+                        "options": [{"text": "Yes", "value": 0, "score": 1}]
+                    },
+                }
+            ],
+            answer=[{"value": 0}],
+        )
+        # Override datetimes with the parameterised format
+        ml_data["startDatetime"] = dt_str
+        ml_data["endDatetime"] = dt_str
+        results = format_for_redcap(ml_data, sample_redcap_context, "responder")
+        assert len(results) > 0
 
 
 # ============================================================================
@@ -619,19 +784,16 @@ class TestPullDataFromCurious:
         respondents: list[dict[str, Any]],
         already_completed: list[str] | None = None,
         extra_patches: dict[str, Any] | None = None,
-        account_context: Literal["responder", "child"] = "responder",
+        account_context: AccountContext = "responder",
     ) -> pl.DataFrame:
         """Call pull_data_from_curious with mocked API response."""
         with patch(f"{INVITATIONS_MOD}.curious_variables") as mock_curious_vars:
-            # Mock the applet configuration
             mock_curious_vars.applet_ids = {
                 "Healthy Brain Network Questionnaires": SAMPLE_APPLET_ID
             }
             mock_curious_vars.owner_ids = {
                 "Healthy Brain Network (HBN)": "owner_id_123"
             }
-
-            # Also mock yesterday_or_more_recent to always return True
             with patch(
                 f"{INVITATIONS_MOD}.yesterday_or_more_recent", return_value=True
             ):
@@ -641,7 +803,6 @@ class TestPullDataFromCurious:
                     )
                     mocks["fetch_api_data"].return_value = already_completed or []
                     mocks["lookup_mrn_from_r_id"].return_value = "1234567"
-
                     extra_ctx = extra_patches or {}
                     patches = []
                     for target, value in extra_ctx.items():
@@ -652,7 +813,6 @@ class TestPullDataFromCurious:
                         )
                         patches.append(p)
                         p.start()
-
                     try:
                         return pull_data_from_curious(
                             "token",
@@ -674,7 +834,6 @@ class TestPullDataFromCurious:
             mocks["requests_get"].return_value = _mock_http_response(
                 500, raise_for_status=requests.HTTPError("500")
             )
-
             with pytest.raises(requests.HTTPError):
                 pull_data_from_curious(
                     "token",
@@ -686,13 +845,13 @@ class TestPullDataFromCurious:
     def test_includes_all_valid_respondents(self) -> None:
         """All valid respondents are included."""
         with patch(f"{INVITATIONS_MOD}.create_invitation_record") as mock_create:
-            # Mock create_invitation_record to return valid records
+
             def create_record(respondent, applet_id, account_context, token):
-                field_suffix = "_c" if account_context == "child" else ""
-                instrument = f"curious_account_created_{account_context}"
+                field_suffix = _field_suffix_for(account_context)
+                instrument = _instrument_for(account_context)
                 return {
                     "record_id": "1234567",
-                    "curious_account_created_source_secret_"
+                    f"curious_account_created_source_secret_"
                     f"id{field_suffix}": respondent["details"][0]["respondentSecretId"],
                     f"curious_account_created_invite_status{field_suffix}": 3,
                     "redcap_event_name": "admin_arm_1",
@@ -703,10 +862,8 @@ class TestPullDataFromCurious:
                 }
 
             mock_create.side_effect = create_record
-
             with patch(f"{INVITATIONS_MOD}.update_already_completed") as mock_update:
                 mock_update.side_effect = lambda df, *args: df
-
                 result = self._call_with_respondents(
                     [
                         make_api_respondent("resp_123", SAMPLE_SUBJECT_ID),
@@ -716,7 +873,6 @@ class TestPullDataFromCurious:
                     ],
                     already_completed=[],
                 )
-
                 assert len(result) == 2
 
     def test_calls_update_already_completed(self) -> None:
@@ -728,7 +884,6 @@ class TestPullDataFromCurious:
             mock_curious_vars.owner_ids = {
                 "Healthy Brain Network (HBN)": "owner_id_123"
             }
-
             with patch_invitations_module() as mocks:
                 mocks["requests_get"].return_value = _mock_http_response(
                     json_data={
@@ -737,20 +892,16 @@ class TestPullDataFromCurious:
                 )
                 mocks["fetch_api_data"].return_value = []
                 mocks["lookup_mrn_from_r_id"].return_value = "1234567"
-
                 with patch(
                     f"{INVITATIONS_MOD}.update_already_completed"
                 ) as mock_update:
                     mock_update.side_effect = lambda df, *args: df
-
                     result = pull_data_from_curious(
                         "token",
                         "Healthy Brain Network Questionnaires",
                         "responder",
                         SAMPLE_TOKEN,
                     )
-
-                    # Only called if result is not empty
                     if not result.is_empty():
                         assert mock_update.called
 
@@ -767,13 +918,8 @@ class TestPushToRedcap:
         """Call push_to_redcap with mocked HTTP POST."""
         with patch_invitations_module() as mocks:
             mocks["requests_post"].return_value = mock_resp
-
-            # Mock deduplicate_dataframe to pass through data unchanged
-            with patch(
-                "hbnmigration.from_curious.invitations_to_redcap.deduplicate_dataframe"
-            ) as mock_dedupe:
+            with patch(f"{INVITATIONS_MOD}.deduplicate_dataframe") as mock_dedupe:
                 mock_dedupe.side_effect = lambda df, *args, **kwargs: (df, 0)
-
                 return push_to_redcap(csv_data, SAMPLE_TOKEN)
 
     def test_successful_push(self) -> None:
@@ -791,24 +937,17 @@ class TestPushToRedcap:
             text="Error",
             raise_for_status=requests.HTTPError("400"),
         )
-
         with pytest.raises(requests.HTTPError):
             self._call("record_id,value\nbad,data", resp)
 
     def test_sends_csv_data(self) -> None:
         """CSV data and format are included in POST payload."""
         csv_data = "record_id,redcap_event_name,value\n001,admin_arm_1,test"
-
         with patch_invitations_module() as mocks:
             mocks["requests_post"].return_value = _mock_http_response(json_data=1)
-
-            with patch(
-                "hbnmigration.from_curious.invitations_to_redcap.deduplicate_dataframe"
-            ) as mock_dedupe:
+            with patch(f"{INVITATIONS_MOD}.deduplicate_dataframe") as mock_dedupe:
                 mock_dedupe.side_effect = lambda df, *args, **kwargs: (df, 0)
-
                 push_to_redcap(csv_data, SAMPLE_TOKEN)
-
                 call_kwargs = mocks["requests_post"].call_args[1]
                 assert "data" in call_kwargs
                 assert call_kwargs["data"]["format"] == "csv"
@@ -824,19 +963,15 @@ class TestPushToRedcap:
         """Verify field names match REDCap data dictionary."""
         with patch(f"{INVITATIONS_MOD}.lookup_mrn_from_r_id") as mock_lookup:
             mock_lookup.return_value = "1234567"
-
             # Test responder fields
             respondent = make_api_respondent("resp_123", SAMPLE_SUBJECT_ID)
             result_responder = create_invitation_record(
                 respondent, SAMPLE_APPLET_ID, "responder", SAMPLE_TOKEN
             )
-
             assert result_responder is not None
-            # Responder fields should NOT have suffix
             assert "curious_account_created_source_secret_id" in result_responder
             assert "curious_account_created_invite_status" in result_responder
             assert "curious_account_created_responder_complete" in result_responder
-            # Should NOT have _c suffix
             assert "curious_account_created_source_secret_id_c" not in result_responder
 
             # Test child fields
@@ -844,14 +979,10 @@ class TestPushToRedcap:
             result_child = create_invitation_record(
                 child_respondent, SAMPLE_APPLET_ID, "child", SAMPLE_TOKEN
             )
-
             assert result_child is not None
-            # Child data fields SHOULD have _c suffix
             assert "curious_account_created_source_secret_id_c" in result_child
             assert "curious_account_created_invite_status_c" in result_child
-            # Complete field uses full instrument name (no extra suffix)
             assert "curious_account_created_child_complete" in result_child
-            # Should NOT have fields without suffix
             assert "curious_account_created_source_secret_id" not in result_child
 
     def test_metadata_fields_removed_before_redcap_push(self) -> None:
@@ -863,32 +994,20 @@ class TestPushToRedcap:
                 "curious_account_created_invite_status": [3],
                 "redcap_event_name": ["admin_arm_1"],
                 "curious_account_created_responder_complete": ["0"],
-                # Metadata fields that should be removed
                 "instrument": ["curious_account_created_responder"],
                 "account_context": ["responder"],
                 "respondent_id": ["subj_123"],
             }
         )
-
         with patch_invitations_module() as mocks:
             mocks["requests_post"].return_value = _mock_http_response(json_data=1)
-
-            with patch(
-                "hbnmigration.from_curious.invitations_to_redcap.deduplicate_dataframe"
-            ) as mock_dedupe:
+            with patch(f"{INVITATIONS_MOD}.deduplicate_dataframe") as mock_dedupe:
                 mock_dedupe.side_effect = lambda df, *args, **kwargs: (df, 0)
-
                 push_to_redcap(test_df, SAMPLE_TOKEN)
-
-                # Check what was actually sent
                 call_data = mocks["requests_post"].call_args[1]["data"]["data"]
-
-                # Verify metadata fields are NOT in the CSV
                 assert "instrument" not in call_data
                 assert "account_context" not in call_data
                 assert "respondent_id" not in call_data
-
-                # Verify REDCap fields ARE in the CSV
                 assert "record_id" in call_data
                 assert "curious_account_created_source_secret_id" in call_data
 
@@ -901,87 +1020,194 @@ class TestPushToRedcap:
                 "curious_account_created_invite_status": [3],
                 "redcap_event_name": ["admin_arm_1"],
                 "curious_account_created_responder_complete": ["0"],
-                # Metadata fields that should be removed
                 "instrument": ["curious_account_created_responder"],
                 "account_context": ["responder"],
                 "respondent_id": ["subj_123"],
             }
         )
-
         with patch_invitations_module() as mocks:
             mocks["requests_post"].return_value = _mock_http_response(json_data=1)
-
-            # Mock deduplicate_dataframe to capture what it receives
-            with patch(
-                "hbnmigration.from_curious.invitations_to_redcap.deduplicate_dataframe"
-            ) as mock_dedupe:
-                # Return the dataframe unchanged
+            with patch(f"{INVITATIONS_MOD}.deduplicate_dataframe") as mock_dedupe:
                 mock_dedupe.side_effect = lambda df, *args, **kwargs: (df, 0)
-
                 push_to_redcap(test_df, SAMPLE_TOKEN)
-
-                # Verify deduplicate_dataframe was called
                 assert mock_dedupe.called
-
-                # Get the dataframe that was passed to deduplicate_dataframe
                 called_df = mock_dedupe.call_args[0][0]
-
-                # Verify metadata fields are NOT in the dataframe
                 assert "instrument" not in called_df.columns
                 assert "account_context" not in called_df.columns
                 assert "respondent_id" not in called_df.columns
-
-                # Verify REDCap fields ARE still there
                 assert "record_id" in called_df.columns
                 assert "curious_account_created_source_secret_id" in called_df.columns
-                assert "curious_account_created_invite_status" in called_df.columns
-                assert "redcap_event_name" in called_df.columns
+
+
+# ============================================================================
+# Tests - cache keys
+# ============================================================================
 
 
 class TestInvitationCacheKeys:
     """Test invitation-specific cache key creation."""
 
-    def test_create_invitation_cache_key(self):
+    def test_create_invitation_cache_key(self) -> None:
         """Test creating cache key for invitation."""
         from hbnmigration.from_curious.invitations_to_redcap import (
             create_invitation_cache_key,
         )
 
-        result = create_invitation_cache_key("12345", "3", True)
-        assert result == "12345:3:1"
+        assert create_invitation_cache_key("12345", "3", True) == "12345:3:1"
 
-    def test_create_invitation_cache_key_no_response(self):
+    def test_create_invitation_cache_key_no_response(self) -> None:
         """Test cache key with no response."""
         from hbnmigration.from_curious.invitations_to_redcap import (
             create_invitation_cache_key,
         )
 
-        result = create_invitation_cache_key("12345", "2", False)
-        assert result == "12345:2:0"
+        assert create_invitation_cache_key("12345", "2", False) == "12345:2:0"
 
-    def test_process_responder_accounts_uses_cache_keys(self, tmp_path):
-        """Test responder processing uses composite cache keys."""
-        from hbnmigration.from_curious.invitations_to_redcap import (
-            _process_responder_accounts,
-        )
+    def test_process_accounts_uses_cache_keys(self, tmp_path: Any) -> None:
+        """Test account processing uses composite cache keys."""
         from hbnmigration.utility_functions import DataCache
 
         cache = DataCache("test", ttl_minutes=5, cache_dir=str(tmp_path))
-
         with (
-            patch(
-                "hbnmigration.from_curious.invitations_to_redcap.curious_authenticate"
-            ),
-            patch(
-                "hbnmigration.from_curious.invitations_to_redcap.pull_data_from_curious"
-            ) as mock_pull,
+            patch(f"{INVITATIONS_MOD}.curious_authenticate"),
+            patch(f"{INVITATIONS_MOD}.pull_data_from_curious") as mock_pull,
         ):
-            # Return empty DataFrame
             mock_pull.return_value = pl.DataFrame()
-
-            _process_responder_accounts(
-                "Test Applet", "token", "lookup_token", cache, 625
+            _process_accounts(
+                "Test Applet", "responder", "token", "lookup_token", cache, 625
             )
-
-            # Should handle empty DataFrame gracefully
             assert cache.get_stats()["total_entries"] == 0
+
+
+# ============================================================================
+# Tests - _process_accounts (unified)
+# ============================================================================
+
+
+class TestProcessAccounts:
+    """Tests for the unified _process_accounts function."""
+
+    @pytest.mark.parametrize("ctx", ACCOUNT_CONTEXTS)
+    def test_logs_and_returns_on_auth_failure(
+        self, tmp_path: Any, ctx: AccountContext, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Auth failure should log warning and return without error."""
+        from hbnmigration.utility_functions import DataCache
+
+        cache = DataCache("test", ttl_minutes=5, cache_dir=str(tmp_path))
+        with patch(
+            f"{INVITATIONS_MOD}.curious_authenticate",
+            side_effect=KeyError("not configured"),
+        ):
+            _process_accounts("Fake Applet", ctx, "token", "lookup_token", cache, 625)
+        assert "not configured" in caplog.text
+
+    @pytest.mark.parametrize("ctx", ACCOUNT_CONTEXTS)
+    def test_returns_on_empty_pull(
+        self, tmp_path: Any, ctx: AccountContext, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Empty pull_data_from_curious should log and return."""
+        from hbnmigration.utility_functions import DataCache
+
+        cache = DataCache("test", ttl_minutes=5, cache_dir=str(tmp_path))
+        with (
+            patch(f"{INVITATIONS_MOD}.curious_authenticate"),
+            patch(f"{INVITATIONS_MOD}.pull_data_from_curious") as mock_pull,
+        ):
+            mock_pull.return_value = pl.DataFrame()
+            _process_accounts("Test Applet", ctx, "token", "lookup_token", cache, 625)
+        assert f"No {ctx} invitations" in caplog.text
+
+
+# ============================================================================
+# Tests - _strip_instrument_infix
+# ============================================================================
+
+
+class TestStripInstrumentInfix:
+    """Tests for _strip_instrument_infix."""
+
+    @pytest.mark.parametrize(
+        "col,ctx,expected",
+        [
+            (
+                "curious_account_created_responder_account_created_response",
+                "responder",
+                "curious_account_created_account_created_response",
+            ),
+            (
+                "curious_account_created_responder_source_secret_id",
+                "responder",
+                "curious_account_created_source_secret_id",
+            ),
+            (
+                "curious_account_created_child_account_created_response",
+                "child",
+                "curious_account_created_account_created_response",
+            ),
+            (
+                "curious_account_created_child_source_secret_id",
+                "child",
+                "curious_account_created_source_secret_id",
+            ),
+        ],
+    )
+    def test_strips_infix(self, col: str, ctx: AccountContext, expected: str) -> None:
+        """Instrument infix should be removed from data fields."""
+        assert _strip_instrument_infix(col, ctx) == expected
+
+    @pytest.mark.parametrize("ctx", ACCOUNT_CONTEXTS)
+    def test_preserves_complete_field(self, ctx: AccountContext) -> None:
+        """_complete fields should be left untouched."""
+        instrument = _instrument_for(ctx)
+        complete = f"{instrument}_complete"
+        assert _strip_instrument_infix(complete, ctx) == complete
+
+    @pytest.mark.parametrize(
+        "col",
+        ["record_id", "redcap_event_name", "some_unrelated_field"],
+    )
+    def test_leaves_non_prefixed_columns_alone(self, col: str) -> None:
+        """Columns without the curious prefix should pass through unchanged."""
+        assert _strip_instrument_infix(col, "responder") == col
+
+    def test_does_not_strip_wrong_context(self) -> None:
+        """Responder infix should not be stripped when context is child."""
+        col = "curious_account_created_responder_account_created_response"
+        # child context looks for "child_" infix, not "responder_"
+        assert _strip_instrument_infix(col, "child") == col
+
+
+# ============================================================================
+# Tests - _add_child_suffix
+# ============================================================================
+
+
+class TestAddChildSuffix:
+    """Tests for _add_child_suffix."""
+
+    def test_appends_suffix_to_data_field(self) -> None:
+        """Data fields should get the suffix appended."""
+        assert (
+            _add_child_suffix("curious_account_created_source_secret_id", "_c")
+            == "curious_account_created_source_secret_id_c"
+        )
+
+    def test_preserves_complete_field(self) -> None:
+        """_complete fields should not get the suffix."""
+        assert (
+            _add_child_suffix("curious_account_created_child_complete", "_c")
+            == "curious_account_created_child_complete"
+        )
+
+    @pytest.mark.parametrize(
+        "col",
+        ["record_id", "redcap_event_name"],
+    )
+    def test_preserves_structural_columns(self, col: str) -> None:
+        """record_id and redcap_event_name should never get a suffix."""
+        assert _add_child_suffix(col, "_c") == col
+
+    def test_leaves_non_prefixed_columns_alone(self) -> None:
+        """Columns without the curious prefix should pass through unchanged."""
+        assert _add_child_suffix("some_other_field", "_c") == "some_other_field"

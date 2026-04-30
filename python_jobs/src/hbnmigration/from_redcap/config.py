@@ -7,6 +7,7 @@ from warnings import deprecated
 from ..utility_functions import (
     ColumnRenameMapping,
     FieldDescriptor,
+    RangeConstraint,
     ValueClass,
     ValueField,
 )
@@ -15,6 +16,19 @@ RedcapComplete = FieldDescriptor(
     {"Incomplete": "0", "Unverified": "1", "Complete": "2"}
 )
 """Common `*_complete` values."""
+
+
+class Constraints:
+    """Return constraints on REDCap fields."""
+
+    class PID625:
+        """Constraints for REDCap PID 625."""
+
+        class permission_audiovideo_participant:
+            """Constraints for `permission_audiovideo_participant`."""
+
+            age = RangeConstraint(11, 18, True, False)
+            """Applicable age range."""
 
 
 class FieldList(UserList):
@@ -146,6 +160,12 @@ class Fields:
                 "phone_2",
                 "phone_2_1821",
                 "prefname",
+                "q_devices",
+                "q_devices_1821",
+                "q_devices_info",
+                "q_devices_info_1821",
+                "q_silverallergy",
+                "q_silverallergy_1821",
                 "record_id",
                 "role_consent",
                 "same_address",
@@ -339,6 +359,9 @@ class Fields:
             "phone",
             "phone_2",
             "prefname",
+            "q_devices",
+            "q_devices_info",
+            "q_silverallergy",
             "record_id",
             "role_consent",
             "same_address",
@@ -496,6 +519,9 @@ class Fields:
             "prefname_1821": "prefname",
             "biosex": "sex",
             "biosex_1821": "sex",
+            "q_devices_1821": "q_devices",
+            "q_devices_info_1821": "q_devices_info",
+            "q_silverallergy_1821": "q_silverallergy",
             "sibling_1821": "sibling",
             "siblingdob_1821": "siblingdob",
             "siblingfirstname_1821": "siblingfirstname",
@@ -601,6 +627,15 @@ class Values:
             }
         )
         """Is enrollment complete and we can create parent and participant profiles in Curious?"""  # noqa: E501
+
+        permission_audiovideo_participant = FieldDescriptor(
+            {
+                "Not Applicable: no assent required": "0",
+                "YES, you may record me during participation": "1",
+                "NO, you may not record me during participation": "2",
+            }
+        )
+        """Participant giving permission to audio and/or video record during study activities."""  # noqa: E501
 
         permission_collab = FieldDescriptor({"Yes": "0", "No": "1"})
         """Permission to share your child's records with partnering scientific institution(s)."""  # noqa: E501
