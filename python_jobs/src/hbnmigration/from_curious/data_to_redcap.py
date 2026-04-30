@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 import re
 import sys
-from tempfile import NamedTemporaryFile, TemporaryDirectory
+from tempfile import TemporaryDirectory
 import time
 from typing import Literal
 
@@ -75,46 +75,6 @@ _ACCOUNT_CREATED_PREFIXES = (
 def _is_account_created_instrument(name: str) -> bool:
     """Return ``True`` when *name* is a ``curious_account_created`` instrument."""
     return name.replace("_redcap", "").lower().startswith(_ACCOUNT_CREATED_PREFIXES)
-
-
-# ============================================================================
-# Received-flag helpers (PID 625 only)
-# ============================================================================
-
-
-def _instrument_received_field(instrument_name: str) -> str:
-    """
-    Derive ``<short>_received`` for PID 625.
-
-    Strips trailing age (``_1117``, ``_18+``) and informant (``_sr``,
-    ``_pr``) suffixes, then appends ``_received``.
-    """
-    name = instrument_name.lower()
-    name = re.sub(r"_\d+\+?$", "", name)
-    name = re.sub(r"_(?:sr|pr)$", "", name)
-    return f"{name}_received"
-
-
-def _build_received_flags_df(outputs: list[NamedOutput]) -> pl.DataFrame | None:
-    """
-    Build ``_received = "1"`` rows for PID 625 from non-account-created outputs.
-
-    Returns ``None`` when nothing needs flagging.
-    """
-    rows: list[dict[str, str]] = []
-    for output in outputs:
-        inst = output.name.replace("_redcap", "")
-        if _is_account_created_instrument(inst):
-            continue
-        df = output.output
-        if "record_id" not in df.columns or df.is_empty():
-            continue
-        field = _instrument_received_field(inst)
-        rows.extend(
-            {"record_id": str(rid), field: "1", "redcap_event_name": "admin_arm_1"}
-            for rid in df["record_id"].unique().to_list()
-        )
-    return pl.DataFrame(rows) if rows else None
 
 
 # ============================================================================
@@ -719,40 +679,6 @@ def send_to_redcap(
     return results
 
 
-def _send_received_flags(
-    received_df: pl.DataFrame,
-    pid: int,
-    cache: DataCache | None = None,
-) -> Results:
-    """Upload ``_received`` flag rows to PID 625."""
-    results = Results()
-    if received_df.is_empty():
-        return results
-    with NamedTemporaryFile(suffix=".csv", delete=False, mode="w") as tmp:
-        tmp_path = Path(tmp.name)
-        received_df.write_csv(tmp_path)
-    try:
-        fh = compute_dataframe_hash(received_df)
-        ck = create_instrument_cache_key("received_flags", fh, len(received_df))
-        if cache and cache.is_processed(ck):
-            logger.info("Received flags already processed, skipping")
-            results.success += len(received_df)
-            return results
-        push_to_redcap(tmp_path, pid, skip_deduplication=True)
-        results.success += len(received_df)
-        if cache:
-            cache.mark_processed(
-                ck, metadata={"type": "received_flags", "rows": len(received_df)}
-            )
-    except Exception:
-        logger.exception("Failed to upload received flags to PID %d", pid)
-        results.failure.append("received_flags")
-    finally:
-        if tmp_path.exists():
-            tmp_path.unlink()
-    return results
-
-
 # ============================================================================
 # Pipeline Orchestration
 # ============================================================================
@@ -777,7 +703,7 @@ def data_to_redcap(
     """
     Send Curious data to REDCap for *applet_name*.
 
-    * **PID 625** — ``curious_account_created``, alerts, ``_received`` flags.
+    * **PID 625** — ``curious_account_created`` and alerts
     * **PID 891** — all other instrument data.
     """
     with TemporaryDirectory() as tmpdir:
@@ -812,12 +738,6 @@ def data_to_redcap(
             logger.info(
                 send_to_redcap(d625, 625, by_pid[625][1], cache).report, YESTERDAY
             )
-
-        # PID 625 — received flags
-        received = _build_received_flags_df(outputs)
-        if received is not None:
-            rr = _send_received_flags(received, 625, cache)
-            logger.info("Received flags: %d ok, %d fail", rr.success, len(rr.failure))
 
         log_cache_statistics(cache, logger)
 
