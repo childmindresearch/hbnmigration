@@ -353,6 +353,7 @@ class Fields:
             "parentfirstname",
             "parentfirstname_2",
             "parentlastname",
+            "parent_involvement",
             "permission_audiovideo",
             "permission_audiovideo_participant",
             "permission_collab",
