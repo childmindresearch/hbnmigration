@@ -3,12 +3,12 @@
 import argparse
 import asyncio
 from contextlib import asynccontextmanager
+from datetime import date
 import json
 import logging
 import re
 from typing import Any, AsyncIterator, cast, Optional
 
-from numpy import intersect1d
 import pandas as pd
 import requests
 import websockets
@@ -19,6 +19,7 @@ from websockets.exceptions import (
 )
 
 from .._config_variables import curious_variables, redcap_variables
+from ..exceptions import NoData
 from ..from_redcap.config import FieldList
 from ..from_redcap.from_redcap import fetch_data
 from ..utility_functions import (
@@ -32,6 +33,8 @@ from ..utility_functions import (
     log_cache_statistics,
     redcap_api_push,
 )
+from ..utility_functions.logging import log_root_path
+from ..utility_functions.teams import send_alert
 from .config import curious_authenticate
 from .utils import (
     alert_form_for_instrument,
@@ -122,6 +125,49 @@ def _prepare_applet_names(applet_names: Optional[list[str]]) -> list[str]:
 # ============================================================================
 
 
+def _log_invalid_alert_fields(fields: list[str]) -> None:
+    """
+    Log alert field names that don't exist in REDCap metadata.
+
+    Appends new fields to a daily log file and sends a Teams alert
+    when previously-unseen fields are encountered.
+    """
+    log_dir = log_root_path() / "invalid_alert_fields"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_file = log_dir / f"{date.today().isoformat()}.txt"
+
+    # Read existing entries
+    existing: set[str] = set()
+    if log_file.exists():
+        existing = set(log_file.read_text().splitlines())
+
+    # Determine which are new
+    new_fields = [f for f in fields if f not in existing]
+    if not new_fields:
+        logger.debug("Invalid alert fields already logged: %s", fields)
+        return
+
+    # Append new fields to log
+    with log_file.open("a") as f:
+        for field in new_fields:
+            f.write(f"{field}\n")
+
+    logger.warning("Invalid alert fields logged: %s", new_fields)
+
+    # Send Teams alert
+    send_alert(
+        f"⚠️ Curious → REDCap Alerts: {len(new_fields)} invalid field name(s) "
+        f"detected.\n\n"
+        f"The following alert item names from Curious do not match any "
+        f"REDCap field in the alerts instrument:\n"
+        + "\n".join(f"• `{f}`" for f in new_fields)
+        + "\n\nThis likely means the Curious item name is inconsistent with "
+        f"the REDCap data dictionary. Check the item naming in Curious.\n\n"
+        f"Log file: `{log_file}`",
+        "Send webhook alerts to 🔴 MS Fabric - Failures",
+    )
+
+
 def _parse_alert_message(message: str) -> tuple[str, str]:
     """Parse alert message; return ``(answer, item_field_name)``."""
     _color, remainder = message.split(': "', 1)
@@ -202,6 +248,89 @@ def derive_instrument_name(result: pd.DataFrame) -> str:
     return "ra_alerts_parent"
 
 
+def _validate_alert_fields(
+    redcap_alerts: pd.DataFrame,
+    alerts_instrument: pd.DataFrame,
+) -> tuple[pd.DataFrame, list[str]]:
+    """
+    Validate alert field names against REDCap metadata.
+
+    Returns
+    -------
+    tuple[pd.DataFrame, list[str]]
+        (filtered alerts with only valid fields + mrn, valid field names)
+
+    """
+    known = set(alerts_instrument["field_name"].unique())
+    data_fields = [f for f in redcap_alerts["field_name"].unique() if f != "mrn"]
+    valid = [f for f in data_fields if f in known]
+    invalid = [f for f in data_fields if f not in known]
+    if invalid:
+        _log_invalid_alert_fields(invalid)
+    filtered = redcap_alerts[redcap_alerts["field_name"].isin([*valid, "mrn"])].copy()
+    return filtered, valid
+
+
+def _fetch_redcap_context(valid_fields: list[str]) -> pd.DataFrame | None:
+    """
+    Fetch MRN data and (optionally) alert field data from REDCap.
+
+    Returns combined DataFrame or ``None`` if no MRN data exists.
+    """
+    mrn_data = fetch_data(PID_625_TOKEN, "mrn", all_or_any="any")
+    if mrn_data.empty:
+        logger.warning("No MRN data found in REDCap")
+        return None
+    try:
+        field_data = fetch_data(
+            PID_625_TOKEN,
+            str(FieldList(valid_fields)),
+            all_or_any="any",
+        )
+        return pd.concat([mrn_data, field_data], ignore_index=True)
+    except NoData:
+        logger.debug(
+            "No existing data for alert fields %s (expected for new alerts)",
+            valid_fields,
+        )
+        return mrn_data
+
+
+def _map_and_transform(
+    redcap_alerts: pd.DataFrame,
+    redcap_fields: pd.DataFrame,
+    alerts_instrument: pd.DataFrame,
+) -> pd.DataFrame:
+    """
+    Map MRNs → record IDs, convert response values to indices, drop unmapped.
+
+    Returns the transformed DataFrame (may be empty).
+    """
+    result, mrn_lookup = map_mrns_to_records(redcap_alerts, redcap_fields)
+    if result.empty:
+        logger.warning("No data after MRN mapping")
+        return result
+
+    choice_lookup = create_choice_lookup(alerts_instrument)
+    result["lookup_key"] = list(
+        zip(result["field_name"], result["value"].str.strip().str.lower()),
+    )
+    result["value"] = result["lookup_key"].map(choice_lookup).fillna(result["value"])
+    result["record"] = result["record"].map(mrn_lookup)
+
+    unmapped = result["record"].isna()
+    if unmapped.any():
+        logger.warning(
+            "Could not map %d alert rows to record IDs (MRNs: %s)",
+            unmapped.sum(),
+            redcap_alerts.loc[redcap_alerts["field_name"] == "mrn", "value"]
+            .unique()
+            .tolist(),
+        )
+
+    return result.dropna(subset=["record"]).drop(columns="lookup_key")
+
+
 def process_alerts_for_redcap(
     pid: int,
     redcap_alerts: pd.DataFrame,
@@ -210,26 +339,39 @@ def process_alerts_for_redcap(
     """
     Process alerts for REDCap push.
 
-    Fetches metadata, maps MRNs → record IDs, converts response values
-    to REDCap indices, and toggles alert flags.
+    Fetches metadata, validates field names, maps MRNs → record IDs,
+    converts response values to REDCap indices, and toggles alert flags.
     """
-    alert_fields = redcap_alerts["field_name"].unique()
+    empty = pd.DataFrame(columns=redcap_alerts.columns)
+    if redcap_alerts.empty:
+        return empty
+
     alerts_instrument = fetch_alerts_metadata(REDCAP_ENDPOINTS.base_url, pid)
+    if alerts_instrument.empty:
+        logger.warning("No alerts metadata found for PID %d", pid)
+        return empty
+
+    redcap_alerts, valid_fields = _validate_alert_fields(
+        redcap_alerts,
+        alerts_instrument,
+    )
+    if not valid_fields or redcap_alerts.empty:
+        logger.warning("No valid alert fields found in metadata")
+        return empty
+
     if partial_redcap_landing:
-        alert_fields = intersect1d(
-            alert_fields, alerts_instrument["field_name"].unique()
-        )
-    redcap_fields = fetch_data(
-        PID_625_TOKEN, str(FieldList(alert_fields)), all_or_any="any"
-    )
-    result, mrn_lookup = map_mrns_to_records(redcap_alerts, redcap_fields)
-    choice_lookup = create_choice_lookup(alerts_instrument)
-    result["lookup_key"] = list(
-        zip(result["field_name"], result["value"].str.strip().str.lower()),
-    )
-    result["value"] = result["lookup_key"].map(choice_lookup).fillna(result["value"])
-    result["record"] = result["record"].map(mrn_lookup)
-    return toggle_alerts(result.drop("lookup_key", axis=1))
+        known = set(alerts_instrument["field_name"].unique())
+        valid_fields = [f for f in valid_fields if f in known]
+
+    redcap_fields = _fetch_redcap_context(valid_fields)
+    if redcap_fields is None:
+        return empty
+
+    result = _map_and_transform(redcap_alerts, redcap_fields, alerts_instrument)
+    if result.empty:
+        return empty
+
+    return toggle_alerts(result)
 
 
 def push_alerts_to_redcap(result: pd.DataFrame) -> None:
@@ -237,8 +379,10 @@ def push_alerts_to_redcap(result: pd.DataFrame) -> None:
     if result.empty:
         logger.info("No alerts to push (empty DataFrame)")
         return
+
     instrument_name = derive_instrument_name(result)
     logger.info("Derived instrument name: %s", instrument_name)
+
     result, n_dup = deduplicate_dataframe(
         result,
         PID_625_TOKEN,
@@ -251,9 +395,13 @@ def push_alerts_to_redcap(result: pd.DataFrame) -> None:
         return
     if n_dup:
         logger.info("Removed %d duplicate alert rows", n_dup)
+
     try:
         redcap_api_push(
-            result, PID_625_TOKEN, REDCAP_ENDPOINTS.base_url, redcap_variables.headers
+            result,
+            PID_625_TOKEN,
+            REDCAP_ENDPOINTS.base_url,
+            redcap_variables.headers,
         )
         logger.info("%d rows updated for alerts in PID 625.", result.shape[0])
     except Exception:

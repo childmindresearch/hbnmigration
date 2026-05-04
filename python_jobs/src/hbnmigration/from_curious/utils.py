@@ -397,26 +397,25 @@ def map_mrns_to_records(
 
     ``mrn_lookup`` maps MRN strings to record-ID strings.
     """
-    redcap_alerts["record"] = (
-        redcap_alerts["record"].str.replace(r"\D", "", regex=True).astype(str)
-    )
-    redcap_fields["record"] = redcap_fields["record"].astype(str)
+    redcap_alerts["record"] = redcap_alerts["record"].astype(str).str.strip()
+    redcap_fields["record"] = redcap_fields["record"].astype(str).str.strip()
+    # Normalize MRN values: strip whitespace, preserve leading zeros
+    mrn_rows = redcap_fields[redcap_fields["field_name"] == "mrn"].copy()
+    mrn_rows["value"] = mrn_rows["value"].astype(str).str.strip()
     mrn_lookup = {
         str(k): str(v)
-        for k, v in (
-            redcap_fields[redcap_fields["field_name"] == "mrn"]
-            .set_index("value")["record"]
-            .to_dict()
-            .items()
-        )
+        for k, v in mrn_rows.set_index("value")["record"].to_dict().items()
     }
     record_events = cast(
         dict[str, str],
         redcap_fields.groupby("field_name")["redcap_event_name"].first().to_dict(),
     )
     result = redcap_alerts.loc[redcap_alerts["field_name"] != "mrn"].copy()
-    result = result[result["field_name"].isin(redcap_fields["field_name"])]
     result["redcap_event_name"] = result["field_name"].map(record_events)
+    # For fields without an event mapping, use the event from any known field
+    if result["redcap_event_name"].isna().any() and record_events:
+        default_event = next(iter(record_events.values()))
+        result["redcap_event_name"] = result["redcap_event_name"].fillna(default_event)
     return result, mrn_lookup
 
 
