@@ -1678,3 +1678,167 @@ class TestEdgeCases:
             assert len(failures) == 1
             assert failures[0] == "2"
             assert mocks["new_account"].call_count == 3
+
+
+class TestFormatDataForRedcapOperations:
+    """Tests for format_data_for_redcap_operations."""
+
+    class TestDeduplication:
+        """Tests for Step 8: repeat instance deduplication logic."""
+
+        def test_keeps_all_values_from_latest_repeat_instance(self):
+            """Checkbox fields with multiple values in the latest instance are kept."""
+            df = pd.DataFrame(
+                {
+                    "record": ["1465"] * 6,
+                    "field_name": [
+                        "parent_involvement",
+                        "parent_involvement",
+                        "email",
+                        "parent_involvement",
+                        "parent_involvement",
+                        "email",
+                    ],
+                    "value": [
+                        "1",
+                        "2",
+                        "old@example.com",
+                        "1",
+                        "2",
+                        "new@example.com",
+                    ],
+                    "redcap_event_name": ["event_1"] * 6,
+                    "redcap_repeat_instrument": ["adult_consent"] * 6,
+                    "redcap_repeat_instance": [1, 1, 1, 2, 2, 2],
+                }
+            )
+
+            result = format_data_for_redcap_operations(df)
+
+            # Should keep both parent_involvement rows from instance 2
+            pi_rows = result[result["field_name"] == "parent_involvement"]
+            assert len(pi_rows) == 2
+            assert set(pi_rows["value"]) == {"1", "2"}
+
+            # Should keep only the email from instance 2
+            email_rows = result[result["field_name"] == "email"]
+            assert len(email_rows) == 1
+            assert email_rows.iloc[0]["value"] == "new@example.com"
+
+        def test_discards_older_repeat_instances(self):
+            """Only the highest repeat instance per record+instrument is kept."""
+            df = pd.DataFrame(
+                {
+                    "record": ["100"] * 5,
+                    "field_name": [
+                        "parent_involvement",
+                        "parent_involvement",
+                        "parent_involvement",
+                        "parent_involvement",
+                        "parent_involvement",
+                    ],
+                    "value": ["0", "1", "2", "1", "3"],
+                    "redcap_event_name": ["event_1"] * 5,
+                    "redcap_repeat_instrument": ["adult_consent"] * 5,
+                    "redcap_repeat_instance": [1, 1, 1, 2, 2],
+                }
+            )
+
+            result = format_data_for_redcap_operations(df)
+
+            pi_rows = result[result["field_name"] == "parent_involvement"]
+            assert len(pi_rows) == 2
+            assert set(pi_rows["value"]) == {"1", "3"}
+
+        def test_non_repeated_rows_deduplicate_by_record_and_field(self):
+            """Non-repeated rows (NaN instance) deduplicate on record + field_name."""
+            df = pd.DataFrame(
+                {
+                    "record": ["200", "200"],
+                    "field_name": ["email", "email"],
+                    "value": ["first@example.com", "second@example.com"],
+                    "redcap_event_name": ["event_1", "event_1"],
+                    "redcap_repeat_instrument": [None, None],
+                    "redcap_repeat_instance": [None, None],
+                }
+            )
+
+            result = format_data_for_redcap_operations(df)
+
+            email_rows = result[result["field_name"] == "email"]
+            assert len(email_rows) == 1
+
+        def test_mixed_repeated_and_non_repeated(self):
+            """Records with both repeated and non-repeated fields are handled."""
+            df = pd.DataFrame(
+                {
+                    "record": ["300"] * 5,
+                    "field_name": [
+                        "dob",
+                        "parent_involvement",
+                        "parent_involvement",
+                        "parent_involvement",
+                        "email",
+                    ],
+                    "value": ["2010-01-01", "0", "1", "2", "test@example.com"],
+                    "redcap_event_name": ["event_1"] * 5,
+                    "redcap_repeat_instrument": [
+                        None,
+                        "adult_consent",
+                        "adult_consent",
+                        "adult_consent",
+                        None,
+                    ],
+                    "redcap_repeat_instance": [None, 1, 1, 1, None],
+                }
+            )
+
+            result = format_data_for_redcap_operations(df)
+
+            # All 3 checkbox values kept (only one instance, so all kept)
+            pi_rows = result[result["field_name"] == "parent_involvement"]
+            assert len(pi_rows) == 3
+
+            # Non-repeated fields kept as single rows
+            assert len(result[result["field_name"] == "dob"]) == 1
+            assert len(result[result["field_name"] == "email"]) == 1
+
+    class TestFieldRenaming:
+        """Tests for field name rename and fan-out logic."""
+
+        def test_permission_audiovideo_1821_renamed(self):
+            """Test that `permission_audiovideo_1821` is renamed."""
+            df = pd.DataFrame(
+                {
+                    "record": ["400"],
+                    "field_name": ["permission_audiovideo_1821"],
+                    "value": ["1"],
+                    "redcap_event_name": ["event_1"],
+                    "redcap_repeat_instrument": [None],
+                    "redcap_repeat_instance": [None],
+                }
+            )
+
+            result = format_data_for_redcap_operations(df)
+
+            assert "permission_audiovideo_1821" not in result["field_name"].values
+            assert "permission_audiovideo_participant" in result["field_name"].values
+
+        def test_permission_collab_1821_renamed_and_decremented(self):
+            """Test that `permission_collab_1821` is renamed and decremented."""
+            df = pd.DataFrame(
+                {
+                    "record": ["500"],
+                    "field_name": ["permission_collab_1821"],
+                    "value": ["1"],
+                    "redcap_event_name": ["event_1"],
+                    "redcap_repeat_instrument": [None],
+                    "redcap_repeat_instance": [None],
+                }
+            )
+
+            result = format_data_for_redcap_operations(df)
+
+            collab_rows = result[result["field_name"] == "permission_collab"]
+            assert len(collab_rows) == 1
+            assert collab_rows.iloc[0]["value"] == "0"  # decremented from 1

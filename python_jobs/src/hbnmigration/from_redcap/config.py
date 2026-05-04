@@ -142,6 +142,7 @@ class Fields:
                 "mrn",
                 "par_rel",
                 "par_rel_2",
+                "parent_involvement",
                 "parent_last_name",
                 "parent_last_name_1821",
                 "parent_last_name_2",
@@ -185,6 +186,9 @@ class Fields:
                 "zipcode_1821",
                 "zipcode_2",
                 "zipcode_2_1821",
+                "adult_phone",
+                "permission_audiovideo_1821",
+                "permission_collab_1821",
             ]
         )
         """Fields to export from REDCap PID 247 for import into REDCap PID 625."""
@@ -319,6 +323,8 @@ class Fields:
             "adult_address",
             "adult_apt",
             "adult_city",
+            "adult_email",
+            "adult_phone",
             "adult_state",
             "adult_zip",
             "aptnumber1",
@@ -349,11 +355,11 @@ class Fields:
             "last_name",
             "middlename_y",
             "mrn",
+            "parent_involvement",
             "parent_last_name_2",
             "parentfirstname",
             "parentfirstname_2",
             "parentlastname",
-            "parent_involvement",
             "permission_audiovideo",
             "permission_audiovideo_participant",
             "permission_collab",
@@ -378,6 +384,14 @@ class Fields:
         ]
     )
     """Fields to import into REDCap PID 625."""
+
+    class duplicate:
+        """One-to-many mappings from one DataFrame to another."""
+
+        redcap_consent_to_redcap_operations: Final[dict[str, list[str]]] = {
+            # "adult_email": ["adult_email", "email"],
+        }
+        """Columns to fan out from REDCap PID 247 to REDCap PID 625."""
 
     class rename:
         """Mappings to rename from one DataFrame to another."""
@@ -491,7 +505,6 @@ class Fields:
             "parent_second_guardian_"
             "consent_complete": "complete_parent_second_guardian_consent",
             "dob_1821": "dob",
-            "adult_email": "email",
             "email_1821": "email",
             "email_2_1821": "email_2",
             "consent1": "first_name",
@@ -515,6 +528,8 @@ class Fields:
             "parent_last_name_1821": "parentlastname",
             "permission_audiovideo_1113": "permission_audiovideo_participant",
             "permission_audiovideo_1417": "permission_audiovideo_participant",
+            "permission_audiovideo_1821": "permission_audiovideo_participant",
+            "permission_collab_1821": "permission_collab",
             "phone_1821": "phone",
             "phone_2_1821": "phone_2",
             "prefname_1821": "prefname",
