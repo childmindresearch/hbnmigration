@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## 1.11.0
 
+### Changed
+
+- Split Curious into parent and child applets.
+- Split REDCap into Operations and Curious projects.
+
 ### Removed
 
 - `._config_variables.curious_variables.curious_variables.activity_ids`
@@ -14,6 +19,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `._config_variables.curious_variables.curious_variables.Credentials`
 - `._config_variables.curious_variables.curious_variables.AppletCredentials.hbn_mindlogger`
 - `.from_redcap.config.Values.PID247.enrollment_complete`
+
+## 1.10.11
+
+### Fixed
+
+- REDCap PID 247 `adult_consent.parent_involvement` → PID 625.
 
 ## 1.10.10
 
