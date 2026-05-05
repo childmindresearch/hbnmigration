@@ -106,11 +106,7 @@ def _format_redcap_data_for_curious(
     )
     relevant_fields = list(individual_fields.keys())
     df_temp = df_temp[df_temp["field_name"].isin(relevant_fields)]
-    df_temp = (
-        df_temp.groupby(["record", "field_name"])["value"]
-        .apply(lambda x: set(x) if len(x) > 1 else x.iloc[0])
-        .reset_index()
-    )
+    df_temp = df_temp.groupby(["record", "field_name"])["value"].first().reset_index()
     # Pivot
     df_pivoted = df_temp.pivot(index="record", columns="field_name", values="value")
     record_set = {*record_set, *df_pivoted.index.tolist()}
