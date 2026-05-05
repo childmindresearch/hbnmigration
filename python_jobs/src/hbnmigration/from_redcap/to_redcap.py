@@ -210,17 +210,34 @@ def format_data_for_redcap_operations(redcap_data: pd.DataFrame) -> pd.DataFrame
         df["field_name"] == "record_id", "record"
     ]
 
-    # Step 8: Deduplicate by keeping most recent repeat instance
+    # Step 8: For repeated instruments,
+    # keep only the latest instance's full set of rows.
+    # Then deduplicate non-repeated rows by record + field_name.
+
+    has_instance = df["redcap_repeat_instance"].notna()
+    repeated_df = df[has_instance].copy()
+    non_repeated_df = df[~has_instance].copy()
+
+    if not repeated_df.empty:
+        # Keep only rows from the highest instance per record + instrument
+        max_instance = repeated_df.groupby(["record", "redcap_repeat_instrument"])[
+            "redcap_repeat_instance"
+        ].transform("max")
+        repeated_df = repeated_df[repeated_df["redcap_repeat_instance"] == max_instance]
+
+    # For non-repeated rows, deduplicate on record + field_name
+    non_repeated_df = non_repeated_df.drop_duplicates(
+        subset=["record", "field_name"], keep="first"
+    )
+
     df = (
-        df.sort_values("redcap_repeat_instance", ascending=False, na_position="last")
-        .drop_duplicates(subset=["record", "field_name"], keep="first")
+        pd.concat([non_repeated_df, repeated_df], ignore_index=True)
         .drop(
             columns=["redcap_repeat_instrument", "redcap_repeat_instance"],
             errors="ignore",
         )
         .reset_index(drop=True)
     )
-
     # Step 9: Decrement permission_collab values by 1
     decrement_mask = df["field_name"] == "permission_collab"
     if decrement_mask.any():
@@ -447,7 +464,6 @@ def process_record_for_redcap_operations(record_id: str) -> dict[str, Any]:
                 "record_id": record_id,
                 "message": f"No data found in Intake (PID {_SOURCE_PID})",
             }
-
         # Extract event name for intake_ready field BEFORE formatting
         event_name = None
         intake_ready_rows = source_data[source_data["field_name"] == "intake_ready"]
@@ -615,7 +631,6 @@ def main() -> None:
             _TARGET_PID,
         )
         return
-
     # Build mapping of MRN -> source record_id BEFORE formatting
     mrn_to_source_record = (
         data_operations[data_operations["field_name"] == "mrn"]
