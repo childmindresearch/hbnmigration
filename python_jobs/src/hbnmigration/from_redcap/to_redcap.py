@@ -3,7 +3,8 @@ Transfer data from one REDCap project to another via webhook triggers.
 
 When ``intake_ready`` field is set to 1 in
 Healthy Brain Network Study Consent (IRB Approved) (PID 247),
-copies the approved participants to HBN - Operations and Data Collection (PID 625).
+copies the approved participants to HBN - Operations and Data Collection (PID 625) and
+HBN - Curious outputs (PID 891).
 
 Can also be run manually via CLI to process all pending records::
 
@@ -29,7 +30,8 @@ logger = initialize_logging(__name__)
 _REDCAP_TOKENS = redcap_variables.Tokens()
 _REDCAP_ENDPOINTS = redcap_variables.Endpoints()
 _SOURCE_PID = 247
-_TARGET_PID = 625
+_TARGET_PIDS = [625, 891]
+_TARGET_PID_STRS = [str(_) for _ in _TARGET_PIDS]
 
 app = FastAPI(
     title="REDCap to REDCap Migration Service",
@@ -315,7 +317,7 @@ def update_complete_parent_second_guardian_consent(df: pd.DataFrame) -> pd.DataF
 
 def push_to_intake_redcap(source_data: pd.DataFrame) -> int:
     """
-    Push data to operations (PID 625).
+    Push data to operations (PID 625) and Curious data (891).
 
     Args:
         source_data: DataFrame with formatted data to push.
@@ -324,24 +326,29 @@ def push_to_intake_redcap(source_data: pd.DataFrame) -> int:
         Number of rows successfully pushed.
 
     """
-    try:
-        rows_updated = redcap_api_push(
-            df=source_data,
-            token=_REDCAP_TOKENS.pid625,
-            url=_REDCAP_ENDPOINTS.base_url,
-            headers=redcap_variables.headers,
-        )
-        logger.info(
-            "%d rows successfully pushed to Operations REDCap (PID %d).",
-            rows_updated,
-            _TARGET_PID,
-        )
-        return rows_updated
-    except Exception:
-        logger.exception(
-            "Failed to push data to Operations REDCap (PID %d)", _TARGET_PID
-        )
-        raise
+    rows_updated = []
+    for project in _TARGET_PIDS:
+        try:
+            rows_updated.append(
+                redcap_api_push(
+                    df=source_data,
+                    token=getattr(_REDCAP_TOKENS, f"pid{project}"),
+                    url=_REDCAP_ENDPOINTS.base_url,
+                    headers=redcap_variables.headers,
+                )
+            )
+            logger.info(
+                "%d rows successfully pushed to Operations REDCap (PID %d).",
+                rows_updated,
+                project,
+            )
+        except Exception:
+            logger.exception(
+                "Failed to push data to Operations REDCap (PID %d)", project
+            )
+            raise
+    assert rows_updated[0] == rows_updated[1]
+    return rows_updated[0]
 
 
 def update_source_redcap_status(
@@ -506,7 +513,8 @@ def process_record_for_redcap_operations(record_id: str) -> dict[str, Any]:
         return {
             "status": "success",
             "record_id": record_id,
-            "message": f"Pushed {rows_pushed} row(s) to Operations (PID {_TARGET_PID})",
+            "message": f"Pushed {rows_pushed} row(s) to Operations (PIDS "
+            f"{{', '.join(_TARGET_PID_STRS}}",
             "rows_pushed": rows_pushed,
         }
     except Exception as e:
@@ -628,7 +636,7 @@ def main() -> None:
         logger.info(
             "No data to transfer from PID %s to PID %s.",
             _SOURCE_PID,
-            _TARGET_PID,
+            " | ".join(_TARGET_PID_STRS),
         )
         return
     # Build mapping of MRN -> source record_id BEFORE formatting

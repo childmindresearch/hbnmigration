@@ -2,6 +2,7 @@
 
 import csv
 from datetime import datetime
+import json
 import logging
 import os
 from pathlib import Path
@@ -167,6 +168,133 @@ def _fetch_redcap_metadata_all(pid: int) -> pl.DataFrame | None:
     return pl.from_pandas(md) if not md.empty else None
 
 
+def _parse_redcap_choices(metadata: pl.DataFrame) -> dict[str, dict[str, str]]:
+    """Parse REDCap radio metadata into {field_name: {stripped_label: code}}."""
+    choices: dict[str, dict[str, str]] = {}
+    for row in metadata.filter(pl.col("field_type") == "radio").iter_rows(named=True):
+        choices_str = row.get("select_choices_or_calculations") or ""
+        choice_map = _parse_choice_string(str(choices_str))
+        if choice_map:
+            choices[row["field_name"]] = choice_map
+    return choices
+
+
+def _parse_choice_string(choices_str: str) -> dict[str, str]:
+    """Parse a REDCap choice string into {stripped_label: code}."""
+    result: dict[str, str] = {}
+    for part in choices_str.split("|"):
+        comma_idx = part.find(",")
+        if comma_idx != -1:
+            result[part[comma_idx + 1 :].strip()] = part[:comma_idx].strip()
+    return result
+
+
+def _build_value_map(
+    ml_options: list[dict], rc_choices: dict[str, str], raw_values: set[str]
+) -> dict[str, str]:
+    """
+    Map actual values in the data to REDCap codes using Mindlogger options.
+
+    Determines whether the data contains raw Mindlogger values or scores,
+    then builds the appropriate mapping.
+    """
+    # Build both possible mappings
+    ml_values = {str(opt["value"]) for opt in ml_options}
+    ml_scores = {
+        str(opt.get("score", "")) for opt in ml_options if opt.get("score") is not None
+    }
+
+    # Determine if data contains raw values or scores
+    if raw_values <= ml_values:
+        # Data has raw Mindlogger values — map by label match
+        source_key = "value"
+    elif raw_values <= ml_scores:
+        # Data has scores — map by positional/label match using score as key
+        source_key = "score"
+    else:
+        # Mixed or unknown — try values first
+        source_key = "value" if (raw_values & ml_values) else "score"
+
+    mapping: dict[str, str] = {}
+    for opt in ml_options:
+        ml_name = opt.get("name", "").strip()
+        source_val = str(opt.get(source_key, ""))
+        rc_code = rc_choices.get(ml_name, "")
+        if rc_code and source_val:
+            mapping[source_val] = rc_code
+
+    return {k: v for k, v in mapping.items() if v and k != v}
+
+
+def _get_mindlogger_options(df: pl.DataFrame, options_col: str) -> list[dict] | None:
+    """Extract and parse the Mindlogger options JSON from the first non-null row."""
+    series = df.select(pl.col(options_col).cast(pl.Utf8)).drop_nulls().to_series()
+    if series.is_empty():
+        return None
+    try:
+        parsed = json.loads(series[0])
+        return parsed if isinstance(parsed, list) else None
+    except json.JSONDecodeError, TypeError:
+        return None
+
+
+def _build_remap_expr(col_name: str, value_map: dict[str, str]) -> pl.Expr:
+    """Build a chained when/then/otherwise expression for value remapping."""
+    expr = pl.col(col_name).cast(pl.Utf8)
+    for src, dst in value_map.items():
+        expr = (
+            pl.when(pl.col(col_name).cast(pl.Utf8) == src)
+            .then(pl.lit(dst))
+            .otherwise(expr)
+        )
+    return expr
+
+
+def _get_raw_values(df: pl.DataFrame, col: str) -> set[str]:
+    """Get the set of unique non-null string values in a column."""
+    return set(
+        df.select(pl.col(col).cast(pl.Utf8)).drop_nulls().to_series().unique().to_list()
+    )
+
+
+def _remap_responses_from_metadata(
+    output: NamedOutput, redcap_metadata: pl.DataFrame | None
+) -> NamedOutput:
+    """Remap response values using Mindlogger _options and REDCap metadata."""
+    if redcap_metadata is None:
+        return output
+
+    df = output.output
+    response_cols = [c for c in df.columns if c.endswith("_response")]
+    if not response_cols:
+        return output
+
+    redcap_choices = _parse_redcap_choices(redcap_metadata)
+
+    for resp_col in response_cols:
+        rc_choices = redcap_choices.get(resp_col)
+        if not rc_choices:
+            continue
+
+        options_col = resp_col.replace("_response", "_options")
+        if options_col not in df.columns:
+            continue
+
+        ml_options = _get_mindlogger_options(df, options_col)
+        if not ml_options:
+            continue
+
+        raw_values = _get_raw_values(df, resp_col)
+        value_map = _build_value_map(ml_options, rc_choices, raw_values)
+        if not value_map:
+            continue
+
+        df = df.with_columns(_build_remap_expr(resp_col, value_map).alias(resp_col))
+        logger.debug("Remapped %s: %s", resp_col, value_map)
+
+    return NamedOutput(name=output.name, output=df)
+
+
 # ============================================================================
 # Parent-record filtering
 # ============================================================================
@@ -213,25 +341,20 @@ def format_for_redcap(
         redcap_variables.headers,
         {"token": get_redcap_token(pid)},
     )
-    formatter_init = RedcapImportFormat(project=event_names, redcap_metadata=None)
+    metadata = _fetch_redcap_metadata_all(pid)
+    formatter = RedcapImportFormat(project=event_names, redcap_metadata=metadata)
     try:
         ml_data = MindloggerData.create(curious_data_dir)
     except pl.exceptions.NoDataError as exc:
         logger.info("No Curious data to export.")
         raise NoData from exc
 
-    initial = formatter_init.produce(ml_data)
-    metadata = _fetch_redcap_metadata_for_fields(
-        pid,
-        _extract_field_names_from_outputs(initial),
-    )
-    fmt = RedcapImportFormat(project=event_names, redcap_metadata=metadata)
-    outputs = fmt.produce(ml_data) if metadata is not None else initial
+    outputs = formatter.produce(ml_data)
     logger.info(
         "Formatted instruments: %s",
         "".join(f"\n\t- {o.name[:-7]}" for o in outputs),
     )
-    return outputs, fmt.get_instrument_row_counts()
+    return outputs, formatter.get_instrument_row_counts()
 
 
 def get_curious_data(request_json: CliOptions) -> None:
@@ -521,6 +644,8 @@ def _upload_csv_to_redcap(
             len(cat_errors),
             save_invalid_category_errors(csv_path, cat_errors),
         )
+        with csv_path.open("r") as _f:
+            logger.warning(_f.read())
         r.raise_for_status()
     if retry_on_field_error and "fields were not found in the project" in r.text:
         unfound = extract_unfound_fields(r.text)
