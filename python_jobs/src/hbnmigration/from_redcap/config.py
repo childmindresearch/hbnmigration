@@ -625,6 +625,10 @@ class Values:
         curious_account_created_responder_complete = RedcapComplete
         curious_account_created_child_complete = RedcapComplete
 
+        curious_complete = RedcapComplete
+        curious_track = FieldDescriptor({"yes": "1"})
+        """Curious Data Received?"""
+
         enrollment_complete = FieldDescriptor(
             {
                 "Not Sent": "0",

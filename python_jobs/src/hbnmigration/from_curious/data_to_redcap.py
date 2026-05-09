@@ -401,7 +401,7 @@ def validate_and_map_mrns(csv_path: Path, pid: int) -> bool:
         try:
             redcap_fields = fetch_data(
                 get_redcap_token(pid),
-                str(FieldList(list({*data_fields[:10], "mrn"}))),
+                {"fields": str(FieldList(list({*data_fields[:10], "mrn"})))},
                 all_or_any="any",
             )
             if redcap_fields.empty:

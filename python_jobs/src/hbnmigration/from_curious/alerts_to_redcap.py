@@ -277,14 +277,14 @@ def _fetch_redcap_context(valid_fields: list[str]) -> pd.DataFrame | None:
 
     Returns combined DataFrame or ``None`` if no MRN data exists.
     """
-    mrn_data = fetch_data(PID_625_TOKEN, "mrn", all_or_any="any")
+    mrn_data = fetch_data(PID_625_TOKEN, {"fields": "mrn"}, all_or_any="any")
     if mrn_data.empty:
         logger.warning("No MRN data found in REDCap")
         return None
     try:
         field_data = fetch_data(
             PID_625_TOKEN,
-            str(FieldList(valid_fields)),
+            {"fields": str(FieldList(valid_fields))},
             all_or_any="any",
         )
         return pd.concat([mrn_data, field_data], ignore_index=True)

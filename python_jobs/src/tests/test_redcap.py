@@ -1219,7 +1219,7 @@ class TestFetchDataOptionalFields:
         mock_fetch_api.return_value = pd.DataFrame(
             {"record": ["1"], "field_name": ["f"], "value": ["v"]}
         )
-        fetch_data("fake_token", "field1,field2")
+        fetch_data("fake_token", {"fields": "field1,field2"})
         request_data = mock_fetch_api.call_args[0][2]
         assert request_data.get("fields") == "field1,field2"
 
@@ -1950,3 +1950,18 @@ class TestFormatDataForRedcapOperations:
             collab_rows = result[result["field_name"] == "permission_collab"]
             assert len(collab_rows) == 1
             assert collab_rows.iloc[0]["value"] == "0"  # decremented from 1
+
+
+class TestFetchDataDeprecated:
+    """Test backward compatibility of deprecated export_fields parameter."""
+
+    @patch("hbnmigration.from_redcap.from_redcap.fetch_api_data")
+    def test_string_export_fields_still_works(self, mock_fetch_api) -> None:
+        """Test deprecated "export_fields" parameter."""
+        mock_fetch_api.return_value = pd.DataFrame(
+            {"record": ["1"], "field_name": ["f"], "value": ["v"]}
+        )
+        with pytest.warns(DeprecationWarning):
+            fetch_data("fake_token", "field1,field2")
+        request_data = mock_fetch_api.call_args[0][2]
+        assert request_data.get("fields") == "field1,field2"

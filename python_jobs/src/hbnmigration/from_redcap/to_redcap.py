@@ -406,7 +406,7 @@ def clear_ready_flag(record_id: str) -> None:
     try:
         data = fetch_data(
             _REDCAP_TOKENS.pid247,
-            "intake_ready",
+            {"fields": "intake_ready"},
             filter_logic=f"[record_id] = '{record_id}'",
         )
         if data.empty:
@@ -458,7 +458,7 @@ def process_record_for_redcap_operations(record_id: str) -> dict[str, Any]:
 
         source_data = fetch_data(
             _REDCAP_TOKENS.pid247,
-            fields_to_export,
+            {"fields": fields_to_export},
             filter_logic=f"[record_id] = '{record_id}'",
         )
 
@@ -619,10 +619,9 @@ def main() -> None:
             fields_to_export = str(Fields.export_247.for_redcap_operations)
         else:
             fields_to_export = None
-
         data_operations = fetch_data(
             _REDCAP_TOKENS.pid247,
-            fields_to_export,
+            {"fields": fields_to_export} if fields_to_export else {},
             Values.PID247.intake_ready.filter_logic("Ready to Send to Intake Redcap"),
         )
         if data_operations.empty:

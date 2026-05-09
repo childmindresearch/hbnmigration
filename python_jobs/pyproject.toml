@@ -55,6 +55,7 @@ redcap-to-curious-serve = "hbnmigration.from_redcap.to_curious:serve"
 redcap-to-redcap = "hbnmigration.from_redcap.to_redcap:main"
 redcap-to-redcap-serve = "hbnmigration.from_redcap.to_redcap:serve"
 ripple-to-redcap = "hbnmigration.from_ripple.to_redcap:main"
+track-curious = "hbnmigration.from_redcap.track_curious"
 
 [tool.setuptools.packages.find]
 where = ["src"]

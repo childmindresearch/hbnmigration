@@ -244,7 +244,7 @@ def clear_ready_flag(record_id: str) -> None:
     try:
         data = fetch_data(
             _REDCAP_TOKENS.pid625,
-            "ready_to_send_to_curious",
+            {"fields": "ready_to_send_to_curious"},
             filter_logic=f"[record_id] = '{record_id}'",
         )
         if data.empty:
@@ -413,7 +413,7 @@ def process_record_for_curious(record_id: str) -> dict[str, Any]:
         logger.info("Processing record %s for Curious push", record_id)
         data_operations = fetch_data(
             _REDCAP_TOKENS.pid625,
-            str(Fields.export_operations.for_curious),
+            {"fields": str(Fields.export_operations.for_curious)},
             filter_logic=f"[record_id] = '{record_id}'",
         )
         if data_operations.empty:
@@ -554,7 +554,7 @@ def main() -> None:
     try:
         data_operations = fetch_data(
             _REDCAP_TOKENS.pid625,
-            str(Fields.export_operations.for_curious),
+            {"fields": str(Fields.export_operations.for_curious)},
             Values.PID625.enrollment_complete.filter_logic("Ready to Send to Curious"),
         )
         if data_operations.empty:

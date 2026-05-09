@@ -1,6 +1,7 @@
 """Common functionality when fetching data from REDCap."""
 
-from typing import Hashable, Literal, Optional
+from typing import Hashable, Literal, Optional, overload
+import warnings
 
 import pandas as pd
 from pydantic import BaseModel, Field, field_validator
@@ -180,7 +181,7 @@ def get_data_for_responder_tracking() -> pd.DataFrame:
     """Get data from intake project to transfer to responder tracking project."""
     data247 = fetch_data(
         Tokens.pid247,
-        str(Fields.export_247.for_redcap_responder_tracking),
+        {"fields": str(Fields.export_247.for_redcap_responder_tracking)},
         Values.PID247.intake_ready.filter_logic("Ready to Send to Intake Redcap"),
     )
     if data247.empty:
@@ -292,9 +293,38 @@ def transform_redcap_data_for_responder_tracking() -> tuple[
     return create_responders_df, update_responders_df, participants_df
 
 
+@overload
+@warnings.deprecated(
+    "Deprecated in v1.12.1."
+    "Use 'export={\"fields\": fields}' instead of 'export_fields=fields'."
+)
 def fetch_data(
     token: str,
-    export_fields: Optional[str] = None,
+    export_fields: str,
+    /,
+    filter_logic: Optional[str] = None,
+    *,
+    all_or_any: Literal["all", "any"] = "all",
+    flat: bool = False,
+) -> pd.DataFrame: ...
+
+
+@overload
+def fetch_data(
+    token: str,
+    export: Optional[dict[Literal["fields", "forms"], str]] = None,
+    /,
+    filter_logic: Optional[str] = None,
+    *,
+    all_or_any: Literal["all", "any"] = "all",
+    flat: bool = False,
+) -> pd.DataFrame: ...
+
+
+def fetch_data(
+    token: str,
+    export: Optional[dict[Literal["fields", "forms"], str] | str] = None,
+    /,
     filter_logic: Optional[str] = None,
     *,
     all_or_any: Literal["all", "any"] = "all",
@@ -308,8 +338,8 @@ def fetch_data(
     token
         REDCap project API token
 
-    export_fields
-        comma-delimited list of REDCap fields to export
+    export
+        dict of strings (comma-delimited lists) of REDCap fields and/or forms to export
 
     filter_logic
         REDCap-API-syntax `filterLogic`
@@ -335,13 +365,32 @@ def fetch_data(
         "exportDataAccessGroups": "false",
         "returnFormat": "csv",
     }
-    if export_fields:
-        redcap_participant_data["fields"] = export_fields
-    orig_filter_logic = filter_logic
-    if all_or_any == "any" and export_fields:
-        filter_conditions = " OR ".join(
-            [f"[{field}] != ''" for field in export_fields.split(",")]
+    #################################
+    # Deprecated parameter handling #
+    #################################
+    if isinstance(export, str):
+        warnings.warn(
+            "Passing export_fields as a string is deprecated. "
+            "Use export={'fields': fields} instead.",
+            DeprecationWarning,
+            stacklevel=2,
         )
+        export = {"fields": export}
+    exports: dict[Literal["fields", "forms"], str] = export if export else {}
+    #################################
+    # ✂##############################
+    #################################
+    orig_filter_logic = filter_logic
+    export_fields = exports.get("fields")
+    if export_fields:
+        if all_or_any == "any":
+            filter_conditions = " OR ".join(
+                [f"[{field}] != ''" for field in export_fields.split(",")]
+            )
+        else:
+            filter_conditions = " AND ".join(
+                [f"[{field}] != ''" for field in export_fields.split(",")]
+            )
         filter_logic = (
             f"({filter_logic}) AND ({filter_conditions})"
             if filter_logic
@@ -349,6 +398,9 @@ def fetch_data(
         )
     if filter_logic:
         redcap_participant_data["filterLogic"] = filter_logic
+    for key, value in exports.items():
+        if value:
+            redcap_participant_data[key] = value
     df_redcap_participant_consent_data = fetch_api_data(
         Endpoints.base_url,
         redcap_variables.headers,
@@ -361,10 +413,10 @@ def fetch_data(
             for field in export_fields.split(",")
             if field not in df_redcap_participant_consent_data
         ]
-
+        export = {"fields": ",".join(export_list)}
         return fetch_data(
             token,
-            export_fields=",".join(export_list),
+            export,
             filter_logic=orig_filter_logic,
             all_or_any=all_or_any,
             flat=flat,
