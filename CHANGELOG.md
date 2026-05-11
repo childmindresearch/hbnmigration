@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- REDCap PID 879: `{instrument}_complete` → `"Curious Track.{instrument}_received".
+- `redcap-track-curious`: REDCap PID 891 `{instrument}_complete` → `"Curious Track.{instrument}_received".
 
 ### Deprecated
 
