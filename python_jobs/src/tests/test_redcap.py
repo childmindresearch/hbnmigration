@@ -1965,3 +1965,61 @@ class TestFetchDataDeprecated:
             fetch_data("fake_token", "field1,field2")
         request_data = mock_fetch_api.call_args[0][2]
         assert request_data.get("fields") == "field1,field2"
+
+
+class TestFetchDataRegression:
+    """Ensure backward compatibility and correct filter logic construction."""
+
+    @patch("hbnmigration.from_redcap.from_redcap.fetch_api_data")
+    @patch("hbnmigration.from_redcap.from_redcap.redcap_variables")
+    def test_fetch_data_does_not_inject_mandatory_and_filters(
+        self, mock_vars: MagicMock, mock_fetch_api: MagicMock
+    ) -> None:
+        """
+        Verify that fetch_data does not automatically inject AND conditions.
+
+        v1.12.1 introduced a regression where requesting multiple fields
+        appended 'AND [field] != ""' for every field, causing REDCap to
+        return zero records (and thus NoData) if any single field was empty.
+
+        Parameters
+        ----------
+        mock_vars
+            Mocked REDCap configuration variables.
+        mock_fetch_api
+            Mocked API execution function.
+
+        """
+        # 1. Setup Mock: REDCap headers
+        mock_vars.headers = {"Content-Type": "application/x-www-form-urlencoded"}
+
+        # 2. Define expected behavior:
+        # Even if we ask for field1 and field2, if a record exists with only field1
+        # populated, we expect to get that row back.
+        mock_data = pd.DataFrame([{"record_id": "1", "field1": "val1", "field2": ""}])
+        mock_fetch_api.return_value = mock_data
+
+        # 3. Execution: Request multiple fields
+        # In the BROKEN version, this will inject:
+        # filterLogic: ([field1] != '') AND ([field2] != '')
+        # causing the REAL REDCap API to return nothing, though our mock
+        # specifically tests the logic construction.
+
+        try:
+            result = fetch_data(
+                "fake_token", {"fields": "field1,field2"}, all_or_any="all"
+            )
+        except Exception as e:
+            pytest.fail(f"fetch_data raised an exception: {e}")
+
+        # 4. Assertions on the constructed logic
+        # We need to inspect what was actually sent to the API mock
+        sent_payload = mock_fetch_api.call_args[0][2]
+        filter_logic = sent_payload.get("filterLogic", "")
+
+        assert "AND" not in filter_logic, (
+            "Regression Found: fetch_data is forcing 'AND' filters on all fields: "
+            f"{filter_logic}. This causes records with partial data to be excluded "
+            "from the fetch."
+        )
+        assert not result.empty

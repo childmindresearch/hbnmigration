@@ -387,15 +387,11 @@ def fetch_data(
             filter_conditions = " OR ".join(
                 [f"[{field}] != ''" for field in export_fields.split(",")]
             )
-        else:
-            filter_conditions = " AND ".join(
-                [f"[{field}] != ''" for field in export_fields.split(",")]
+            filter_logic = (
+                f"({filter_logic}) AND ({filter_conditions})"
+                if filter_logic
+                else filter_conditions
             )
-        filter_logic = (
-            f"({filter_logic}) AND ({filter_conditions})"
-            if filter_logic
-            else filter_conditions
-        )
     if filter_logic:
         redcap_participant_data["filterLogic"] = filter_logic
     for key, value in exports.items():
