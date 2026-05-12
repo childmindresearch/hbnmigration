@@ -23,6 +23,7 @@ from ..utility_functions import (
     filter_by_cache,
     initialize_logging,
     log_cache_statistics,
+    redact_secret,
     yesterday_or_more_recent,
 )
 from .config import (
@@ -228,7 +229,7 @@ def lookup_mrn_from_r_id(r_id: str, token: str) -> str | None:
         matching = data[data["r_id"].astype(str) == str(r_id)]
         return str(matching["record_id"].iloc[0]) if not matching.empty else None
     except Exception as e:
-        logger.warning("MRN lookup error for r_id %s: %s", r_id, e)
+        logger.warning("MRN lookup error: %s", e)
         return None
 
 
@@ -327,7 +328,9 @@ def create_invitation_record(
     if account_context == "responder":
         mrn = lookup_mrn_from_r_id(secret_id, redcap_token)
         if not mrn:
-            logger.warning("No MRN for responder r_id %s, skipping", secret_id)
+            logger.warning(
+                "No MRN for responder r_id %s, skipping", redact_secret(secret_id)
+            )
             return None
         record_id = mrn
     else:
