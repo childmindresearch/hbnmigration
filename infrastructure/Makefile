@@ -5,6 +5,7 @@ help:
     @echo "  test          - Run all tests"
     @echo "  install-tools - Install testing dependencies"
     @echo "  init          - Initialize Terraform"
+    @echo "  install       - Install services to systemd"
     @echo "  plan          - Show execution plan"
     @echo "  apply         - Apply infrastructure changes"
     @echo "  destroy       - Destroy infrastructure"
@@ -23,6 +24,13 @@ install-tools:
 
 init:
     terraform init
+
+install:
+	@echo "Installing services to /etc/systemd/system/..."
+	sudo ln -sf $(PWD)/generated/*.service /etc/systemd/system/
+	sudo ln -sf $(PWD)/generated/*.timer /etc/systemd/system/
+	sudo systemctl daemon-reload
+	@echo "Services installed. Use 'sudo systemctl start <name>' to run them."
 
 plan: init
     terraform plan
