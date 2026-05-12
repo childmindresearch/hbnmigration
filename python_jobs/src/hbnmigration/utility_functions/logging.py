@@ -359,11 +359,9 @@ def redact_secret(secret: str, num_char: int = 4) -> str:
     secret
         string to redact
     num_char
-        number of characters to leave unredacted
+        retained for backward compatibility; no characters are left unredacted
 
     """
-    return (
-        f"{'█' * (len(secret) - num_char)}{secret[-num_char:]}"
-        if len(secret) > num_char
-        else "█" * len(secret)
-    )
+    if not secret:
+        return "█"
+    return "█" * len(str(secret))
