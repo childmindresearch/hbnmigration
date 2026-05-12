@@ -15,7 +15,7 @@ locals {
     workspace      = terraform.workspace
     user_group     = var.user_group
     project_root   = var.project_root
-    venv_path      = var.venv_path
+    venv_path      = "${var.project_root}/${var.venv_path}"
     log_directory  = var.log_directory
     project_status = var.project_status
     recovery_mode  = var.recovery_mode
