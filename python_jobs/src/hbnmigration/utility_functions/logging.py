@@ -348,3 +348,20 @@ def log_invalid_fields(invalid_fields: list[str]) -> list[str]:
 
 # Register cleanup on exit
 atexit.register(_invalid_fields_logger.clear_cache)
+
+
+def redact_secret(secret: str, num_char: int = 4) -> str:
+    """
+    Return a masked representation safe for logs.
+
+    Parameters
+    ----------
+    secret
+        string to redact
+    num_char
+        retained for backward compatibility; no characters are left unredacted
+
+    """
+    if not secret:
+        return "█"
+    return "█" * len(str(secret))

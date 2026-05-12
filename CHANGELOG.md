@@ -5,6 +5,60 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 1.12.3
+
+### Fixed
+
+- Bug fetching REDCap data introduced in v1.12.1.
+
+## 1.12.2
+
+### Fixed
+
+- Automatic deployment of services to `systemd`.
+
+## 1.12.1
+
+### Added
+
+- `redcap-track-curious`: REDCap PID 891 `{instrument}_complete` → `"Curious Track.{instrument}_received".
+
+### Deprecated
+
+- `hbnmigration.from_redcap.from_redcap` `export_fields` parameter.
+
+## 1.12.0
+
+### Changed
+
+- Copies participant information to both operations and Curious data REDCap projects from intake.
+- Moved logic for looking up REDCap indicies from this repository to `mindlogger-data-export`.
+
+### Fixes
+
+- Fixes bug where Curious-to-REDCap data were falling back on potentially incorrect values.
+
+## 1.11.1
+
+### Fixed
+
+- Only send one email per participant to Curious when creating an account.
+
+## 1.11.0
+
+### Changed
+
+- Split Curious into parent and child applets.
+- Split REDCap into Operations and Curious projects.
+
+### Removed
+
+- `._config_variables.curious_variables.curious_variables.activity_ids`
+- `._config_variables.curious_variables.curious_variables.applet_ids`
+- `._config_variables.curious_variables.curious_variables.Credentials`
+- `._config_variables.curious_variables.curious_variables.AppletCredentials.hbn_mindlogger`
+- `.from_redcap.config.Values.PID247.enrollment_complete`
+
 ## 1.10.11
 
 ### Fixed
@@ -153,6 +207,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `._config_variables.curious_variables.curious_variables.applet_ids`
 - `._config_variables.curious_variables.curious_variables.Credentials`
 - `._config_variables.curious_variables.curious_variables.AppletCredentials.hbn_mindlogger`
+- `.from_redcap.config.Values.PID247.enrollment_complete`
 
 ## 1.8.0
 

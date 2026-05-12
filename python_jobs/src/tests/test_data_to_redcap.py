@@ -1,6 +1,7 @@
 """Tests for add_alert_fields_if_needed function."""
 
 import logging
+import re
 from unittest.mock import MagicMock, patch
 
 import pandas as pd
@@ -9,12 +10,22 @@ import pytest
 import requests
 
 from hbnmigration.from_curious.data_to_redcap import (
-    _determine_event_column,
-    _determine_record_id_column,
+    _determine_column,
+    _filter_parent_records,
     add_alert_fields_if_needed,
-    get_redcap_records_for_instrument,
+    create_instrument_cache_key,
+    extract_unfound_fields,
+    push_to_redcap,
+    send_to_redcap,
+    split_csv_by_fields,
     validate_and_map_mrns,
 )
+from hbnmigration.from_curious.invitations_to_redcap import (
+    create_invitation_record,
+    lookup_mrn_from_r_id,
+)
+from hbnmigration.from_curious.utils import get_redcap_records_for_instrument
+from hbnmigration.utility_functions import DataCache
 from mindlogger_data_export.outputs import NamedOutput
 
 from .conftest import (
@@ -103,47 +114,65 @@ def sample_existing_redcap_data_with_alerts():
     }
 
 
-# ============================================================================
-# Tests - _determine_record_id_column
-# ============================================================================
-
-
-@pytest.mark.parametrize(
-    "columns,expected",
-    [
-        (["record_id", "field1", "field2"], "record_id"),
-        (["record", "field1", "field2"], "record"),
-        (["participant_id", "field1", "field2"], "participant_id"),
-        (["subject_id", "field1", "field2"], "subject_id"),
-        (["field1", "field2", "field3"], None),
-    ],
-    ids=["record_id", "record", "participant_id", "subject_id", "no_match"],
-)
-def test_determine_record_id_column(columns, expected):
-    """Test _determine_record_id_column with various column names."""
-    df = pl.DataFrame({col: ["val"] for col in columns})
-    result = _determine_record_id_column(df)
-    assert result == expected
-
+_REDCAP_PID = 625
+_REDCAP_CURIOUS_DATA_PID = 891
 
 # ============================================================================
-# Tests - _determine_event_column
+# Tests - _determine_column
 # ============================================================================
 
 
 @pytest.mark.parametrize(
-    "columns,expected",
+    "columns,candidates,expected",
     [
-        (["redcap_event_name", "field1", "field2"], "redcap_event_name"),
-        (["event", "field1", "field2"], "event"),
-        (["field1", "field2", "field3"], None),
+        (
+            ["record_id", "field1", "field2"],
+            ("record_id", "record", "participant_id", "subject_id"),
+            "record_id",
+        ),
+        (
+            ["record", "field1", "field2"],
+            ("record_id", "record", "participant_id", "subject_id"),
+            "record",
+        ),
+        (
+            ["participant_id", "field1", "field2"],
+            ("record_id", "record", "participant_id", "subject_id"),
+            "participant_id",
+        ),
+        (
+            ["subject_id", "field1", "field2"],
+            ("record_id", "record", "participant_id", "subject_id"),
+            "subject_id",
+        ),
+        (
+            ["field1", "field2", "field3"],
+            ("record_id", "record", "participant_id", "subject_id"),
+            None,
+        ),
+        (
+            ["redcap_event_name", "field1", "field2"],
+            ("redcap_event_name", "event"),
+            "redcap_event_name",
+        ),
+        (["event", "field1", "field2"], ("redcap_event_name", "event"), "event"),
+        (["field1", "field2", "field3"], ("redcap_event_name", "event"), None),
     ],
-    ids=["redcap_event_name", "event", "no_match"],
+    ids=[
+        "record_id",
+        "record",
+        "participant_id",
+        "subject_id",
+        "no_match_rid",
+        "redcap_event_name",
+        "event",
+        "no_match_event",
+    ],
 )
-def test_determine_event_column(columns, expected):
-    """Test _determine_event_column with various column names."""
+def test_determine_column(columns, candidates, expected):
+    """Test _determine_column with various column names and candidates."""
     df = pl.DataFrame({col: ["val"] for col in columns})
-    result = _determine_event_column(df)
+    result = _determine_column(df, candidates)
     assert result == expected
 
 
@@ -162,10 +191,9 @@ def test_validate_and_map_mrns_skips_non_record_id_column(
     df.write_csv(sample_csv_path)
 
     with caplog.at_level(logging.DEBUG):
-        result = validate_and_map_mrns(sample_csv_path)
+        result = validate_and_map_mrns(sample_csv_path, _REDCAP_PID)
 
     assert result is False
-    assert "No record_id column" in caplog.text
     # Should not proceed to fetch or map
     assert not mock_fetch.called
     assert not mock_map_mrns.called
@@ -183,11 +211,10 @@ def test_validate_and_map_mrns_skips_non_mrn_records(
     mock_fetch.return_value = pd.DataFrame()
 
     with caplog.at_level(logging.DEBUG):
-        result = validate_and_map_mrns(sample_csv_path)
+        result = validate_and_map_mrns(sample_csv_path, _REDCAP_PID)
 
     assert result is False
     # The function will try to fetch but get empty data and return False
-    assert "No existing REDCap data found" in caplog.text
 
 
 @patch("hbnmigration.from_curious.data_to_redcap.fetch_data")
@@ -227,7 +254,7 @@ def test_validate_and_map_mrns_applies_mapping(
         {"1234567": "001", "8901234": "002"},  # MRN lookup
     )
 
-    result = validate_and_map_mrns(sample_csv_path)
+    result = validate_and_map_mrns(sample_csv_path, _REDCAP_PID)
     assert result is True
 
     # Verify the CSV was updated with record IDs
@@ -264,10 +291,10 @@ def test_validate_and_map_mrns_handles_fetch_error(mock_fetch, sample_csv_path, 
     mock_fetch.side_effect = Exception("API Error")
 
     with caplog.at_level(logging.WARNING):
-        result = validate_and_map_mrns(sample_csv_path)
+        result = validate_and_map_mrns(sample_csv_path, _REDCAP_PID)
 
     assert result is False
-    assert "Could not fetch REDCap data" in caplog.text
+    assert "MRN mapping error" in caplog.text
 
 
 @patch("hbnmigration.from_curious.data_to_redcap.fetch_data")
@@ -287,10 +314,9 @@ def test_validate_and_map_mrns_skips_when_no_data_fields(
     df.write_csv(sample_csv_path)
 
     with caplog.at_level(logging.DEBUG):
-        result = validate_and_map_mrns(sample_csv_path)
+        result = validate_and_map_mrns(sample_csv_path, _REDCAP_PID)
 
     assert result is False
-    assert "No data fields found" in caplog.text
     assert not mock_fetch.called
 
 
@@ -321,10 +347,9 @@ def test_validate_and_map_mrns_handles_empty_mrn_lookup(
     mock_map_mrns.return_value = (pd.DataFrame(), {})
 
     with caplog.at_level(logging.DEBUG):
-        result = validate_and_map_mrns(sample_csv_path)
+        result = validate_and_map_mrns(sample_csv_path, _REDCAP_PID)
 
     assert result is False
-    assert "No MRN lookup data available" in caplog.text
 
 
 @patch("hbnmigration.from_curious.data_to_redcap.fetch_data")
@@ -354,10 +379,9 @@ def test_validate_and_map_mrns_handles_no_mappable_mrns(
     mock_map_mrns.return_value = (pd.DataFrame(), {"9999999": "001"})
 
     with caplog.at_level(logging.DEBUG):
-        result = validate_and_map_mrns(sample_csv_path)
+        result = validate_and_map_mrns(sample_csv_path, _REDCAP_PID)
 
     assert result is False
-    assert "No MRNs found that need mapping" in caplog.text
 
 
 @patch("hbnmigration.from_curious.data_to_redcap.fetch_data")
@@ -387,10 +411,10 @@ def test_validate_and_map_mrns_handles_mapping_exception(
     mock_map_mrns.side_effect = Exception("Mapping error")
 
     with caplog.at_level(logging.WARNING):
-        result = validate_and_map_mrns(sample_csv_path)
+        result = validate_and_map_mrns(sample_csv_path, _REDCAP_PID)
 
     assert result is False
-    assert "Error during MRN mapping" in caplog.text
+    assert "MRN mapping error" in caplog.text
 
 
 @patch("hbnmigration.from_curious.data_to_redcap.fetch_data")
@@ -409,7 +433,7 @@ def test_validate_and_map_mrns_validates_mrn_format_correctly(
 
     # Should proceed to fetch data
     mock_fetch.return_value = pd.DataFrame()
-    validate_and_map_mrns(sample_csv_path)
+    validate_and_map_mrns(sample_csv_path, _REDCAP_PID)
     assert mock_fetch.called
 
     # Test with invalid MRN format (too short)
@@ -422,7 +446,7 @@ def test_validate_and_map_mrns_validates_mrn_format_correctly(
     df_short.write_csv(sample_csv_path)
 
     mock_fetch.reset_mock()
-    validate_and_map_mrns(sample_csv_path)
+    validate_and_map_mrns(sample_csv_path, _REDCAP_PID)
     # Should still try to fetch since validation happens after
     assert mock_fetch.called
 
@@ -432,8 +456,8 @@ def test_validate_and_map_mrns_validates_mrn_format_correctly(
 # ============================================================================
 
 
-@patch("hbnmigration.from_curious.data_to_redcap.fetch_api_data")
-@patch("hbnmigration.from_curious.data_to_redcap.requests.post")
+@patch("hbnmigration.from_curious.utils.fetch_api_data")
+@patch("hbnmigration.from_curious.utils.requests.post")
 def test_get_redcap_records_for_instrument_fetches_metadata(
     mock_post, mock_fetch_api, caplog
 ):
@@ -443,33 +467,39 @@ def test_get_redcap_records_for_instrument_fetches_metadata(
     )
     mock_post.return_value = MagicMock(json=lambda: [])
     mock_post.return_value.raise_for_status = MagicMock()
-    result = get_redcap_records_for_instrument("test_instrument", ["001", "002"])
+    result = get_redcap_records_for_instrument(
+        "test_instrument", ["001", "002"], _REDCAP_PID
+    )
     assert mock_fetch_api.called
     assert result == {}
 
 
-@patch("hbnmigration.from_curious.data_to_redcap.fetch_api_data")
+@patch("hbnmigration.from_curious.utils.fetch_api_data")
 def test_get_redcap_records_for_instrument_empty_metadata(mock_fetch_api, caplog):
     """Test get_redcap_records_for_instrument with empty metadata."""
     mock_fetch_api.return_value = pd.DataFrame()
-    result = get_redcap_records_for_instrument("test_instrument", ["001", "002"])
+    result = get_redcap_records_for_instrument(
+        "test_instrument", ["001", "002"], _REDCAP_PID
+    )
     assert result == {}
-    assert "No metadata found" in caplog.text
+    assert "No metadata for instrument" in caplog.text
 
 
-@patch("hbnmigration.from_curious.data_to_redcap.fetch_api_data")
+@patch("hbnmigration.from_curious.utils.fetch_api_data")
 def test_get_redcap_records_for_instrument_no_alert_field(mock_fetch_api):
     """Test get_redcap_records_for_instrument when alert field doesn't exist."""
     mock_fetch_api.return_value = pd.DataFrame(
         {"field_name": ["record_id", "field1", "field2"]}
     )
-    result = get_redcap_records_for_instrument("test_instrument", ["001", "002"])
+    result = get_redcap_records_for_instrument(
+        "test_instrument", ["001", "002"], _REDCAP_PID
+    )
     assert result == {}
     assert mock_fetch_api.called
 
 
-@patch("hbnmigration.from_curious.data_to_redcap.fetch_api_data")
-@patch("hbnmigration.from_curious.data_to_redcap.requests.post")
+@patch("hbnmigration.from_curious.utils.fetch_api_data")
+@patch("hbnmigration.from_curious.utils.requests.post")
 def test_get_redcap_records_for_instrument_returns_dict_by_record_id(
     mock_post, mock_fetch_api
 ):
@@ -484,15 +514,17 @@ def test_get_redcap_records_for_instrument_returns_dict_by_record_id(
     ]
     mock_response.raise_for_status = MagicMock()
     mock_post.return_value = mock_response
-    result = get_redcap_records_for_instrument("test_instrument", ["001", "002"])
+    result = get_redcap_records_for_instrument(
+        "test_instrument", ["001", "002"], _REDCAP_PID
+    )
     assert "001" in result
     assert "002" in result
     assert result["001"]["test_instrument_alerts"] == "yes"
     assert result["002"]["test_instrument_alerts"] == ""
 
 
-@patch("hbnmigration.from_curious.data_to_redcap.fetch_api_data")
-@patch("hbnmigration.from_curious.data_to_redcap.requests.post")
+@patch("hbnmigration.from_curious.utils.fetch_api_data")
+@patch("hbnmigration.from_curious.utils.requests.post")
 def test_get_redcap_records_for_instrument_handles_exception(
     mock_post, mock_fetch_api, caplog
 ):
@@ -501,7 +533,7 @@ def test_get_redcap_records_for_instrument_handles_exception(
         {"field_name": ["record_id", "test_instrument_alerts"]}
     )
     mock_post.side_effect = Exception("API Error")
-    result = get_redcap_records_for_instrument("test_instrument", ["001"])
+    result = get_redcap_records_for_instrument("test_instrument", ["001"], _REDCAP_PID)
     assert result == {}
     assert "Could not fetch REDCap data" in caplog.text
 
@@ -521,7 +553,7 @@ def test_add_alert_fields_skips_non_alert_instruments_case(
     df = pl.DataFrame({"record_id": ["001"], "field1": [1]})
     df.write_csv(sample_csv_path)
     mock_possible_alerts.return_value = []
-    add_alert_fields_if_needed(sample_csv_path)
+    add_alert_fields_if_needed(sample_csv_path, _REDCAP_PID)
     assert not mock_get_event.called
     result = pl.read_csv(sample_csv_path)
     assert "test_instrument_alerts" not in result.columns
@@ -540,7 +572,7 @@ def test_add_alert_fields_skips_when_alert_field_exists(
     )
     df.write_csv(sample_csv_path)
     mock_possible_alerts.return_value = ["test_instrument"]
-    add_alert_fields_if_needed(sample_csv_path)
+    add_alert_fields_if_needed(sample_csv_path, _REDCAP_PID)
     assert not mock_get_records.called
     assert not mock_get_event.called
 
@@ -561,8 +593,8 @@ def test_add_alert_fields_skips_without_record_id(
     df = pl.DataFrame({"field1": ["001"], "field2": [1]})
     df.write_csv(sample_csv_path)
     mock_possible_alerts.return_value = ["test_instrument"]
-    add_alert_fields_if_needed(sample_csv_path)
-    assert "Could not find record ID column" in caplog.text
+    add_alert_fields_if_needed(sample_csv_path, _REDCAP_PID)
+    assert "No record ID column" in caplog.text
     assert not mock_get_records.called
 
 
@@ -577,7 +609,7 @@ def test_add_alert_fields_adds_columns_for_alert_instruments(
     df.write_csv(sample_csv_path)
     mock_possible_alerts.return_value = ["test_instrument"]
     mock_get_event.return_value = "admin_arm_1"
-    add_alert_fields_if_needed(sample_csv_path)
+    add_alert_fields_if_needed(sample_csv_path, _REDCAP_PID)
     result = pl.read_csv(sample_csv_path)
     assert "test_instrument_alerts" in result.columns
     assert "redcap_event_name" in result.columns
@@ -594,7 +626,7 @@ def test_add_alert_fields_sets_no_for_new_records(
     df.write_csv(sample_csv_path)
     mock_possible_alerts.return_value = ["test_instrument"]
     mock_get_event.return_value = "admin_arm_1"
-    add_alert_fields_if_needed(sample_csv_path)
+    add_alert_fields_if_needed(sample_csv_path, _REDCAP_PID)
     result = pl.read_csv(sample_csv_path)
     assert "test_instrument_alerts" in result.columns
     alert_values = result["test_instrument_alerts"].to_list()
@@ -612,7 +644,7 @@ def test_add_alert_fields_waits_before_checking_redcap(
     df.write_csv(sample_csv_path)
     mock_possible_alerts.return_value = ["test_instrument"]
     mock_get_event.return_value = "admin_arm_1"
-    add_alert_fields_if_needed(sample_csv_path)
+    add_alert_fields_if_needed(sample_csv_path, _REDCAP_PID)
     mock_sleep.assert_called_with(15)
 
 
@@ -633,7 +665,7 @@ def test_add_alert_fields_uses_event_column_if_present(
     df.write_csv(sample_csv_path)
     mock_possible_alerts.return_value = ["test_instrument"]
     mock_get_event.return_value = "admin_arm_1"
-    add_alert_fields_if_needed(sample_csv_path)
+    add_alert_fields_if_needed(sample_csv_path, _REDCAP_PID)
     result = pl.read_csv(sample_csv_path)
     assert "redcap_event_name" in result.columns
     assert "test_instrument_alerts" in result.columns
@@ -666,8 +698,6 @@ def test_split_csv_by_fields_creates_two_files(
     sample_csv_with_mixed_fields, mock_config_log_root
 ):
     """Test that split_csv_by_fields creates valid and unfound files."""
-    from hbnmigration.from_curious.data_to_redcap import split_csv_by_fields
-
     unfound_fields = ["unfound_field_1", "unfound_field_2"]
     valid_path, unfound_path = split_csv_by_fields(
         sample_csv_with_mixed_fields, unfound_fields
@@ -683,8 +713,6 @@ def test_split_csv_valid_file_excludes_unfound_fields(
     sample_csv_with_mixed_fields, mock_config_log_root
 ):
     """Test that valid file excludes unfound fields."""
-    from hbnmigration.from_curious.data_to_redcap import split_csv_by_fields
-
     unfound_fields = ["unfound_field_1", "unfound_field_2"]
     valid_path, _ = split_csv_by_fields(sample_csv_with_mixed_fields, unfound_fields)
     valid_df = pl.read_csv(valid_path)
@@ -700,10 +728,9 @@ def test_split_csv_unfound_file_includes_identifiers(
     sample_csv_with_mixed_fields, mock_config_log_root
 ):
     """Test that unfound file includes record identifiers."""
-    from hbnmigration.from_curious.data_to_redcap import split_csv_by_fields
-
     unfound_fields = ["unfound_field_1", "unfound_field_2"]
     _, unfound_path = split_csv_by_fields(sample_csv_with_mixed_fields, unfound_fields)
+    assert unfound_path
     unfound_df = pl.read_csv(unfound_path)
     assert "record_id" in unfound_df.columns
     assert "redcap_event_name" in unfound_df.columns
@@ -717,13 +744,10 @@ def test_split_csv_unfound_file_has_timestamp(
     sample_csv_with_mixed_fields, mock_config_log_root
 ):
     """Test that unfound file has timestamp in filename."""
-    import re
-
-    from hbnmigration.from_curious.data_to_redcap import split_csv_by_fields
-
     unfound_fields = ["unfound_field_1"]
     _, unfound_path = split_csv_by_fields(sample_csv_with_mixed_fields, unfound_fields)
     timestamp_pattern = r"\d{8}_\d{6}"
+    assert unfound_path
     assert re.search(timestamp_pattern, unfound_path.name)
 
 
@@ -731,29 +755,26 @@ def test_split_csv_no_unfound_fields_present(
     sample_csv_with_mixed_fields, mock_config_log_root, caplog
 ):
     """Test split_csv when unfound fields aren't in the CSV."""
-    from hbnmigration.from_curious.data_to_redcap import split_csv_by_fields
-
     unfound_fields = ["field_that_doesnt_exist_1", "field_that_doesnt_exist_2"]
-    valid_path, unfound_path = split_csv_by_fields(
-        sample_csv_with_mixed_fields, unfound_fields
-    )
+    with caplog.at_level(logging.INFO):
+        valid_path, unfound_path = split_csv_by_fields(
+            sample_csv_with_mixed_fields, unfound_fields
+        )
     assert valid_path == sample_csv_with_mixed_fields
     assert unfound_path is None
-    assert "None of the unfound fields are present" in caplog.text
 
 
 def test_split_csv_preserves_all_data_rows(
     sample_csv_with_mixed_fields, mock_config_log_root
 ):
     """Test that split doesn't lose any data rows."""
-    from hbnmigration.from_curious.data_to_redcap import split_csv_by_fields
-
     original_df = pl.read_csv(sample_csv_with_mixed_fields)
     unfound_fields = ["unfound_field_1", "unfound_field_2"]
     valid_path, unfound_path = split_csv_by_fields(
         sample_csv_with_mixed_fields, unfound_fields
     )
     valid_df = pl.read_csv(valid_path)
+    assert unfound_path
     unfound_df = pl.read_csv(unfound_path)
     assert len(valid_df) == len(original_df)
     assert len(unfound_df) == len(original_df)
@@ -768,8 +789,6 @@ def test_split_csv_preserves_all_data_rows(
 
 def test_extract_unfound_fields_parses_error_message():
     """Test extract_unfound_fields parses REDCap error correctly."""
-    from hbnmigration.from_curious.data_to_redcap import extract_unfound_fields
-
     error_text = (
         "ERROR: The following fields were not found in the project as real data fields:"
         " field1, field2, field3"
@@ -780,8 +799,6 @@ def test_extract_unfound_fields_parses_error_message():
 
 def test_extract_unfound_fields_handles_newline():
     """Test extract_unfound_fields stops at newline."""
-    from hbnmigration.from_curious.data_to_redcap import extract_unfound_fields
-
     error_text = (
         "ERROR: The following fields were not found in the project as real data fields:"
         " field1, field2\nOther error text"
@@ -792,8 +809,6 @@ def test_extract_unfound_fields_handles_newline():
 
 def test_extract_unfound_fields_strips_whitespace():
     """Test extract_unfound_fields strips whitespace from field names."""
-    from hbnmigration.from_curious.data_to_redcap import extract_unfound_fields
-
     error_text = (
         "ERROR: The following fields were not found in the project as real data fields:"
         " field1 , field2  ,  field3"
@@ -804,8 +819,6 @@ def test_extract_unfound_fields_strips_whitespace():
 
 def test_extract_unfound_fields_no_match():
     """Test extract_unfound_fields returns empty list when no match."""
-    from hbnmigration.from_curious.data_to_redcap import extract_unfound_fields
-
     error_text = "Some other error message"
     result = extract_unfound_fields(error_text)
     assert result == []
@@ -813,8 +826,6 @@ def test_extract_unfound_fields_no_match():
 
 def test_extract_unfound_fields_multiline_error():
     """Test extract_unfound_fields with multiline error message."""
-    from hbnmigration.from_curious.data_to_redcap import extract_unfound_fields
-
     error_text = """
     HTTP Error 400
     ERROR: The following fields were not found in the project as real data fields: pmhs_p_start_date, pmhs_p_total_score
@@ -837,13 +848,11 @@ def test_push_to_redcap_success_no_retry(
     sample_csv_with_mixed_fields,
 ):
     """Test push_to_redcap succeeds without retry."""
-    from hbnmigration.from_curious.data_to_redcap import push_to_redcap
-
     mocks = mock_push_to_redcap_dependencies
     success_response = create_mock_response(requests.codes["okay"])
 
     with setup_push_to_redcap_test(mocks, response_sequence=[success_response]):
-        push_to_redcap(sample_csv_with_mixed_fields)
+        push_to_redcap(sample_csv_with_mixed_fields, _REDCAP_CURIOUS_DATA_PID)
 
     assert_push_succeeded_no_retry(mocks)
 
@@ -856,8 +865,6 @@ def test_push_to_redcap_retries_on_field_error(
     mock_config_column_chunk_size,
 ):
     """Test push_to_redcap retries after splitting on field error."""
-    from hbnmigration.from_curious.data_to_redcap import push_to_redcap
-
     mocks = mock_push_to_redcap_dependencies
 
     # Create responses
@@ -874,7 +881,7 @@ def test_push_to_redcap_retries_on_field_error(
         response_sequence=[error_response, success_response],
         split_return=(valid_path, unfound_path),
     ):
-        push_to_redcap(sample_csv_with_mixed_fields)
+        push_to_redcap(sample_csv_with_mixed_fields, _REDCAP_CURIOUS_DATA_PID)
 
     assert_push_retried_on_field_error(mocks)
 
@@ -884,8 +891,6 @@ def test_push_to_redcap_no_retry_on_other_errors(
     sample_csv_with_mixed_fields,
 ):
     """Test push_to_redcap doesn't retry on non-field errors."""
-    from hbnmigration.from_curious.data_to_redcap import push_to_redcap
-
     mocks = mock_push_to_redcap_dependencies
     error_response = create_mock_response(
         requests.codes["unauthorized"],
@@ -895,7 +900,7 @@ def test_push_to_redcap_no_retry_on_other_errors(
 
     with setup_push_to_redcap_test(mocks, response_sequence=[error_response]):
         with pytest.raises(Exception):
-            push_to_redcap(sample_csv_with_mixed_fields)
+            push_to_redcap(sample_csv_with_mixed_fields, _REDCAP_CURIOUS_DATA_PID)
 
     assert_push_failed_no_retry(mocks)
 
@@ -908,8 +913,6 @@ def test_push_to_redcap_logs_unfound_path(
     mock_config_column_chunk_size,
 ):
     """Test push_to_redcap logs the unfound fields file path."""
-    from hbnmigration.from_curious.data_to_redcap import push_to_redcap
-
     mocks = mock_push_to_redcap_dependencies
 
     # Create responses
@@ -926,7 +929,7 @@ def test_push_to_redcap_logs_unfound_path(
         response_sequence=[error_response, success_response],
         split_return=(sample_csv_with_mixed_fields, unfound_path),
     ):
-        push_to_redcap(sample_csv_with_mixed_fields)
+        push_to_redcap(sample_csv_with_mixed_fields, _REDCAP_CURIOUS_DATA_PID)
 
     assert_unfound_path_logged(caplog, unfound_path)
 
@@ -935,11 +938,9 @@ def test_push_to_redcap_logs_unfound_path(
 @patch("hbnmigration.from_curious.data_to_redcap.add_alert_fields_if_needed")
 def test_push_to_redcap_skips_empty_file(mock_add_alerts, mock_validate_mrns, tmp_path):
     """Test push_to_redcap skips empty files."""
-    from hbnmigration.from_curious.data_to_redcap import push_to_redcap
-
     empty_csv = tmp_path / "empty.csv"
     empty_csv.touch()
-    push_to_redcap(empty_csv)
+    push_to_redcap(empty_csv, _REDCAP_CURIOUS_DATA_PID)
     assert not mock_validate_mrns.called
     assert not mock_add_alerts.called
 
@@ -983,9 +984,6 @@ def test_format_for_redcap_strips_p_from_curious_account_created():
 
     Kept for backward compatibility.
     """
-    from hbnmigration.from_curious.data_to_redcap import _filter_parent_records
-    from mindlogger_data_export.outputs import NamedOutput
-
     df = pl.DataFrame(
         {
             "record_id": ["001", "002", "003"],
@@ -1005,8 +1003,6 @@ def test_format_for_redcap_strips_p_from_curious_account_created():
 @patch("hbnmigration.from_curious.invitations_to_redcap.fetch_api_data")
 def test_lookup_mrn_from_r_id_success(mock_fetch):
     """Test successful MRN lookup from r_id."""
-    from hbnmigration.from_curious.invitations_to_redcap import lookup_mrn_from_r_id
-
     # Mock REDCap response
     mock_fetch.return_value = pd.DataFrame(
         {
@@ -1024,8 +1020,6 @@ def test_lookup_mrn_from_r_id_success(mock_fetch):
 @patch("hbnmigration.from_curious.invitations_to_redcap.fetch_api_data")
 def test_lookup_mrn_from_r_id_not_found(mock_fetch, caplog):
     """Test MRN lookup when r_id not found."""
-    from hbnmigration.from_curious.invitations_to_redcap import lookup_mrn_from_r_id
-
     # Mock REDCap response with no matching r_id
     mock_fetch.return_value = pd.DataFrame(
         {
@@ -1039,35 +1033,29 @@ def test_lookup_mrn_from_r_id_not_found(mock_fetch, caplog):
         result = lookup_mrn_from_r_id("resp_123", "test_token")
 
     assert result is None
-    assert "No MRN found for r_id" in caplog.text
 
 
 @patch("hbnmigration.from_curious.invitations_to_redcap.fetch_api_data")
 def test_lookup_mrn_from_r_id_error(mock_fetch, caplog):
     """Test MRN lookup handles errors gracefully."""
-    from hbnmigration.from_curious.invitations_to_redcap import lookup_mrn_from_r_id
-
     mock_fetch.side_effect = Exception("API Error")
 
     with caplog.at_level(logging.WARNING):
         result = lookup_mrn_from_r_id("resp_123", "test_token")
 
     assert result is None
-    assert "Error looking up MRN" in caplog.text
+    assert "MRN lookup error" in caplog.text
 
 
 @patch("hbnmigration.from_curious.invitations_to_redcap.fetch_api_data")
 def test_lookup_mrn_from_r_id_empty_response(mock_fetch, caplog):
     """Test MRN lookup with empty REDCap response."""
-    from hbnmigration.from_curious.invitations_to_redcap import lookup_mrn_from_r_id
-
     mock_fetch.return_value = pd.DataFrame()
 
     with caplog.at_level(logging.WARNING):
         result = lookup_mrn_from_r_id("resp_123", "test_token")
 
     assert result is None
-    assert "No data returned from REDCap" in caplog.text
 
 
 # Test create_invitation_record with MRN lookup
@@ -1076,10 +1064,6 @@ def test_lookup_mrn_from_r_id_empty_response(mock_fetch, caplog):
 @patch("hbnmigration.from_curious.invitations_to_redcap.lookup_mrn_from_r_id")
 def test_create_invitation_record_responder_with_mrn(mock_lookup):
     """Test responder invitation record creation with MRN lookup."""
-    from hbnmigration.from_curious.invitations_to_redcap import (
-        create_invitation_record,
-    )
-
     mock_lookup.return_value = "1234567"  # MRN
 
     respondent = {
@@ -1111,10 +1095,6 @@ def test_create_invitation_record_responder_with_mrn(mock_lookup):
 @patch("hbnmigration.from_curious.invitations_to_redcap.lookup_mrn_from_r_id")
 def test_create_invitation_record_responder_no_mrn(mock_lookup, caplog):
     """Test responder invitation record when MRN not found."""
-    from hbnmigration.from_curious.invitations_to_redcap import (
-        create_invitation_record,
-    )
-
     mock_lookup.return_value = None  # No MRN found
 
     respondent = {
@@ -1134,15 +1114,11 @@ def test_create_invitation_record_responder_no_mrn(mock_lookup, caplog):
         )
 
     assert result is None
-    assert "Could not find MRN for responder r_id" in caplog.text
+    assert "No MRN for responder r_id" in caplog.text
 
 
 def test_create_invitation_record_child():
     """Test child invitation record creation (no MRN lookup needed)."""
-    from hbnmigration.from_curious.invitations_to_redcap import (
-        create_invitation_record,
-    )
-
     respondent = {
         "status": "pending",
         "details": [
@@ -1192,8 +1168,6 @@ def test_format_for_redcap_child_no_suffix_on_complete():
 
 def test_format_for_redcap_no_filtering():
     """Test that format_for_redcap does not filter any records."""
-    from mindlogger_data_export.outputs import NamedOutput
-
     # Create output with various record types
     df = pl.DataFrame(
         {
@@ -1215,18 +1189,11 @@ class TestInstrumentCacheKeys:
 
     def test_create_instrument_cache_key(self):
         """Test creating cache key for instrument."""
-        from hbnmigration.from_curious.data_to_redcap import (
-            create_instrument_cache_key,
-        )
-
         result = create_instrument_cache_key("ysr_sr_1117", "abc123", 42)
         assert result == "ysr_sr_1117:abc123:42"
 
     def test_send_to_redcap_uses_composite_keys(self, tmp_path):
         """Test that send_to_redcap uses composite cache keys."""
-        from hbnmigration.from_curious.data_to_redcap import send_to_redcap
-        from hbnmigration.utility_functions import DataCache
-
         # Create test CSV
         csv_path = tmp_path / "test_instrument.csv"
         pl.DataFrame({"record_id": ["001"], "field1": ["value1"]}).write_csv(csv_path)
@@ -1250,7 +1217,7 @@ class TestInstrumentCacheKeys:
                 }
             )
 
-            send_to_redcap(tmp_path, {"test_instrument": 1}, cache)
+            send_to_redcap(tmp_path, 891, {"test_instrument": 1}, cache)
 
             # Verify cache key includes file hash and row count
             stats = cache.get_stats()

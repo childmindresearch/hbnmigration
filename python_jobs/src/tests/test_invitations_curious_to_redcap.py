@@ -15,6 +15,7 @@ from hbnmigration.from_curious.invitations_to_redcap import (
     _instrument_for,
     _prefixed_field,
     _process_accounts,
+    _ProcessCtx,
     _response_field_for,
     _status_field_for,
     _strip_instrument_infix,
@@ -1074,7 +1075,14 @@ class TestInvitationCacheKeys:
         ):
             mock_pull.return_value = pl.DataFrame()
             _process_accounts(
-                "Test Applet", "responder", "token", "lookup_token", cache, 625
+                _ProcessCtx(
+                    applet_name="Test Applet",
+                    account_context="responder",
+                    token="token",
+                    lookup_token="lookup_token",
+                    cache=cache,
+                    target_pid=625,
+                )
             )
             assert cache.get_stats()["total_entries"] == 0
 
@@ -1099,7 +1107,16 @@ class TestProcessAccounts:
             f"{INVITATIONS_MOD}.curious_authenticate",
             side_effect=KeyError("not configured"),
         ):
-            _process_accounts("Fake Applet", ctx, "token", "lookup_token", cache, 625)
+            _process_accounts(
+                _ProcessCtx(
+                    applet_name="Fake Applet",
+                    account_context=ctx,
+                    token="token",
+                    lookup_token="lookup_token",
+                    cache=cache,
+                    target_pid=625,
+                )
+            )
         assert "not configured" in caplog.text
 
     @pytest.mark.parametrize("ctx", ACCOUNT_CONTEXTS)
@@ -1115,7 +1132,16 @@ class TestProcessAccounts:
             patch(f"{INVITATIONS_MOD}.pull_data_from_curious") as mock_pull,
         ):
             mock_pull.return_value = pl.DataFrame()
-            _process_accounts("Test Applet", ctx, "token", "lookup_token", cache, 625)
+            _process_accounts(
+                _ProcessCtx(
+                    applet_name="Test Applet",
+                    account_context=ctx,
+                    token="token",
+                    lookup_token="lookup_token",
+                    cache=cache,
+                    target_pid=625,
+                )
+            )
         assert f"No {ctx} invitations" in caplog.text
 
 

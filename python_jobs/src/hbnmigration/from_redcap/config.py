@@ -9,7 +9,6 @@ from ..utility_functions import (
     FieldDescriptor,
     RangeConstraint,
     ValueClass,
-    ValueField,
 )
 
 RedcapComplete = FieldDescriptor(
@@ -552,30 +551,21 @@ class Fields:
         """Columns to rename from REDCap PID 247 to REDCap PID 625."""
 
 
+PIDS = {
+    "Healthy Brain Network Study Consent (IRB Approved)": 247,
+    "HBN - Operations and Data Collection": 625,
+    "HBN - Intake and Curious (TEMP for Transition)": 744,
+    "SANDBOX - Healthy Brain Network Study Consent (IRB Approved) PID 757.": 757,
+    "HBN - Responder Tracking": 879,
+    "HBN - Curious outputs": 891,
+}
+"""REDCap project IDs."""
+
+
 class Values:
     """Values for REDCap fields."""
 
-    class _PID247Meta(type):
-        """Metaclass for deprecating `PID247` attribute."""
-
-        _enrollment_complete = FieldDescriptor(
-            {
-                "Not Sent": "0",
-                "Ready to Send to Curious": "1",
-                "Parent and Participant information already sent to Curious": "2",
-            }
-        )
-        """Is enrollment complete and we can create parent and participant profiles in Curious?"""  # noqa: E501
-
-        @property
-        @deprecated("Deprecated in v1.9.0. Use `Values.PID625.enrollment_complete`.")
-        def enrollment_complete(cls) -> ValueField:
-            """Is enrollment complete and we can create parent and participant profiles in Curious?"""  # noqa: D400,E501
-            _ = cls._enrollment_complete
-            _._field_name = "enrollment_complete"
-            return _
-
-    class PID247(ValueClass, metaclass=_PID247Meta):
+    class PID247(ValueClass):
         """Values for PID 247 ― Healthy Brain Network Study Consent (IRB Approved)."""
 
         guardian2_consent = FieldDescriptor(
@@ -634,6 +624,10 @@ class Values:
         """Form status: Complete?"""
         curious_account_created_responder_complete = RedcapComplete
         curious_account_created_child_complete = RedcapComplete
+
+        curious_complete = RedcapComplete
+        curious_track = FieldDescriptor({"yes": "1"})
+        """Curious Data Received?"""
 
         enrollment_complete = FieldDescriptor(
             {

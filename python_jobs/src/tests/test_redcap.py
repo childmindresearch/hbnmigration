@@ -457,6 +457,114 @@ class TestFormatRedcapDataForCurious:
                     continue
                 assert value is not pd.NA
 
+    def test_single_email_value_remains_string(self) -> None:
+        """Test that a single email value remains a plain string after formatting."""
+        redcap_data = create_redcap_eav_df(
+            records=["001", "001", "001"],
+            field_names=["mrn", "parent_involvement___1", "parentemail"],
+            values=["12345", "1", "alec@swamp.com"],
+        )
+        result = to_curious.format_redcap_data_for_curious(redcap_data)
+        for individual in ("child", "parent"):
+            df = result[individual]
+            if "email" in df.columns:
+                for value in df["email"].dropna():
+                    assert isinstance(value, str), (
+                        f"{individual} email should be a string, got {type(value)}"
+                    )
+                    assert value == "alec@swamp.com"
+
+    def test_duplicate_email_values_resolve_to_string(self) -> None:
+        """
+        Test that duplicate email entries for the same record resolve to a string.
+
+        When REDCap returns multiple rows for the same field (e.g., from
+        repeat instruments), the formatter must collapse them to a single
+        string value—not a set—so the JSON payload is serializable.
+        """
+        redcap_data = create_redcap_eav_df(
+            records=["001", "001", "001", "001"],
+            field_names=[
+                "mrn",
+                "parent_involvement___1",
+                "parentemail",
+                "parentemail",
+            ],
+            values=["12345", "1", "alec@swamp.com", "abby@parliament.org"],
+        )
+        result = to_curious.format_redcap_data_for_curious(redcap_data)
+        for individual in ("child", "parent"):
+            df = result[individual]
+            if "email" in df.columns:
+                for value in df["email"].dropna():
+                    assert isinstance(value, str), (
+                        f"{individual} email should be a string, got {type(value)}"
+                    )
+                    assert not isinstance(value, set), (
+                        f"{individual} email must not be a set"
+                    )
+
+    def test_no_set_values_in_any_column(self) -> None:
+        """
+        Test that no column in the formatted output contains set objects.
+
+        This guards against the TypeError raised when requests tries to
+        JSON-serialize a set.
+        """
+        redcap_data = create_redcap_eav_df(
+            records=["001", "001", "001", "001", "001"],
+            field_names=[
+                "mrn",
+                "parent_involvement___1",
+                "parentemail",
+                "parentemail",
+                "parentfirstname",
+            ],
+            values=["12345", "1", "alec@swamp.com", "abby@parliament.org", "Alec"],
+        )
+        result = to_curious.format_redcap_data_for_curious(redcap_data)
+        for individual in ("child", "parent"):
+            df = result[individual]
+            for col in df.columns:
+                for value in df[col].dropna():
+                    assert not isinstance(value, set), (
+                        f"{individual}[{col!r}] contains a set: {value}"
+                    )
+
+    def test_formatted_records_are_json_serializable(self) -> None:
+        """
+        Test that all records can be serialized to JSON without error.
+
+        This is the ultimate guard against the TypeError that occurs when
+        requests.post attempts to serialize the payload.
+        """
+        import json
+
+        redcap_data = create_redcap_eav_df(
+            records=["001", "001", "001", "001"],
+            field_names=[
+                "mrn",
+                "parent_involvement___1",
+                "parentemail",
+                "parentemail",
+            ],
+            values=["12345", "1", "alec@swamp.com", "abby@parliament.org"],
+        )
+        result = to_curious.format_redcap_data_for_curious(redcap_data)
+        for individual in ("child", "parent"):
+            df = result[individual]
+            records = df.to_dict(orient="records")
+            for record in records:
+                filtered = {k: v for k, v in record.items() if pd.notna(v)}
+                serialized = json.dumps(filtered, allow_nan=False)
+                assert isinstance(serialized, str)
+            for record in records:
+                # Filter None values as send_to_curious does
+                filtered = {k: v for k, v in record.items() if v is not None}
+                # This must not raise TypeError
+                serialized = json.dumps(filtered, allow_nan=False)
+                assert isinstance(serialized, str)
+
 
 # ============================================================================
 # send_to_curious() Tests
@@ -1111,7 +1219,7 @@ class TestFetchDataOptionalFields:
         mock_fetch_api.return_value = pd.DataFrame(
             {"record": ["1"], "field_name": ["f"], "value": ["v"]}
         )
-        fetch_data("fake_token", "field1,field2")
+        fetch_data("fake_token", {"fields": "field1,field2"})
         request_data = mock_fetch_api.call_args[0][2]
         assert request_data.get("fields") == "field1,field2"
 
@@ -1842,3 +1950,76 @@ class TestFormatDataForRedcapOperations:
             collab_rows = result[result["field_name"] == "permission_collab"]
             assert len(collab_rows) == 1
             assert collab_rows.iloc[0]["value"] == "0"  # decremented from 1
+
+
+class TestFetchDataDeprecated:
+    """Test backward compatibility of deprecated export_fields parameter."""
+
+    @patch("hbnmigration.from_redcap.from_redcap.fetch_api_data")
+    def test_string_export_fields_still_works(self, mock_fetch_api) -> None:
+        """Test deprecated "export_fields" parameter."""
+        mock_fetch_api.return_value = pd.DataFrame(
+            {"record": ["1"], "field_name": ["f"], "value": ["v"]}
+        )
+        with pytest.warns(DeprecationWarning):
+            fetch_data("fake_token", "field1,field2")
+        request_data = mock_fetch_api.call_args[0][2]
+        assert request_data.get("fields") == "field1,field2"
+
+
+class TestFetchDataRegression:
+    """Ensure backward compatibility and correct filter logic construction."""
+
+    @patch("hbnmigration.from_redcap.from_redcap.fetch_api_data")
+    @patch("hbnmigration.from_redcap.from_redcap.redcap_variables")
+    def test_fetch_data_does_not_inject_mandatory_and_filters(
+        self, mock_vars: MagicMock, mock_fetch_api: MagicMock
+    ) -> None:
+        """
+        Verify that fetch_data does not automatically inject AND conditions.
+
+        v1.12.1 introduced a regression where requesting multiple fields
+        appended 'AND [field] != ""' for every field, causing REDCap to
+        return zero records (and thus NoData) if any single field was empty.
+
+        Parameters
+        ----------
+        mock_vars
+            Mocked REDCap configuration variables.
+        mock_fetch_api
+            Mocked API execution function.
+
+        """
+        # 1. Setup Mock: REDCap headers
+        mock_vars.headers = {"Content-Type": "application/x-www-form-urlencoded"}
+
+        # 2. Define expected behavior:
+        # Even if we ask for field1 and field2, if a record exists with only field1
+        # populated, we expect to get that row back.
+        mock_data = pd.DataFrame([{"record_id": "1", "field1": "val1", "field2": ""}])
+        mock_fetch_api.return_value = mock_data
+
+        # 3. Execution: Request multiple fields
+        # In the BROKEN version, this will inject:
+        # filterLogic: ([field1] != '') AND ([field2] != '')
+        # causing the REAL REDCap API to return nothing, though our mock
+        # specifically tests the logic construction.
+
+        try:
+            result = fetch_data(
+                "fake_token", {"fields": "field1,field2"}, all_or_any="all"
+            )
+        except Exception as e:
+            pytest.fail(f"fetch_data raised an exception: {e}")
+
+        # 4. Assertions on the constructed logic
+        # We need to inspect what was actually sent to the API mock
+        sent_payload = mock_fetch_api.call_args[0][2]
+        filter_logic = sent_payload.get("filterLogic", "")
+
+        assert "AND" not in filter_logic, (
+            "Regression Found: fetch_data is forcing 'AND' filters on all fields: "
+            f"{filter_logic}. This causes records with partial data to be excluded "
+            "from the fetch."
+        )
+        assert not result.empty

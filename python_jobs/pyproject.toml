@@ -13,7 +13,7 @@ dependencies = [
     "fastapi>=0.136.0",
     "httpx>=0.28.1",
     "ipython>=9.10.0",
-    "mindlogger-data-export",
+    "mindlogger-data-export>=0.1.14",
     "msal>=1.35.1",
     "openpyxl>=3.1.5",
     "pandas-stubs>=3.0.0.260204",
@@ -55,6 +55,7 @@ redcap-to-curious-serve = "hbnmigration.from_redcap.to_curious:serve"
 redcap-to-redcap = "hbnmigration.from_redcap.to_redcap:main"
 redcap-to-redcap-serve = "hbnmigration.from_redcap.to_redcap:serve"
 ripple-to-redcap = "hbnmigration.from_ripple.to_redcap:main"
+redcap-track-curious = "hbnmigration.from_redcap.track_curious:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -84,6 +85,9 @@ strict = true
 exclude = [
     ".*_config_variables/.*_variables/__init__\\.py$"
 ]
+
+[tool.pyright]
+pythonVersion = "3.14"
 
 [tool.setuptools]
 include-package-data = true

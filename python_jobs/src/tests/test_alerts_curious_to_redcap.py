@@ -1,5 +1,6 @@
 """Tests for alerts_to_redcap module."""
 
+from datetime import date
 import json
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -9,10 +10,11 @@ import pytest
 import requests
 from websockets.exceptions import ConnectionClosedError, InvalidStatus
 
+from hbnmigration.exceptions import NoData
 from hbnmigration.from_curious.alerts_to_redcap import (
+    _reconnect_loop,
     cli,
     main,
-    main_with_reconnect,
     parse_alert,
     process_alerts_for_redcap,
     push_alerts_to_redcap,
@@ -30,6 +32,7 @@ from hbnmigration.utility_functions import (
 # Import shared utilities from conftest
 from .conftest import (
     create_alert_df,
+    create_alert_metadata,
     create_mock_invalid_status,
     create_mock_tokens_ws,
     setup_cli_mocks,
@@ -37,6 +40,8 @@ from .conftest import (
     setup_reconnect_mocks,
     setup_standard_alert_mocks,
 )
+
+_REDCAP_PID = 625
 
 # ============================================================================
 # Tests - toggle_alerts
@@ -173,7 +178,7 @@ def test_process_alerts_fetches_metadata(
     setup_standard_alert_mocks(
         mock_alerts_dependencies, redcap_alerts_metadata, redcap_existing_alert_data
     )
-    process_alerts_for_redcap(redcap_alert_df)
+    process_alerts_for_redcap(_REDCAP_PID, redcap_alert_df)
     assert mock_alerts_dependencies["fetch_metadata"].called
 
 
@@ -181,7 +186,7 @@ def test_process_alerts_calls_required_functions(mock_alerts_dependencies):
     """Test that process_alerts_for_redcap calls the necessary functions."""
     setup_standard_alert_mocks(mock_alerts_dependencies)
     alert_data = create_alert_df(["12345"], ["alerts_parent_baseline_1"], ["yes"])
-    result = process_alerts_for_redcap(alert_data)
+    result = process_alerts_for_redcap(_REDCAP_PID, alert_data)
     assert isinstance(result, pd.DataFrame)
     assert mock_alerts_dependencies["fetch_metadata"].called
     assert mock_alerts_dependencies["fetch"].called
@@ -193,7 +198,7 @@ def test_process_alerts_returns_dataframe_with_required_columns(
     """Test that result has required REDCap columns."""
     setup_standard_alert_mocks(mock_alerts_dependencies)
     alert_data = create_alert_df(["12345"], ["alerts_parent_baseline_1"], ["yes"])
-    result = process_alerts_for_redcap(alert_data)
+    result = process_alerts_for_redcap(_REDCAP_PID, alert_data)
     for col in ["record", "field_name", "value"]:
         assert col in result.columns
 
@@ -204,7 +209,7 @@ def test_process_alerts_toggles_summary_flags(
     """Test that instrument-level alert flags are toggled."""
     setup_standard_alert_mocks(mock_alerts_dependencies, redcap_alerts_metadata)
     alert_data = create_alert_df(["MRN12345"], ["alerts_parent_baseline_1"], ["yes"])
-    result = process_alerts_for_redcap(alert_data)
+    result = process_alerts_for_redcap(_REDCAP_PID, alert_data)
     if len(result) > 0:
         summary_rows = result[result["field_name"].str.endswith("_alerts")]
         if len(summary_rows) > 0:
@@ -221,7 +226,9 @@ def test_process_alerts_partial_redcap_landing(
         ["alerts_parent_baseline_1", "alerts_nonexistent_field"],
         ["yes", "Yes"],
     )
-    result = process_alerts_for_redcap(alert_df, partial_redcap_landing=True)
+    result = process_alerts_for_redcap(
+        _REDCAP_PID, alert_df, partial_redcap_landing=True
+    )
     assert "alerts_nonexistent_field" not in result["field_name"].values
 
 
@@ -231,7 +238,7 @@ def test_process_alerts_handles_missing_mrn(
     """Test handling of alerts with MRN not found in REDCap."""
     setup_standard_alert_mocks(mock_alerts_dependencies, redcap_alerts_metadata)
     alert_df = create_alert_df(["MRN99999"], ["alerts_parent_baseline_1"], ["yes"])
-    result = process_alerts_for_redcap(alert_df)
+    result = process_alerts_for_redcap(_REDCAP_PID, alert_df)
     assert len(result) == 0 or result["record"].isna().all()
 
 
@@ -252,7 +259,7 @@ def test_process_alerts_maps_records_before_toggle(mock_alerts_dependencies):
     )
     setup_standard_alert_mocks(mock_alerts_dependencies, metadata, existing_data)
     alert_df = create_alert_df(["12345"], ["alerts_parent_baseline_1"], ["yes"])
-    result = process_alerts_for_redcap(alert_df)
+    result = process_alerts_for_redcap(_REDCAP_PID, alert_df)
     # Should have record ID, not MRN
     assert "001" in result["record"].values
     assert "12345" not in result["record"].values
@@ -276,7 +283,7 @@ def test_push_alerts_logs_success(
 ):
     """Test that successful push logs appropriate message."""
     push_alerts_to_redcap(processed_alerts_for_push)
-    assert "successfully updated" in caplog.text
+    assert "rows updated" in caplog.text
     assert "PID 625" in caplog.text
 
 
@@ -315,12 +322,19 @@ async def test_websocket_listener_processes_messages(
     mock_alerts_dependencies, sample_curious_alert, redcap_alerts_metadata
 ):
     """Test that websocket_listener processes messages correctly."""
-    setup_standard_alert_mocks(mock_alerts_dependencies, redcap_alerts_metadata)
+    # Set up fetch to handle two calls: mrn data, then field data
+    mrn_data = create_alert_df(["1"], ["mrn"], ["12345"], ["baseline_arm_1"])
+    field_data = create_alert_df(
+        ["1"], ["alerts_parent_baseline_1"], ["0"], ["baseline_arm_1"]
+    )
+    mock_alerts_dependencies["fetch"].side_effect = [mrn_data, field_data]
+    mock_alerts_dependencies["fetch_metadata"].return_value = redcap_alerts_metadata
+
     mock_websocket = AsyncMock()
     mock_websocket.__aiter__.return_value = [json.dumps(sample_curious_alert)]
     with patch("hbnmigration.from_curious.alerts_to_redcap.parse_alert") as mock_parse:
         mock_parse.return_value = create_alert_df(
-            ["MRN12345"], ["alerts_parent_baseline_1"], ["yes"]
+            ["12345", "12345"], ["mrn", "alerts_parent_baseline_1"], ["12345", "yes"]
         )
         await websocket_listener(mock_websocket, partial_redcap_landing=False)
         assert mock_parse.called
@@ -348,7 +362,7 @@ async def test_websocket_listener_skips_non_answer_messages(mock_alerts_dependen
 
 @pytest.mark.asyncio
 async def test_main_with_reconnect_reauths_on_401_then_succeeds(caplog):
-    """Test that main_with_reconnect re-authenticates on 401 and succeeds."""
+    """Test that _reconnect_loop re-authenticates on 401 and succeeds."""
     with (
         patch(
             "hbnmigration.from_curious.alerts_to_redcap.connect_to_websocket"
@@ -374,18 +388,21 @@ async def test_main_with_reconnect_reauths_on_401_then_succeeds(caplog):
             mock_ctx,
         ]
 
-        await main_with_reconnect(
-            applet_name="test_applet", uri="wss://test.com/alerts", max_attempts=2
+        await _reconnect_loop(
+            applet_name="test_applet",
+            uri="wss://test.com/alerts",
+            partial_redcap_landing=False,
+            max_attempts=2,
         )
         # Initial auth + re-auth on 401
         assert mock_auth.call_count == 2
         assert mock_listener.called
-        assert "Re-authentication successful" in caplog.text
+        assert "Re-authenticating" in caplog.text
 
 
 @pytest.mark.asyncio
 async def test_main_with_reconnect_reauth_failure_raises(caplog):
-    """Test that main_with_reconnect raises when re-authentication itself fails."""
+    """Test that _reconnect_loop raises when re-authentication itself fails."""
     with (
         patch(
             "hbnmigration.from_curious.alerts_to_redcap.connect_to_websocket"
@@ -406,14 +423,17 @@ async def test_main_with_reconnect_reauth_failure_raises(caplog):
         mock_ws.side_effect = create_mock_invalid_status(requests.codes["unauthorized"])
 
         with pytest.raises(Exception, match="Auth server down"):
-            await main_with_reconnect(
-                applet_name="test_applet", uri="wss://test.com/alerts", max_attempts=2
+            await _reconnect_loop(
+                applet_name="test_applet",
+                uri="wss://test.com/alerts",
+                partial_redcap_landing=False,
+                max_attempts=2,
             )
         assert "Re-authentication failed" in caplog.text
 
 
 # ============================================================================
-# Tests - main_with_reconnect
+# Tests - _reconnect_loop
 # ============================================================================
 
 
@@ -421,11 +441,14 @@ async def test_main_with_reconnect_reauth_failure_raises(caplog):
 async def test_main_with_reconnect_successful_connection(
     mock_alerts_dependencies, redcap_alerts_metadata
 ):
-    """Test that main_with_reconnect handles successful connection."""
+    """Test that _reconnect_loop handles successful connection."""
     setup_standard_alert_mocks(mock_alerts_dependencies, redcap_alerts_metadata)
     with setup_reconnect_mocks() as mocks:
-        await main_with_reconnect(
-            applet_name="test_applet", uri="wss://test.com/alerts", max_attempts=1
+        await _reconnect_loop(
+            applet_name="test_applet",
+            uri="wss://test.com/alerts",
+            partial_redcap_landing=False,
+            max_attempts=1,
         )
         assert mocks["ws"].called
         assert mocks["listener"].called
@@ -433,30 +456,36 @@ async def test_main_with_reconnect_successful_connection(
 
 @pytest.mark.asyncio
 async def test_main_with_reconnect_handles_connection_error(caplog):
-    """Test that main_with_reconnect reconnects on ConnectionClosedError."""
+    """Test that _reconnect_loop reconnects on ConnectionClosedError."""
     with setup_reconnect_mocks([ConnectionClosedError(None, None), None]) as mocks:
-        await main_with_reconnect(
-            applet_name="test_applet", uri="wss://test.com/alerts", max_attempts=2
+        await _reconnect_loop(
+            applet_name="test_applet",
+            uri="wss://test.com/alerts",
+            partial_redcap_landing=False,
+            max_attempts=2,
         )
         assert mocks["listener"].call_count == 2
         assert "Reconnecting in" in caplog.text
-        assert "Successfully reconnected" in caplog.text
+        assert "Reconnected to WebSocket" in caplog.text
 
 
 @pytest.mark.asyncio
 async def test_main_with_reconnect_max_attempts_exceeded():
-    """Test that main_with_reconnect stops after max attempts."""
+    """Test that _reconnect_loop stops after max attempts."""
     with setup_reconnect_mocks(ConnectionClosedError(None, None)) as mocks:
         with pytest.raises(ConnectionClosedError):
-            await main_with_reconnect(
-                applet_name="test_applet", uri="wss://test.com/alerts", max_attempts=1
+            await _reconnect_loop(
+                applet_name="test_applet",
+                uri="wss://test.com/alerts",
+                partial_redcap_landing=False,
+                max_attempts=1,
             )
         assert mocks["listener"].call_count == 1
 
 
 @pytest.mark.asyncio
 async def test_main_with_reconnect_handles_auth_error(caplog):
-    """Test that main_with_reconnect handles 401 authentication errors."""
+    """Test that _reconnect_loop handles 401 authentication errors."""
     with (
         patch(
             "hbnmigration.from_curious.alerts_to_redcap.connect_to_websocket"
@@ -474,22 +503,28 @@ async def test_main_with_reconnect_handles_auth_error(caplog):
             create_mock_tokens_ws(),
         ]
         with pytest.raises(InvalidStatus):
-            await main_with_reconnect(
-                applet_name="test_applet", uri="wss://test.com/alerts", max_attempts=1
+            await _reconnect_loop(
+                applet_name="test_applet",
+                uri="wss://test.com/alerts",
+                partial_redcap_landing=False,
+                max_attempts=1,
             )
         assert (
-            "Token expired or invalid" in caplog.text
-            or "Authentication failed" in caplog.text
+            "Re-authenticating" in caplog.text
+            or "Max reconnect attempts reached" in caplog.text
         )
 
 
 @pytest.mark.asyncio
 async def test_main_with_reconnect_infinite_retries():
-    """Test that main_with_reconnect runs indefinitely with None max_attempts."""
+    """Test that _reconnect_loop runs indefinitely with None max_attempts."""
     side_effects = [ConnectionClosedError(None, None)] * 5 + [None]
     with setup_reconnect_mocks(side_effects) as mocks:
-        await main_with_reconnect(
-            applet_name="test_applet", uri="wss://test.com/alerts", max_attempts=None
+        await _reconnect_loop(
+            applet_name="test_applet",
+            uri="wss://test.com/alerts",
+            partial_redcap_landing=False,
+            max_attempts=None,
         )
         assert mocks["listener"].call_count == 6
         assert mocks["sleep"].call_count == 5
@@ -515,21 +550,21 @@ async def test_main_processes_websocket_messages(
         metadata_return=redcap_alerts_metadata,
     ):
         with patch(
-            "hbnmigration.from_curious.alerts_to_redcap.main_with_reconnect"
+            "hbnmigration.from_curious.alerts_to_redcap._reconnect_loop"
         ) as mock_reconnect:
             mock_reconnect.return_value = None
             await main(applet_names=["Healthy Brain Network Questionnaires"])
             assert mock_reconnect.called
-            call_kwargs = mock_reconnect.call_args[1]
-            assert "applet_name" in call_kwargs
-            assert "wss://" in call_kwargs["uri"]
+            call_args = mock_reconnect.call_args[0]
+            assert call_args[0] == "Healthy Brain Network Questionnaires"
+            assert "wss://" in call_args[1]
 
 
 @pytest.mark.asyncio
 async def test_main_passes_max_attempts():
     """Test that main() passes max_attempts parameter."""
     with patch(
-        "hbnmigration.from_curious.alerts_to_redcap.main_with_reconnect"
+        "hbnmigration.from_curious.alerts_to_redcap._reconnect_loop"
     ) as mock_reconnect:
         mock_reconnect.return_value = None
         await main(
@@ -537,8 +572,8 @@ async def test_main_passes_max_attempts():
             partial_redcap_landing=False,
             max_attempts=10,
         )
-        call_kwargs = mock_reconnect.call_args[1]
-        assert call_kwargs["max_attempts"] == 10
+        call_args = mock_reconnect.call_args[0]
+        assert call_args[3] == 10  # max_attempts is 4th positional arg
 
 
 @pytest.mark.asyncio
@@ -547,7 +582,7 @@ async def test_main_skips_non_answer_messages(mock_alerts_dependencies):
     non_answer = {"type": "heartbeat", "timestamp": "2024-01-01T00:00:00Z"}
     with setup_main_test_mocks(mock_alerts_dependencies, sample_alert=non_answer):
         with patch(
-            "hbnmigration.from_curious.alerts_to_redcap.main_with_reconnect"
+            "hbnmigration.from_curious.alerts_to_redcap._reconnect_loop"
         ) as mock_reconnect:
             mock_reconnect.return_value = None
             await main(applet_names=["Healthy Brain Network Questionnaires"])
@@ -739,7 +774,7 @@ def test_fetch_alerts_metadata_called_in_process_alerts(
     """Test that fetch_alerts_metadata is called during alert processing."""
     setup_standard_alert_mocks(mock_alerts_dependencies, redcap_alerts_metadata)
     alert_df = create_alert_df(["MRN12345"], ["alerts_parent_baseline_1"], ["yes"])
-    process_alerts_for_redcap(alert_df)
+    process_alerts_for_redcap(_REDCAP_PID, alert_df)
     # The fetch_alerts_metadata should be called (it's the imported function)
     assert mock_alerts_dependencies["fetch_metadata"].called
 
@@ -810,10 +845,35 @@ def test_process_alerts_creates_summary_fields(
     expected_summary,
 ):
     """Test that process_alerts creates appropriate summary fields."""
-    setup_standard_alert_mocks(mock_alerts_dependencies, redcap_alerts_metadata)
-    alert_df = create_alert_df(records, field_names, ["yes"] * len(field_names))
-    result = process_alerts_for_redcap(alert_df)
-    # Should have summary field if metadata contains the instrument
+    unique_records = list(set(records))
+
+    # MRN data: maps MRN value → record_id
+    mrn_data = create_alert_df(
+        unique_records,
+        ["mrn"] * len(unique_records),
+        unique_records,  # MRN values same as record IDs for simplicity
+        ["baseline_arm_1"] * len(unique_records),
+    )
+
+    # Alert field data
+    field_data = create_alert_df(
+        unique_records[: len(field_names)],
+        field_names[: len(unique_records)],
+        ["0"] * min(len(unique_records), len(field_names)),
+        ["baseline_arm_1"] * min(len(unique_records), len(field_names)),
+    )
+
+    # fetch_data is called twice: once for "mrn", once for alert fields
+    mock_alerts_dependencies["fetch"].side_effect = [mrn_data, field_data]
+    mock_alerts_dependencies["fetch_metadata"].return_value = redcap_alerts_metadata
+
+    # Alert input: mrn rows + alert field rows
+    alert_records = unique_records + records
+    alert_fields_list = ["mrn"] * len(unique_records) + field_names
+    alert_values = unique_records + ["yes"] * len(field_names)
+    alert_df = create_alert_df(alert_records, alert_fields_list, alert_values)
+
+    result = process_alerts_for_redcap(_REDCAP_PID, alert_df)
     summary_rows = result[result["field_name"] == expected_summary]
     assert len(summary_rows) > 0
 
@@ -896,3 +956,300 @@ class TestAlertCacheKeys:
 
                 # Verify cache key was used (push should be called)
                 assert mock_alerts_dependencies["push"].called
+
+
+# ============================================================================
+# Tests - _log_invalid_alert_fields
+# ============================================================================
+
+
+class TestLogInvalidAlertFields:
+    """Tests for _log_invalid_alert_fields."""
+
+    def test_logs_new_fields_to_file(self, tmp_path, monkeypatch):
+        """New invalid fields are written to daily log file."""
+        from hbnmigration.from_curious.alerts_to_redcap import _log_invalid_alert_fields
+
+        monkeypatch.setattr(
+            "hbnmigration.from_curious.alerts_to_redcap.log_root_path",
+            lambda: tmp_path,
+        )
+        with patch("hbnmigration.from_curious.alerts_to_redcap.send_alert"):
+            _log_invalid_alert_fields(["alerts_bad_field_1", "alerts_bad_field_2"])
+
+        log_file = tmp_path / "invalid_alert_fields" / f"{date.today().isoformat()}.txt"
+        assert log_file.exists()
+        contents = log_file.read_text().splitlines()
+        assert "alerts_bad_field_1" in contents
+        assert "alerts_bad_field_2" in contents
+
+    def test_sends_teams_alert_for_new_fields(self, tmp_path, monkeypatch):
+        """Teams alert is sent when new fields are detected."""
+        from hbnmigration.from_curious.alerts_to_redcap import _log_invalid_alert_fields
+
+        monkeypatch.setattr(
+            "hbnmigration.from_curious.alerts_to_redcap.log_root_path",
+            lambda: tmp_path,
+        )
+        with patch(
+            "hbnmigration.from_curious.alerts_to_redcap.send_alert"
+        ) as mock_alert:
+            _log_invalid_alert_fields(["alerts_new_field"])
+
+        assert mock_alert.called
+        msg = mock_alert.call_args[0][0]
+        assert "alerts_new_field" in msg
+        assert "invalid field name" in msg
+
+    def test_no_alert_for_duplicate_fields(self, tmp_path, monkeypatch):
+        """No Teams alert when fields were already logged today."""
+        from hbnmigration.from_curious.alerts_to_redcap import _log_invalid_alert_fields
+
+        monkeypatch.setattr(
+            "hbnmigration.from_curious.alerts_to_redcap.log_root_path",
+            lambda: tmp_path,
+        )
+        # Pre-populate log file
+        log_dir = tmp_path / "invalid_alert_fields"
+        log_dir.mkdir(parents=True)
+        log_file = log_dir / f"{date.today().isoformat()}.txt"
+        log_file.write_text("alerts_already_logged\n")
+
+        with patch(
+            "hbnmigration.from_curious.alerts_to_redcap.send_alert"
+        ) as mock_alert:
+            _log_invalid_alert_fields(["alerts_already_logged"])
+
+        assert not mock_alert.called
+
+    def test_only_new_fields_trigger_alert(self, tmp_path, monkeypatch):
+        """Only genuinely new fields trigger alert; old ones are skipped."""
+        from hbnmigration.from_curious.alerts_to_redcap import _log_invalid_alert_fields
+
+        monkeypatch.setattr(
+            "hbnmigration.from_curious.alerts_to_redcap.log_root_path",
+            lambda: tmp_path,
+        )
+        log_dir = tmp_path / "invalid_alert_fields"
+        log_dir.mkdir(parents=True)
+        log_file = log_dir / f"{date.today().isoformat()}.txt"
+        log_file.write_text("alerts_old_field\n")
+
+        with patch(
+            "hbnmigration.from_curious.alerts_to_redcap.send_alert"
+        ) as mock_alert:
+            _log_invalid_alert_fields(["alerts_old_field", "alerts_brand_new"])
+
+        assert mock_alert.called
+        msg = mock_alert.call_args[0][0]
+        assert "alerts_brand_new" in msg
+        assert "alerts_old_field" not in msg
+
+        # Both should be in log file now
+        contents = log_file.read_text().splitlines()
+        assert "alerts_old_field" in contents
+        assert "alerts_brand_new" in contents
+
+
+# ============================================================================
+# Tests - _validate_alert_fields
+# ============================================================================
+
+
+class TestValidateAlertFields:
+    """Tests for _validate_alert_fields."""
+
+    def test_filters_invalid_fields(self, tmp_path, monkeypatch):
+        """Invalid fields are removed from returned DataFrame."""
+        from hbnmigration.from_curious.alerts_to_redcap import _validate_alert_fields
+
+        monkeypatch.setattr(
+            "hbnmigration.from_curious.alerts_to_redcap.log_root_path",
+            lambda: tmp_path,
+        )
+        metadata = create_alert_metadata(
+            ["mrn", "alerts_valid_1", "valid_alerts"],
+            ["", "0, No | 1, Yes", "0, No | 1, Yes"],
+        )
+        alerts = create_alert_df(
+            ["001", "001", "001"],
+            ["mrn", "alerts_valid_1", "alerts_invalid_1"],
+            ["001", "yes", "yes"],
+        )
+        with patch("hbnmigration.from_curious.alerts_to_redcap.send_alert"):
+            filtered, valid = _validate_alert_fields(alerts, metadata)
+
+        assert "alerts_valid_1" in valid
+        assert "alerts_invalid_1" not in valid
+        assert "alerts_invalid_1" not in filtered["field_name"].values
+        assert "mrn" in filtered["field_name"].values
+
+    def test_returns_empty_valid_list_when_none_match(self, tmp_path, monkeypatch):
+        """Empty valid list when no alert fields match metadata."""
+        from hbnmigration.from_curious.alerts_to_redcap import _validate_alert_fields
+
+        monkeypatch.setattr(
+            "hbnmigration.from_curious.alerts_to_redcap.log_root_path",
+            lambda: tmp_path,
+        )
+        metadata = create_alert_metadata(["mrn"], [""])
+        alerts = create_alert_df(["001"], ["alerts_nonexistent"], ["yes"])
+
+        with patch("hbnmigration.from_curious.alerts_to_redcap.send_alert"):
+            _, valid = _validate_alert_fields(alerts, metadata)
+
+        assert valid == []
+
+
+# ============================================================================
+# Tests - _fetch_redcap_context
+# ============================================================================
+
+
+class TestFetchRedcapContext:
+    """Tests for _fetch_redcap_context."""
+
+    def test_returns_none_when_no_mrn_data(self, mock_alerts_dependencies):
+        """Returns None when MRN fetch returns empty."""
+        from hbnmigration.from_curious.alerts_to_redcap import _fetch_redcap_context
+
+        mock_alerts_dependencies["fetch"].return_value = pd.DataFrame()
+        result = _fetch_redcap_context(["alerts_field_1"])
+        assert result is None
+
+    def test_handles_no_data_for_alert_fields(self, mock_alerts_dependencies):
+        """Returns MRN data alone when alert fields raise NoData."""
+        from hbnmigration.from_curious.alerts_to_redcap import _fetch_redcap_context
+
+        mrn_data = create_alert_df(["1"], ["mrn"], ["12345"], ["baseline_arm_1"])
+        mock_alerts_dependencies["fetch"].side_effect = [mrn_data, NoData()]
+        result = _fetch_redcap_context(["alerts_unpopulated_1"])
+        assert result is not None
+        assert len(result) == 1
+        assert result["field_name"].iloc[0] == "mrn"
+
+    def test_combines_mrn_and_field_data(self, mock_alerts_dependencies):
+        """Returns concatenated MRN + field data when both available."""
+        from hbnmigration.from_curious.alerts_to_redcap import _fetch_redcap_context
+
+        mrn_data = create_alert_df(["1"], ["mrn"], ["12345"], ["baseline_arm_1"])
+        field_data = create_alert_df(
+            ["1"], ["alerts_field_1"], ["0"], ["baseline_arm_1"]
+        )
+        mock_alerts_dependencies["fetch"].side_effect = [mrn_data, field_data]
+        result = _fetch_redcap_context(["alerts_field_1"])
+        assert result is not None
+        assert len(result) == 2
+
+
+# ============================================================================
+# Tests - _map_and_transform
+# ============================================================================
+
+
+class TestMapAndTransform:
+    """Tests for _map_and_transform."""
+
+    def test_drops_unmapped_records(self):
+        """Rows with MRNs not in lookup are dropped."""
+        from hbnmigration.from_curious.alerts_to_redcap import _map_and_transform
+
+        alerts = create_alert_df(
+            ["12345", "99999", "12345", "99999"],
+            ["mrn", "mrn", "alerts_field_1", "alerts_field_1"],
+            ["12345", "99999", "yes", "yes"],
+        )
+        redcap_fields = create_alert_df(["1"], ["mrn"], ["12345"], ["baseline_arm_1"])
+        metadata = create_alert_metadata(
+            ["mrn", "alerts_field_1"], ["", "0, No | 1, Yes"]
+        )
+        result = _map_and_transform(alerts, redcap_fields, metadata)
+        # Only record with MRN 12345 should remain
+        assert len(result) == 1
+        assert result["record"].iloc[0] == "1"
+
+    def test_maps_choice_values(self):
+        """Response values are mapped to REDCap indices."""
+        from hbnmigration.from_curious.alerts_to_redcap import _map_and_transform
+
+        alerts = create_alert_df(
+            ["12345", "12345"],
+            ["mrn", "alerts_field_1"],
+            ["12345", "Yes"],
+        )
+        redcap_fields = create_alert_df(["1"], ["mrn"], ["12345"], ["baseline_arm_1"])
+        metadata = create_alert_metadata(
+            ["mrn", "alerts_field_1"], ["", "0, No | 1, Yes"]
+        )
+        result = _map_and_transform(alerts, redcap_fields, metadata)
+        assert result["value"].iloc[0] == "1"  # "Yes" → "1"
+
+    def test_returns_empty_when_no_mrn_match(self):
+        """Returns empty DataFrame when no MRNs match."""
+        from hbnmigration.from_curious.alerts_to_redcap import _map_and_transform
+
+        alerts = create_alert_df(
+            ["99999", "99999"], ["mrn", "alerts_field_1"], ["99999", "yes"]
+        )
+        redcap_fields = create_alert_df(["1"], ["mrn"], ["12345"], ["baseline_arm_1"])
+        metadata = create_alert_metadata(
+            ["mrn", "alerts_field_1"], ["", "0, No | 1, Yes"]
+        )
+        result = _map_and_transform(alerts, redcap_fields, metadata)
+        assert result.empty
+
+
+# ============================================================================
+# Tests - map_mrns_to_records leading zeros
+# ============================================================================
+
+
+class TestMapMrnsLeadingZeros:
+    """Tests for leading zero preservation in map_mrns_to_records."""
+
+    def test_preserves_leading_zeros_in_mrn(self):
+        """MRN values with leading zeros are preserved."""
+        from hbnmigration.from_curious.utils import map_mrns_to_records
+
+        alerts = pd.DataFrame(
+            {
+                "record": ["001234", "001234"],
+                "field_name": ["mrn", "alerts_test_1"],
+                "value": ["001234", "yes"],
+                "redcap_event_name": [None, None],
+            }
+        )
+        redcap_fields = pd.DataFrame(
+            {
+                "record": ["42"],
+                "field_name": ["mrn"],
+                "value": ["001234"],
+                "redcap_event_name": ["baseline_arm_1"],
+            }
+        )
+        _, mrn_lookup = map_mrns_to_records(alerts, redcap_fields)
+        assert "001234" in mrn_lookup
+        assert mrn_lookup["001234"] == "42"
+
+    def test_preserves_leading_zeros_in_record_ids(self):
+        """Record IDs with leading zeros are preserved."""
+        from hbnmigration.from_curious.utils import map_mrns_to_records
+
+        alerts = pd.DataFrame(
+            {
+                "record": ["007", "007"],
+                "field_name": ["mrn", "alerts_test_1"],
+                "value": ["007", "yes"],
+                "redcap_event_name": [None, None],
+            }
+        )
+        redcap_fields = pd.DataFrame(
+            {
+                "record": ["007"],
+                "field_name": ["mrn"],
+                "value": ["007"],
+                "redcap_event_name": ["baseline_arm_1"],
+            }
+        )
+        _, mrn_lookup = map_mrns_to_records(alerts, redcap_fields)
+        assert mrn_lookup["007"] == "007"

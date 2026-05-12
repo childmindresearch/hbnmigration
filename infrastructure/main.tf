@@ -11,16 +11,27 @@ terraform {
 
 locals {
   workspace = terraform.workspace
-  template_vars = {
+  common_vars = {
     workspace      = terraform.workspace
     user_group     = var.user_group
     project_root   = var.project_root
-    venv_path      = var.venv_path
+    venv_path      = "${var.project_root}/${var.venv_path}"
     log_directory  = var.log_directory
     project_status = var.project_status
     recovery_mode  = var.recovery_mode
   }
+
+  common_service_config  = templatefile("${path.module}/services/_common_metadata.tpl", local.common_vars)
+  oneshot_timeout_config = templatefile("${path.module}/services/_oneshot_timeouts.tpl", local.common_vars)
+  async_timeout_config   = templatefile("${path.module}/services/_async_timeouts.tpl", local.common_vars)
+
+  template_vars = merge(local.common_vars, {
+    common_config    = local.common_service_config
+    oneshot_timeouts = local.oneshot_timeout_config,
+    async_timeouts   = local.async_timeout_config
+  })
 }
+
 
 # Webhook services (long-running uvicorn servers)
 resource "local_file" "redcap_to_redcap_service" {
@@ -79,4 +90,9 @@ resource "local_file" "hbn_sync_timer" {
     sync_interval_minutes = var.sync_interval_minutes
   })
   filename = "${path.module}/generated/hbn-sync.timer"
+}
+
+resource "local_file" "redcap_track_curious_service" {
+  content  = templatefile("${path.module}/services/redcap-track-curious.service.tpl", local.template_vars)
+  filename = "${path.module}/generated/redcap-track-curious.service"
 }
