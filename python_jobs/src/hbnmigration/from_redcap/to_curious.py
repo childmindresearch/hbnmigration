@@ -12,7 +12,6 @@ from typing import Any, cast, Literal
 
 import numpy as np
 import pandas as pd
-from pydantic import Field
 import requests
 
 from .._config_variables import curious_variables, redcap_variables
@@ -24,7 +23,7 @@ from ..utility_functions import (
     redcap_api_push,
 )
 from .config import Fields, Values
-from .from_redcap import fetch_data, RedcapRecord
+from .from_redcap import fetch_data
 
 logger = initialize_logging(__name__)
 
@@ -32,14 +31,6 @@ Individual = Literal["child", "parent"]
 INDIVIDUALS: list[Individual] = ["parent", "child"]
 _REDCAP_TOKENS = redcap_variables.Tokens()
 _REDCAP_PID = 625
-
-
-class RedcapTriggerPayload(RedcapRecord):
-    """Payload from REDCap Data Entry Trigger."""
-
-    ready_to_send_to_curious: str | None = Field(
-        default=None, alias="ready_to_send_to_curious"
-    )
 
 
 def _in_set(x: set | int | str, required_value: int | str = 1) -> bool:

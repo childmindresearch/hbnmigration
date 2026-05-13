@@ -279,9 +279,19 @@ class Fields:
                 "record_id",
                 "mrn",
                 "r_id",
+                "resp_email",
+                "r_id_2",
+                "resp_email_2",
+                "r_id_3",
+                "resp_email_3",
             ]
         )
         """Fields to export from REDCap PID 625 for MRN lookup by r_id."""
+
+    class export_responders:
+        """Fields to export from REDCap PID 879."""
+
+        r_id_emails: Final[FieldList] = FieldList(["record_id", "resp_email"])
 
     class import_curious:
         """Fields to import into Curious."""

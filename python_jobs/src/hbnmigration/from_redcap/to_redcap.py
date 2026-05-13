@@ -12,18 +12,15 @@ Can also be run manually via CLI to process all pending records::
 """
 
 from datetime import date
-from typing import Annotated, Any, cast
+from typing import Any, cast
 
-from fastapi import BackgroundTasks, FastAPI, Form, Request
-from fastapi.responses import JSONResponse
 import pandas as pd
-from pydantic import Field
 
 from .._config_variables import redcap_variables
 from ..exceptions import NoData
-from ..utility_functions import initialize_logging, redcap_api_push, safe_record_for_log
+from ..utility_functions import initialize_logging, redcap_api_push
 from .config import Constraints, Fields, Values
-from .from_redcap import fetch_data, RedcapRecord
+from .from_redcap import fetch_data
 
 logger = initialize_logging(__name__)
 _REDCAP_TOKENS = redcap_variables.Tokens()
@@ -31,20 +28,6 @@ _REDCAP_ENDPOINTS = redcap_variables.Endpoints()
 _SOURCE_PID = 247
 _TARGET_PIDS = [625, 891]
 _TARGET_PID_STRS = [str(_) for _ in _TARGET_PIDS]
-
-app = FastAPI(
-    title="REDCap to REDCap Migration Service",
-    description=(
-        "Handles REDCap Data Entry Triggers for pushing data "
-        "from Intake (PID 247) to Operations (PID 625)"
-    ),
-)
-
-
-class RedcapTriggerPayload(RedcapRecord):
-    """Payload from REDCap Data Entry Trigger."""
-
-    intake_ready: str | None = Field(default=None, alias="intake_ready")
 
 
 def event_map(redcap_data: pd.DataFrame) -> dict[str, str]:
@@ -314,19 +297,26 @@ def update_complete_parent_second_guardian_consent(df: pd.DataFrame) -> pd.DataF
     )
 
 
-def push_to_intake_redcap(source_data: pd.DataFrame) -> int:
+def push_to_intake_redcap(
+    source_data: pd.DataFrame, target_pids: list[int] = _TARGET_PIDS
+) -> int:
     """
     Push data to operations (PID 625) and Curious data (891).
 
-    Args:
-        source_data: DataFrame with formatted data to push.
+    Parameters
+    ----------
+    source_data
+        DataFrame with formatted data to push.
+    target_pids
+        Project IDs for projects to push to.
 
-    Returns:
-        Number of rows successfully pushed.
+    Returns
+    -------
+    Number of rows successfully pushed.
 
     """
     rows_updated = []
-    for project in _TARGET_PIDS:
+    for project in target_pids:
         try:
             rows_updated.append(
                 redcap_api_push(
@@ -338,7 +328,7 @@ def push_to_intake_redcap(source_data: pd.DataFrame) -> int:
             )
             logger.info(
                 "%d rows successfully pushed to Operations REDCap (PID %d).",
-                rows_updated,
+                rows_updated[0],
                 project,
             )
         except Exception:
@@ -346,7 +336,8 @@ def push_to_intake_redcap(source_data: pd.DataFrame) -> int:
                 "Failed to push data to Operations REDCap (PID %d)", project
             )
             raise
-    assert rows_updated[0] == rows_updated[1]
+    if len(rows_updated) > 1:
+        assert rows_updated[0] == rows_updated[1]
     return rows_updated[0]
 
 
@@ -526,78 +517,91 @@ def process_record_for_redcap_operations(record_id: str) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Webhook endpoints
+# Responder data
 # ---------------------------------------------------------------------------
 
 
-@app.get("/")
-async def root() -> dict[str, str]:
-    """Root endpoint."""
-    return {"message": "REDCap to REDCap Migration Service"}
+def update_r_emails(data: dict[int, pd.DataFrame]) -> pd.DataFrame:
+    """Update emails for `r_id`s."""
+    lookup_map = data[879].set_index("record_id")["resp_email"].to_dict()
 
+    # 2. Keep a copy of the original to compare differences later
+    df_original = data[625].copy()
 
-@app.get("/health")
-async def health() -> dict[str, str]:
-    """Health check endpoint."""
-    return {"status": "healthy"}
-
-
-@app.post("/webhook/redcap-to-intake")
-async def redcap_to_intake_webhook(
-    background_tasks: BackgroundTasks,
-    instrument: Annotated[str, Form()],
-    record: Annotated[str, Form()],
-    intake_ready: Annotated[str | None, Form()] = None,
-) -> dict[str, Any]:
-    """
-    Handle REDCap Data Entry Trigger for Intake updates.
-
-    This endpoint should be configured as a Data Entry Trigger in
-    REDCap PID 247. When ``intake_ready`` is set to ``1``,
-    REDCap will POST to this endpoint.
-
-    Configuration in REDCap:
-    1. Go to Project Setup → Additional Customizations
-    2. Enable "Data Entry Trigger"
-    3. Set URL to: ``https://your-domain.com/webhook/redcap-to-intake``
-    """
-    safe_record = safe_record_for_log(record)
-    logger.info(
-        "Received REDCap trigger for record %s (instrument: %s)",
-        safe_record,
-        safe_record_for_log(instrument),
-    )
-
-    if intake_ready != "1":
-        logger.debug("Ready flag not set for record %s, ignoring trigger", safe_record)
-        return {
-            "status": "ignored",
-            "message": "Ready flag not set to '1', ignoring trigger",
-            "record_id": record,
-        }
-
-    background_tasks.add_task(process_record_for_redcap_operations, record)
-    logger.info("Queued record %s for Intake REDCap push", safe_record)
-    return {
-        "status": "accepted",
-        "message": f"Trigger accepted for record {safe_record}",
-        "record_id": record,
+    # 3. Define the mapping pairs
+    mapping_pairs = {
+        "r_id": "resp_email",
+        "r_id_2": "resp_email_2",
+        "r_id_3": "resp_email_3",
     }
 
+    # 4. Perform the lookup
+    for id_col, email_col in mapping_pairs.items():
+        # Check if any IDs in df_625 are missing from df_879
+        missing = data[625][
+            ~data[625][id_col].isna() & ~data[625][id_col].isin(lookup_map.keys())
+        ][id_col].unique()
 
-@app.exception_handler(Exception)
-async def global_exception_handler(request: Request, exc: Exception) -> JSONResponse:
-    """Global exception handler."""
-    logger.exception("Unhandled exception in REDCap to REDCap service")
-    return JSONResponse(
-        status_code=500,
-        content={"detail": "Internal server error"},
+        if len(missing) > 0:
+            logger.warning(
+                "The following IDs in %s were not found in 879: %s", id_col, missing
+            )
+
+        # Map the values
+        data[625][email_col] = data[625][id_col].map(lookup_map)
+
+    # 5. Filter for rows where the data has actually changed
+    # We compare the updated dataframe to the original copy
+    cols_to_keep = [
+        "record_id",
+        "redcap_event_name",
+        "r_id",
+        "resp_email",
+        "r_id_2",
+        "resp_email_2",
+        "r_id_3",
+        "resp_email_3",
+    ]
+    diff = data[625].compare(df_original)
+    df = (
+        data[625]
+        .loc[diff.index][cols_to_keep]
+        .rename(columns={"record_id": "record"})
+        .melt(
+            id_vars=["record", "redcap_event_name"],
+            var_name="field_name",
+            value_name="value",
+        )
+        .dropna(subset=["value"])
     )
+    return df[df["field_name"].str.startswith("resp_email") & df["value"].notna()]
 
 
 # ---------------------------------------------------------------------------
 # CLI entry points
 # ---------------------------------------------------------------------------
+
+
+def responders() -> None:
+    """Process all pending responder updates."""
+    data = update_r_emails(
+        {
+            625: fetch_data(
+                _REDCAP_TOKENS.pid625,
+                {"fields": str(Fields.export_operations.for_mrn_lookup)},
+                all_or_any="any",
+                flat=True,
+            ),
+            879: fetch_data(
+                _REDCAP_TOKENS.pid879,
+                {"fields": str(Fields.export_responders.r_id_emails)},
+                flat=True,
+            ),
+        }
+    )
+    if data.empty:
+        logger.info("No responder emails to update.")
+    push_to_intake_redcap(data, [625])
 
 
 def main() -> None:
@@ -704,4 +708,5 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    # main()
+    responders()

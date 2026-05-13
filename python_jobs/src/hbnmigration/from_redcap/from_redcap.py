@@ -530,6 +530,7 @@ class RedcapRecord(BaseModel):
     """Payload from REDCap Data Entry Trigger."""
 
     project_id: int
+    username: str | None = None
     instrument: str
     record: str
     redcap_event_name: str | None = None
@@ -544,7 +545,6 @@ class RedcapRecord(BaseModel):
     )
     redcap_url: str | None = Field(default=None, alias="redcap_url")
     project_url: str | None = Field(default=None, alias="project_url")
-    username: str | None = None
 
     class Config:
         """Pydantic config."""
