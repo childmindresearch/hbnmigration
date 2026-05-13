@@ -18,7 +18,6 @@ from fastapi import BackgroundTasks, FastAPI, Form, Request
 from fastapi.responses import JSONResponse
 import pandas as pd
 from pydantic import Field
-import uvicorn
 
 from .._config_variables import redcap_variables
 from ..exceptions import NoData
@@ -702,18 +701,6 @@ def main() -> None:
             len(pushed_mrns),
             successful_updates,
         )
-
-
-def serve(host: str = "0.0.0.0", port: int = 8001) -> None:
-    """
-    Start the webhook server.
-
-    Args:
-        host: Bind address.
-        port: Bind port.
-
-    """
-    uvicorn.run(app, host=host, port=port)
 
 
 if __name__ == "__main__":

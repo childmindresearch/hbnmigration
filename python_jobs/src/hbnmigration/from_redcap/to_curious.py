@@ -8,15 +8,12 @@ Can also be run manually via CLI to process all pending records:
     python -m hbnmigration.from_redcap.to_curious
 """
 
-from typing import Annotated, Any, cast, Literal
+from typing import Any, cast, Literal
 
-from fastapi import BackgroundTasks, FastAPI, Form, Request
-from fastapi.responses import JSONResponse
 import numpy as np
 import pandas as pd
 from pydantic import Field
 import requests
-import uvicorn
 
 from .._config_variables import curious_variables, redcap_variables
 from ..exceptions import NoData
@@ -25,7 +22,6 @@ from ..utility_functions import (
     initialize_logging,
     new_curious_account,
     redcap_api_push,
-    safe_record_for_log,
 )
 from .config import Fields, Values
 from .from_redcap import fetch_data, RedcapRecord
@@ -36,11 +32,6 @@ Individual = Literal["child", "parent"]
 INDIVIDUALS: list[Individual] = ["parent", "child"]
 _REDCAP_TOKENS = redcap_variables.Tokens()
 _REDCAP_PID = 625
-
-app = FastAPI(
-    title="REDCap to Curious Migration Service",
-    description="Handles REDCap Data Entry Triggers for pushing data to Curious",
-)
 
 
 class RedcapTriggerPayload(RedcapRecord):
@@ -458,84 +449,6 @@ def process_record_for_curious(record_id: str) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Webhook endpoints
-# ---------------------------------------------------------------------------
-
-
-@app.get("/")
-async def root() -> dict[str, str]:
-    """Root endpoint."""
-    return {"message": "REDCap to Curious Migration Service"}
-
-
-@app.get("/health")
-async def health() -> dict[str, str]:
-    """Health check endpoint."""
-    return {"status": "healthy"}
-
-
-@app.post("/webhook/redcap-to-curious")
-async def redcap_to_curious_webhook(
-    background_tasks: BackgroundTasks,
-    # project_id: Annotated[int, Form()],
-    instrument: Annotated[str, Form()],
-    record: Annotated[str, Form()],
-    # redcap_event_name: Annotated[str | None, Form()] = None,
-    # redcap_repeat_instance: Annotated[int | None, Form()] = None,
-    # redcap_repeat_instrument: Annotated[str | None, Form()] = None,
-    # redcap_data_access_group: Annotated[str | None, Form()] = None,
-    # redcap_url: Annotated[str | None, Form()] = None,
-    # project_url: Annotated[str | None, Form()] = None,
-    # username: Annotated[str | None, Form()] = None,
-    ready_to_send_to_curious: Annotated[str | None, Form()] = None,
-) -> dict[str, Any]:
-    """
-    Handle REDCap Data Entry Trigger for Curious updates.
-
-    This endpoint should be configured in REDCap as a Data Entry Trigger.
-    When the ``ready_to_send_to_curious`` field is set to ``1``, REDCap
-    will POST to this endpoint.
-
-    Configuration in REDCap:
-
-    1. Go to Project Setup → Additional Customizations
-    2. Enable "Data Entry Trigger"
-    3. Set URL to: ``https://your-domain.com/webhook/redcap-to-curious``
-
-    """
-    safe_record = safe_record_for_log(record)
-    logger.info(
-        "Received REDCap trigger for record %s (instrument: %s)",
-        safe_record,
-        safe_record_for_log(instrument),
-    )
-    if ready_to_send_to_curious != "1":
-        logger.debug("Ready flag not set for record %s, ignoring trigger", safe_record)
-        return {
-            "status": "ignored",
-            "message": "Ready flag not set to '1', ignoring trigger",
-            "record_id": record,
-        }
-    background_tasks.add_task(process_record_for_curious, record)
-    logger.info("Queued record %s for Curious push", safe_record)
-    return {
-        "status": "accepted",
-        "message": f"Trigger accepted for record {record}",
-        "record_id": record,
-    }
-
-
-@app.exception_handler(Exception)
-async def global_exception_handler(request: Request, exc: Exception) -> JSONResponse:
-    """Global exception handler."""
-    logger.exception("Unhandled exception in REDCap to Curious service")
-    return JSONResponse(
-        status_code=500,
-        content={"detail": "Internal server error"},
-    )
-
-
-# ---------------------------------------------------------------------------
 # CLI entry points
 # ---------------------------------------------------------------------------
 
@@ -573,18 +486,6 @@ def main() -> None:
         return
 
     _push_to_curious(data_operations, curious_data)
-
-
-def serve(host: str = "0.0.0.0", port: int = 8002) -> None:
-    """
-    Start the webhook server.
-
-    Args:
-        host: Bind address.
-        port: Bind port.
-
-    """
-    uvicorn.run(app, host=host, port=port)
 
 
 if __name__ == "__main__":
