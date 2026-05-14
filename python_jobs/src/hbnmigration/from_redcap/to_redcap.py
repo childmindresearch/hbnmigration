@@ -12,6 +12,7 @@ Can also be run manually via CLI to process all pending records::
 """
 
 from datetime import date
+import sys
 from typing import Any, cast
 
 import pandas as pd
@@ -708,5 +709,8 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    # main()
-    responders()
+    main()
+    try:
+        responders()
+    finally:
+        sys.exit(0)

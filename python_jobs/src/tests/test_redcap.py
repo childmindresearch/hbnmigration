@@ -17,6 +17,7 @@ from hbnmigration.from_redcap.to_redcap import (
     _apply_permission_audiovideo_age_rule,
     _compute_age,
     format_data_for_redcap_operations,
+    update_r_emails,
 )
 
 from .conftest import (
@@ -1846,3 +1847,86 @@ class TestFetchDataRegression:
             "from the fetch."
         )
         assert not result.empty
+
+
+@pytest.fixture
+def sample_email_data():
+    """Provide sample DataFrames simulating PID 879 and 625."""
+    df_879 = pd.DataFrame(
+        {
+            "record_id": ["RID_1", "RID_2", "RID_3"],
+            "resp_email": [
+                "user1@example.com",
+                "user2@example.com",
+                "user3@example.com",
+            ],
+        }
+    )
+
+    df_625 = pd.DataFrame(
+        {
+            "record_id": ["REC_A", "REC_B"],
+            "redcap_event_name": ["event_1_arm_1", "event_1_arm_1"],
+            # RID_1 email is missing, should update
+            "r_id": ["RID_1", "RID_999"],
+            "resp_email": [None, "old@example.com"],
+            # RID_2 email is outdated, should update
+            "r_id_2": ["RID_2", None],
+            "resp_email_2": ["outdated@example.com", None],
+            # RID_3 email is already correct, should NOT update
+            "r_id_3": ["RID_3", None],
+            "resp_email_3": ["user3@example.com", None],
+        }
+    )
+
+    return {879: df_879, 625: df_625}
+
+
+def test_update_r_emails_identifies_changes(sample_email_data):
+    """Test that the function correctly identifies and melts email diffs."""
+    result_df = update_r_emails(sample_email_data)
+
+    # We expect 2 changes:
+    # 1. REC_A 'resp_email' updating to user1@example.com
+    # 2. REC_A 'resp_email_2' updating to user2@example.com
+    # (RID_3 is identical, and RID_999 has no match in 879)
+    assert len(result_df) == 2
+
+    # Verify expected column structure from melt
+    expected_columns = ["record", "redcap_event_name", "field_name", "value"]
+    assert list(result_df.columns) == expected_columns
+
+    # Verify REC_A -> resp_email update
+    update_1 = result_df[
+        (result_df["record"] == "REC_A") & (result_df["field_name"] == "resp_email")
+    ]
+    assert len(update_1) == 1
+    assert update_1.iloc[0]["value"] == "user1@example.com"
+
+    # Verify REC_A -> resp_email_2 update
+    update_2 = result_df[
+        (result_df["record"] == "REC_A") & (result_df["field_name"] == "resp_email_2")
+    ]
+    assert len(update_2) == 1
+    assert update_2.iloc[0]["value"] == "user2@example.com"
+
+
+def test_update_r_emails_no_changes_returns_empty():
+    """Test that if data is perfectly in sync, an empty DataFrame is returned."""
+    df_879 = pd.DataFrame({"record_id": ["RID_1"], "resp_email": ["user1@example.com"]})
+
+    df_625 = pd.DataFrame(
+        {
+            "record_id": ["REC_A"],
+            "redcap_event_name": ["event_1_arm_1"],
+            "r_id": ["RID_1"],
+            "resp_email": ["user1@example.com"],  # Already matches
+            "r_id_2": [None],
+            "resp_email_2": [None],
+            "r_id_3": [None],
+            "resp_email_3": [None],
+        }
+    )
+
+    result_df = update_r_emails({879: df_879, 625: df_625})
+    assert result_df.empty
