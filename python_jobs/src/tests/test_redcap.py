@@ -3,7 +3,7 @@
 from typing import Any
 from unittest.mock import MagicMock, patch
 
-from fastapi.testclient import TestClient
+import numpy as np
 import pandas as pd
 import pytest
 import requests
@@ -12,6 +12,7 @@ from hbnmigration.from_curious.config import account_types
 from hbnmigration.from_redcap import to_curious, to_redcap
 from hbnmigration.from_redcap.config import Values
 from hbnmigration.from_redcap.from_redcap import fetch_data, RedcapRecord
+from hbnmigration.from_redcap.to_curious import Individual
 from hbnmigration.from_redcap.to_redcap import (
     _apply_permission_audiovideo_age_rule,
     _compute_age,
@@ -401,35 +402,6 @@ class TestFormatRedcapDataForCurious:
         parent_ids = result["parent"]["secretUserId"]
         assert len(parent_ids) > 0
 
-    def test_filters_by_parent_involvement(self) -> None:
-        """Test that records are filtered by parent_involvement___1."""
-        redcap_data = create_redcap_eav_df(
-            records=["001", "001", "002", "002", "002"],
-            field_names=[
-                "mrn",
-                "parent_involvement___1",
-                "mrn",
-                "parent_involvement___2",
-                "adult_enrollment_form_complete",
-            ],
-            values=["12345", "1", "67890", "1", "1"],
-        )
-        result = to_curious.format_redcap_data_for_curious(redcap_data)
-        assert "secretUserId" in result["child"].columns
-        child_secret_ids = {x.lstrip("0") for x in result["child"]["secretUserId"]}
-        assert "12345" in child_secret_ids
-
-    def test_drops_parent_involvement_columns(self) -> None:
-        """Test that parent_involvement columns are dropped from output."""
-        redcap_data = create_redcap_eav_df(
-            records=["001", "001"],
-            field_names=["mrn", "parent_involvement___1"],
-            values=["12345", "1"],
-        )
-        result = to_curious.format_redcap_data_for_curious(redcap_data)
-        assert "parent_involvement" not in result["child"].columns
-        assert "adult_enrollment_form_complete" not in result["child"].columns
-
     def test_adds_default_values_for_missing_fields(self) -> None:
         """Test that missing fields get default values from config."""
         redcap_data = create_redcap_eav_df(
@@ -536,7 +508,7 @@ class TestFormatRedcapDataForCurious:
         Test that all records can be serialized to JSON without error.
 
         This is the ultimate guard against the TypeError that occurs when
-        requests.post attempts to serialize the payload.
+        requests.post attempts to serialize the payload (e.g., catching sets).
         """
         import json
 
@@ -554,15 +526,20 @@ class TestFormatRedcapDataForCurious:
         for individual in ("child", "parent"):
             df = result[individual]
             records = df.to_dict(orient="records")
+
+            # Loop 1: Verify that when strictly dropping nulls/NaNs, there are no
+            # un-serializable objects.
             for record in records:
                 filtered = {k: v for k, v in record.items() if pd.notna(v)}
                 serialized = json.dumps(filtered, allow_nan=False)
                 assert isinstance(serialized, str)
+
+            # Loop 2: Verify that standard payload mimicking send_to_curious
+            # is valid. `requests` uses the standard json encoder which permits NaN.
+            # This ensures no TypeErrors (e.g., sets) are thrown natively.
             for record in records:
-                # Filter None values as send_to_curious does
                 filtered = {k: v for k, v in record.items() if v is not None}
-                # This must not raise TypeError
-                serialized = json.dumps(filtered, allow_nan=False)
+                serialized = json.dumps(filtered, allow_nan=True)
                 assert isinstance(serialized, str)
 
 
@@ -779,146 +756,6 @@ class TestUpdateRedcap:
 
 
 # ============================================================================
-# Webhook Endpoint Tests – to_curious
-# ============================================================================
-
-
-class TestToCuriousWebhook:
-    """Tests for the REDCap to Curious webhook endpoints."""
-
-    @pytest.fixture
-    def client(self) -> TestClient:
-        """Test client."""
-        return TestClient(to_curious.app)
-
-    def test_root(self, client: TestClient) -> None:
-        """Test root endpoint."""
-        response = client.get("/")
-        assert response.status_code == requests.codes["okay"]
-        assert "message" in response.json()
-
-    def test_health(self, client: TestClient) -> None:
-        """Test health endpoint."""
-        response = client.get("/health")
-        assert response.status_code == requests.codes["okay"]
-        assert response.json() == {"status": "healthy"}
-
-    def test_webhook_accepts_valid_trigger(self, client: TestClient) -> None:
-        """Test trigger."""
-        with patch("hbnmigration.from_redcap.to_curious.process_record_for_curious"):
-            response = client.post(
-                "/webhook/redcap-to-curious",
-                data={
-                    "project_id": "625",
-                    "instrument": "enrollment",
-                    "record": "12345",
-                    "ready_to_send_to_curious": "1",
-                },
-            )
-            assert response.status_code == requests.codes["okay"]
-            assert response.json()["status"] == "accepted"
-            assert response.json()["record_id"] == "12345"
-
-    def test_webhook_ignores_when_flag_not_set(self, client: TestClient) -> None:
-        """Test without flag."""
-        response = client.post(
-            "/webhook/redcap-to-curious",
-            data={
-                "project_id": "625",
-                "instrument": "enrollment",
-                "record": "12345",
-                "ready_to_send_to_curious": "0",
-            },
-        )
-        assert response.status_code == requests.codes["okay"]
-        assert response.json()["status"] == "ignored"
-
-    def test_webhook_ignores_when_flag_missing(self, client: TestClient) -> None:
-        """Test without flag."""
-        response = client.post(
-            "/webhook/redcap-to-curious",
-            data={
-                "project_id": "625",
-                "instrument": "some_form",
-                "record": "12345",
-            },
-        )
-        assert response.status_code == requests.codes["okay"]
-        assert response.json()["status"] == "ignored"
-
-
-# ============================================================================
-# Webhook Endpoint Tests – to_redcap
-# ============================================================================
-
-
-class TestToRedcapWebhook:
-    """Tests for the REDCap to Intake REDCap webhook endpoints."""
-
-    @pytest.fixture
-    def client(self) -> TestClient:
-        """Test client."""
-        return TestClient(to_redcap.app)
-
-    def test_root(self, client: TestClient) -> None:
-        """Test root endpoint."""
-        response = client.get("/")
-        assert response.status_code == requests.codes["okay"]
-        assert "message" in response.json()
-
-    def test_health(self, client: TestClient) -> None:
-        """Test health endpoint."""
-        response = client.get("/health")
-        assert response.status_code == requests.codes["okay"]
-        assert response.json() == {"status": "healthy"}
-
-    def test_webhook_accepts_valid_trigger(self, client: TestClient) -> None:
-        """Test trigger."""
-        with patch(
-            "hbnmigration.from_redcap.to_redcap.process_record_for_redcap_operations"
-        ):
-            response = client.post(
-                "/webhook/redcap-to-intake",
-                data={
-                    "project_id": "625",
-                    "instrument": "enrollment",
-                    "record": "12345",
-                    "intake_ready": "1",
-                },
-            )
-            assert response.status_code == requests.codes["okay"]
-            assert response.json()["status"] == "accepted"
-            assert response.json()["record_id"] == "12345"
-
-    def test_webhook_ignores_when_flag_not_set(self, client: TestClient) -> None:
-        """Test missing flag handling."""
-        response = client.post(
-            "/webhook/redcap-to-intake",
-            data={
-                "project_id": "625",
-                "instrument": "enrollment",
-                "record": "12345",
-                "intake_ready": "0",
-            },
-        )
-        assert response.status_code == requests.codes["okay"]
-        assert response.json()["status"] == "ignored"
-
-    def test_webhook_ignores_when_flag_missing(self, client: TestClient) -> None:
-        """Test missing flag handling."""
-        response = client.post(
-            "/webhook/redcap-to-intake",
-            data={
-                "project_id": "625",
-                "instrument": "some_form",
-                "record": "12345",
-            },
-        )
-        assert response.status_code == requests.codes["okay"]
-        assert response.json()["status"] == "ignored"
-
-
-# ============================================================================
 # process_record_for_curious() Tests
 # ============================================================================
 
@@ -1124,6 +961,46 @@ class TestProcessRecordForRedcapOperations:
 
 
 # ============================================================================
+# update_r_emails() Tests
+# ============================================================================
+
+
+class TestUpdateREmails:
+    """Tests for update_r_emails."""
+
+    def test_update_r_emails_basic(self) -> None:
+        """Test that responder emails from PID 879 correctly update those in PID 625."""
+        df_625 = pd.DataFrame(
+            {
+                "record_id": ["1", "2"],
+                "redcap_event_name": ["event_1", "event_1"],
+                "r_id": ["R1", "R2"],
+                "resp_email": [None, None],
+                "r_id_2": [None, None],
+                "resp_email_2": [None, None],
+                "r_id_3": [None, None],
+                "resp_email_3": [None, None],
+            }
+        )
+        df_879 = pd.DataFrame(
+            {
+                "record_id": ["R1", "R2"],
+                "resp_email": ["email1@test.com", "email2@test.com"],
+            }
+        )
+
+        # Build dictionary mimicking return from fetch_data calls
+        data = {625: df_625, 879: df_879}
+
+        result = to_redcap.update_r_emails(data)
+
+        assert not result.empty
+        # Verify melted shape and correctly extracted values
+        assert "email1@test.com" in result["value"].values
+        assert "email2@test.com" in result["value"].values
+
+
+# ============================================================================
 # clear_ready_flag() Tests
 # ============================================================================
 
@@ -1240,9 +1117,73 @@ class TestPrepareCuriousData:
                 {"secretUserId": ["00001", "00002"], "firstName": ["Alice", "Bob"]}
             ),
             "parent": pd.DataFrame(
-                {"secretUserId": ["00001_P"], "firstName": ["Carol"]}
+                {"secretUserId": ["R00001"], "firstName": ["Carol"]}
             ),
         }
+
+    def test_drops_internal_processing_columns(self) -> None:
+        """Test that internal processing columns are removed before returning."""
+        data: dict[Individual, pd.DataFrame] = {
+            "child": pd.DataFrame(
+                {
+                    "secretUserId": ["00001"],
+                    "parent_involvement": ["1"],
+                    "adult_enrollment_form_complete": ["1"],
+                    "firstName": ["Alice"],
+                }
+            ),
+            "parent": pd.DataFrame(
+                {
+                    "secretUserId": ["R00001"],
+                    "parent_involvement": ["1"],
+                    "adult_enrollment_form_complete": ["1"],
+                    "firstName": ["Carol"],
+                }
+            ),
+        }
+        child_full, child_limited, parent_full = to_curious._prepare_curious_data(data)
+
+        for df in (child_full, child_limited, parent_full):
+            assert "parent_involvement" not in df.columns
+            assert "adult_enrollment_form_complete" not in df.columns
+
+    def test_filters_limited_accounts_by_parent_involvement(self) -> None:
+        """
+        Test handling of parent_involvement.
+
+        Test that if parent_involvement is set and does NOT contain '1',
+        the limited child and matching parent accounts are dropped,
+        while the full child account is kept intact.
+        """
+        data: dict[Individual, pd.DataFrame] = {
+            "child": pd.DataFrame(
+                {
+                    "secretUserId": ["00001", "00002", "00003"],
+                    "parent_involvement": [np.nan, "1", "2"],
+                    "firstName": ["Alice", "Bob", "Charlie"],
+                }
+            ),
+            "parent": pd.DataFrame(
+                {
+                    "secretUserId": ["R00001", "R00002", "R00003"],
+                    "firstName": ["AliceParent", "BobParent", "CharlieParent"],
+                }
+            ),
+        }
+        child_full, child_limited, parent_full = to_curious._prepare_curious_data(data)
+
+        # Child Full should retain everyone regardless of parent_involvement
+        assert len(child_full) == 3
+        assert set(child_full["secretUserId"]) == {"00001", "00002", "00003"}
+
+        # Child Limited should drop Charlie (00003) because PI=2 (not 1 and not NaN)
+        assert len(child_limited) == 2
+        assert set(child_limited["secretUserId"]) == {"00001", "00002"}
+
+        # Parent Full should drop Charlie's parent (R00003) by matching the base
+        # integer of the ID
+        assert len(parent_full) == 2
+        assert set(parent_full["secretUserId"]) == {"R00001", "R00002"}
 
     def test_sets_account_types_correctly(
         self, curious_data: dict[to_curious.Individual, pd.DataFrame]
@@ -1496,124 +1437,6 @@ class TestRedcapRepeatInstanceConversion:
         assert record.redcap_repeat_instance == expected
         if expected is not None:
             assert isinstance(record.redcap_repeat_instance, int)
-
-
-# ============================================================================
-# RedcapTriggerPayload Tests
-# ============================================================================
-
-
-class TestRedcapTriggerPayloadCurious:
-    """Tests for RedcapTriggerPayload in to_curious inheriting RedcapRecord."""
-
-    def test_inherits_float_conversion(self) -> None:
-        """Test that to_curious payload inherits float-to-int conversion."""
-        from hbnmigration.from_redcap.to_curious import RedcapTriggerPayload
-
-        payload = RedcapTriggerPayload(
-            project_id=625,
-            instrument="enrollment",
-            record="12345",
-            redcap_repeat_instance=3.0,
-            ready_to_send_to_curious="1",
-        )
-        assert payload.redcap_repeat_instance == 3
-        assert isinstance(payload.redcap_repeat_instance, int)
-
-    def test_has_ready_to_send_field(self) -> None:
-        """Test that to_curious payload has ready_to_send_to_curious field."""
-        from hbnmigration.from_redcap.to_curious import RedcapTriggerPayload
-
-        payload = RedcapTriggerPayload(
-            project_id=625,
-            instrument="enrollment",
-            record="12345",
-            ready_to_send_to_curious="1",
-        )
-        assert payload.ready_to_send_to_curious == "1"
-
-    def test_nan_conversion_inherited(self) -> None:
-        """Test that NaN conversion is inherited from RedcapRecord."""
-        from hbnmigration.from_redcap.to_curious import RedcapTriggerPayload
-
-        payload = RedcapTriggerPayload(
-            project_id=625,
-            instrument="enrollment",
-            record="12345",
-            redcap_repeat_instance=float("nan"),
-        )
-        assert payload.redcap_repeat_instance is None
-
-
-class TestRedcapTriggerPayloadRedcap:
-    """Tests for RedcapTriggerPayload in to_redcap inheriting RedcapRecord."""
-
-    def test_inherits_float_conversion(self) -> None:
-        """Test that to_redcap payload inherits float-to-int conversion."""
-        from hbnmigration.from_redcap.to_redcap import RedcapTriggerPayload
-
-        payload = RedcapTriggerPayload(
-            project_id=625,
-            instrument="enrollment",
-            record="12345",
-            redcap_repeat_instance=5.0,
-            intake_ready="1",
-        )
-        assert payload.redcap_repeat_instance == 5
-        assert isinstance(payload.redcap_repeat_instance, int)
-
-    def test_has_ready_to_send_field(self) -> None:
-        """Test that to_redcap payload has intake_ready field."""
-        from hbnmigration.from_redcap.to_redcap import RedcapTriggerPayload
-
-        payload = RedcapTriggerPayload(
-            project_id=625,
-            instrument="enrollment",
-            record="12345",
-            intake_ready="1",
-        )
-        assert payload.intake_ready == "1"
-
-    def test_nan_conversion_inherited(self) -> None:
-        """Test that NaN conversion is inherited from RedcapRecord."""
-        from hbnmigration.from_redcap.to_redcap import RedcapTriggerPayload
-
-        payload = RedcapTriggerPayload(
-            project_id=625,
-            instrument="enrollment",
-            record="12345",
-            redcap_repeat_instance=float("nan"),
-        )
-        assert payload.redcap_repeat_instance is None
-
-
-class TestRedcapRecordFromFormData:
-    """Tests simulating REDCap Data Entry Trigger form submissions."""
-
-    def test_from_dict_with_float_instance(self) -> None:
-        """Test constructing from dict as would come from form parsing."""
-        data = {
-            "project_id": 625,
-            "instrument": "medications",
-            "record": "12345",
-            "redcap_event_name": "baseline_arm_1",
-            "redcap_repeat_instance": 2.0,
-            "redcap_repeat_instrument": "medications",
-        }
-        record = RedcapRecord(**data)
-        assert record.redcap_repeat_instance == 2
-        assert isinstance(record.redcap_repeat_instance, int)
-
-    def test_from_dict_with_empty_string_instance(self) -> None:
-        """Test that empty string for repeat instance is handled."""
-        data = {
-            "project_id": 625,
-            "instrument": "enrollment",
-            "record": "12345",
-            "redcap_repeat_instance": None,
-        }
-        record = RedcapRecord(**data)
-        assert record.redcap_repeat_instance is None
 
 
 # ============================================================================

@@ -108,22 +108,11 @@ def format_redcap_data_for_curious(
         individual: _format_redcap_data_for_curious(redcap_data, individual)
         for individual in INDIVIDUALS
     }
-    if "parent_involvement" in curious_participant_data["child"].columns:
-        curious_participant_data["child"] = pd.DataFrame(
-            curious_participant_data["child"][
-                curious_participant_data["child"]["parent_involvement"].apply(_in_set)
-                | curious_participant_data["child"]["parent_involvement"].isna()
-            ]
-        ).dropna(axis=1, how="all")
-    # Now drop `parent_involvement` column before we push to Curious.
-    curious_participant_data["child"] = curious_participant_data["child"].drop(
-        columns=["parent_involvement", "adult_enrollment_form_complete"],
-        errors="ignore",
-    )
     # Pad `secretUserId` with leading zeros to make it 5 characters long
-    curious_participant_data["child"]["secretUserId"] = (
-        curious_participant_data["child"]["secretUserId"].astype(str).str.zfill(5)
-    )
+    if "secretUserId" in curious_participant_data["child"].columns:
+        curious_participant_data["child"]["secretUserId"] = (
+            curious_participant_data["child"]["secretUserId"].astype(str).str.zfill(5)
+        )
     return curious_participant_data
 
 
@@ -336,12 +325,48 @@ def _prepare_curious_data(
 
     """
     child_full = curious_data["child"].copy()
-    child_full["accountType"] = "full"
-
     child_limited = curious_data["child"].copy()
-    child_limited["accountType"] = "limited"
-
     parent_full = curious_data["parent"].copy()
+
+    if "parent_involvement" in child_limited.columns:
+        is_set = child_limited["parent_involvement"].notna()
+        has_one = child_limited["parent_involvement"].apply(_in_set)
+
+        # We drop records that ARE set, but DO NOT have '1'
+        drop_mask = is_set & ~has_one
+
+        if drop_mask.any():
+            # Get dropped child IDs and stringify them to drop leading zeroes
+            # (e.g. '01234' -> '1234')
+            drop_ids = child_limited.loc[drop_mask, "secretUserId"].apply(
+                stringify_secret_user_id
+            )
+
+            # Remove the limited child accounts
+            child_limited = child_limited[~drop_mask]
+
+            # Remove the matching parent accounts by stripping 'r' and stringifying
+            if "secretUserId" in parent_full.columns:
+                parent_match_ids = (
+                    parent_full["secretUserId"]
+                    .astype(str)
+                    .str.lstrip("rR")
+                    .apply(stringify_secret_user_id)
+                )
+                parent_full = parent_full[~parent_match_ids.isin(drop_ids)]
+
+            # Drop any empty columns that resulted from removing rows
+            child_limited = child_limited.dropna(axis=1, how="all")
+            parent_full = parent_full.dropna(axis=1, how="all")
+
+    # Now drop the internal processing columns before pushing to Curious
+    cols_to_drop = ["parent_involvement", "adult_enrollment_form_complete"]
+    child_full = child_full.drop(columns=cols_to_drop, errors="ignore")
+    child_limited = child_limited.drop(columns=cols_to_drop, errors="ignore")
+    parent_full = parent_full.drop(columns=cols_to_drop, errors="ignore")
+
+    child_full["accountType"] = "full"
+    child_limited["accountType"] = "limited"
     parent_full["accountType"] = "full"
 
     return child_full, child_limited, parent_full

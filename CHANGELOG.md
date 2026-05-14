@@ -12,6 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - REDCap Data Entry Trigger support.
 - Update `resp_email*` in 625 from 879.
 
+### Fixed
+
+- More specific handling of `parent_involvement`.
+
 ## 1.12.3
 
 ### Fixed
