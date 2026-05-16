@@ -13,6 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Responder email addresses to come from responder tracking project.
   - Use first name for "nickname" if no preferred name.
 
+### Fixed
+
+- A bug in which empty API responses caused crashes.
+
 ## 1.13.0
 
 ### Added

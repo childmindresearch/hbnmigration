@@ -565,7 +565,7 @@ def format_for_redcap(
 
 def _build_response_value(item: dict, answer_value: dict) -> dict:
     """``response_value`` dict for a single item."""
-    v = answer_value.get("value")
+    v = (answer_value if answer_value else {}).get("value")
     return {
         "type": item["responseType"],
         "raw_value": str(v) if v is not None else None,
