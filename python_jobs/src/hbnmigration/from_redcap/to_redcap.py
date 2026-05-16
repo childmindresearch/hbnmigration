@@ -592,11 +592,14 @@ def responders() -> None:
                 {"fields": str(Fields.export_operations.for_mrn_lookup)},
                 all_or_any="any",
                 flat=True,
+                errors="warn",
             ),
             879: fetch_data(
                 _REDCAP_TOKENS.pid879,
                 {"fields": str(Fields.export_responders.r_id_emails)},
+                all_or_any="any",
                 flat=True,
+                errors="warn",
             ),
         }
     )

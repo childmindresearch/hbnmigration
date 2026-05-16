@@ -10,7 +10,7 @@ from ..utility_functions import (
     initialize_logging,
     safe_record_for_log,
 )
-from . import to_curious
+from . import to_curious, to_redcap
 from .from_redcap import RedcapRecord
 
 logger = initialize_logging(__name__)
@@ -40,7 +40,8 @@ async def health() -> dict[str, str]:
 
 @app.post("/redcap-data-access-trigger")
 async def redcap_data_access_trigger(
-    background_tasks: BackgroundTasks, data: RedcapRecord = Depends()
+    background_tasks: BackgroundTasks,
+    data: RedcapRecord = Depends(RedcapRecord.as_form),
 ) -> dict[str, Any]:
     """
     Handle REDCap Data Entry Trigger.
@@ -63,6 +64,7 @@ async def redcap_data_access_trigger(
     match data.project_id:
         case 625:
             if data.instrument == "enrollment_internal_use_only":
+                background_tasks.add_task(to_redcap.responders)
                 background_tasks.add_task(to_curious.main)
     return {
         "status": "accepted",

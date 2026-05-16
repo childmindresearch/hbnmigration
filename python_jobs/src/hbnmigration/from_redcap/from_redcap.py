@@ -3,6 +3,7 @@
 from typing import Hashable, Literal, Optional, overload
 import warnings
 
+from fastapi import Form
 import pandas as pd
 from pydantic import BaseModel, Field, field_validator
 
@@ -306,6 +307,7 @@ def fetch_data(
     *,
     all_or_any: Literal["all", "any"] = "all",
     flat: bool = False,
+    errors: Literal["raise", "warn"] = "raise",
 ) -> pd.DataFrame: ...
 
 
@@ -318,10 +320,11 @@ def fetch_data(
     *,
     all_or_any: Literal["all", "any"] = "all",
     flat: bool = False,
+    errors: Literal["raise", "warn"] = "raise",
 ) -> pd.DataFrame: ...
 
 
-def fetch_data(
+def fetch_data(  # noqa: PLR0913
     token: str,
     export: Optional[dict[Literal["fields", "forms"], str] | str] = None,
     /,
@@ -329,6 +332,7 @@ def fetch_data(
     *,
     all_or_any: Literal["all", "any"] = "all",
     flat: bool = False,
+    errors: Literal["raise", "warn"] = "raise",
 ) -> pd.DataFrame:
     """
     Fetch data from REDCap API.
@@ -349,6 +353,9 @@ def fetch_data(
 
     flat
         return "flat" type instead of "eav" type?
+
+    errors
+        raise or warn?
 
     """
     redcap_participant_data = {
@@ -418,13 +425,10 @@ def fetch_data(
             flat=flat,
         )
     if df_redcap_participant_consent_data.empty:
-        raise NoData
-
-    if df_redcap_participant_consent_data.empty:
-        logger.info(
-            "There is not REDCap participant enrollment parental consent data "
-            "to process."
-        )
+        if errors == "raise":
+            raise NoData
+        breakpoint()
+        logger.info("There is not REDCap data to process.")
     return df_redcap_participant_consent_data
 
 
@@ -560,6 +564,33 @@ class RedcapRecord(BaseModel):
         if isinstance(value, (int, float)):
             return int(value)
         return value
+
+    @classmethod
+    def as_form(  # noqa: PLR0913
+        cls,
+        project_id: int = Form(...),
+        record: str = Form(...),
+        instrument: str = Form(...),
+        username: str | None = Form(None),
+        redcap_event_name: str | None = Form(None),
+        redcap_repeat_instance: int | None = Form(None),
+        redcap_repeat_instrument: str | None = Form(None),
+        redcap_data_access_group: str | None = Form(None),
+        redcap_url: str | None = Form(None),
+        project_url: str | None = Form(None),
+    ):
+        return cls(
+            project_id=project_id,
+            record=record,
+            instrument=instrument,
+            username=username,
+            redcap_event_name=redcap_event_name,
+            redcap_repeat_instance=redcap_repeat_instance,
+            redcap_repeat_instrument=redcap_repeat_instrument,
+            redcap_data_access_group=redcap_data_access_group,
+            redcap_url=redcap_url,
+            project_url=project_url,
+        )
 
 
 __all__ = ["fetch_data", "response_index_reverse_lookup"]
